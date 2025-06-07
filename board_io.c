@@ -1,5 +1,6 @@
 #include "board_io.h"
 #include "board.h"
+#include "zobrist.h"
 
 Board parseFEN(const char* fen) {
     Board board = {};
@@ -17,6 +18,8 @@ Board parseFEN(const char* fen) {
     board.blackRooks = 0;
     board.blackQueens = 0;
     board.blackKings = 0;
+    board.historyIndex = 0;
+    memset(board.history, 0, sizeof(board.history));
 
     // implement FEN parsing
     int rank = 7, file = 0;
@@ -137,6 +140,9 @@ Board parseFEN(const char* fen) {
     sscanf(&fen[fenIndex], "%d", &fullMoves);
     board.fullMoveNumber = fullMoves;
     // No need to advance fenIndex further as this is the last part
+
+    // 7. Zobrist key
+    board.zobristKey = calculate_zobrist_key(&board);
 
     return board;
 }

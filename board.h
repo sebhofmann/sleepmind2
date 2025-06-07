@@ -44,8 +44,20 @@ typedef struct {
     int halfMoveClock;
     int fullMoveNumber;
     int enPassantSquare;
-    uint64_t zobristKey; // Added for Zobrist hashing
+    uint64_t zobristKey; 
+    uint64_t history[1000]; 
+    int historyIndex; 
 } Board;
+
+// Define squares (0-63)
+// A1 = 0, H1 = 7, A8 = 56, H8 = 63
+typedef int Square;
+
+// Define piece types (optional, but good for promotion)
+typedef enum {
+    NO_PIECE_TYPE, PAWN_T, KNIGHT_T, BISHOP_T, ROOK_T, QUEEN_T, KING_T
+} PieceTypeToken; // Renamed to avoid conflict if PieceType is defined elsewhere as a different kind of enum
+
 
 #endif // BOARD_H
 

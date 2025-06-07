@@ -3,15 +3,7 @@
 
 #include <stdint.h>
 #include <stdio.h> // For sprintf in moveToString
-
-// Define squares (0-63)
-// A1 = 0, H1 = 7, A8 = 56, H8 = 63
-typedef int Square;
-
-// Define piece types (optional, but good for promotion)
-typedef enum {
-    NO_PIECE_TYPE, PAWN_T, KNIGHT_T, BISHOP_T, ROOK_T, QUEEN_T, KING_T
-} PieceTypeToken; // Renamed to avoid conflict if PieceType is defined elsewhere as a different kind of enum
+#include "board.h" // For Square type and PieceTypeToken enum
 
 // Move structure
 // Bits:

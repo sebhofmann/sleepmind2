@@ -103,6 +103,16 @@ int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximiz
         }
     }
     
+    int repetitionCount = 0; 
+    for(int i = 0; i < board->historyIndex; ++i) {
+        if (board->history[i] == board->zobristKey) {
+            repetitionCount++;
+        }
+    }
+    if(repetitionCount >= 2) {
+        return 0; 
+    }
+
     // TODO: Add Transposition Table Lookup here
     // HashEntry* tt_entry = tt_probe(board_hash, depth, alpha, beta);
     // if (tt_entry != NULL) return tt_entry->score;
@@ -215,6 +225,15 @@ int quiescence_search(Board* board, int alpha, int beta, bool maximizingPlayer, 
         return 0; 
     }
 
+    int repetitionCount = 0; 
+    for(int i = 0; i < board->historyIndex; ++i) {
+        if (board->history[i] == board->zobristKey) {
+            repetitionCount++;
+        }
+    }
+    if(repetitionCount >= 2) {
+        return 0; 
+    }
     // TODO: Add Transposition Table Lookup here for quiescence if desired
 
     int stand_pat_score = evaluate(board); // Evaluate the current position "as is"

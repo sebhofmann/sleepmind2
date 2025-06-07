@@ -1,4 +1,5 @@
 #include "move.h"
+#include "board.h" 
 #include <stdio.h> // For sprintf, printf
 
 // Helper to convert square to algebraic notation (e.g., 0 -> "a1")

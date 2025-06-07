@@ -1,6 +1,8 @@
 
 #include "board_modifiers.h"
+#include "zobrist.h"
 #include <stdio.h> // For NULL if not in other headers
+#include <stdlib.h>
 
 // --- Static Helper Function Prototypes ---
 static PieceTypeToken getPieceTypeAtSquare(const Board* board, Square sq, bool* pieceIsWhite);
@@ -241,6 +243,21 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo) {
 
     // 8. Switch side to move
     board->whiteToMove = !movingPlayerIsWhite;
+
+
+
+    // 9. Update history
+    if (board->historyIndex < 1000) { // Ensure we don't overflow history
+        board->history[board->historyIndex++] = board->zobristKey;
+    } else {
+        // exit
+        fprintf(stderr, "History overflow: too many moves made.\n");
+        exit(1);
+    }
+
+        // 10. Update Zobrist key
+    board->zobristKey = calculate_zobrist_key(board);
+
 }
 
 void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo) {

@@ -5,6 +5,7 @@
 #include "move.h"
 #include <stdio.h>
 #include "uci.h"
+#include "zobrist.h"
 #include "tt.h" // Added for Zobrist and TT initialization
 
 int main(int argc, char const *argv[])
