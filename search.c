@@ -113,9 +113,11 @@ int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximiz
         return 0; 
     }
 
-    // TODO: Add Transposition Table Lookup here
-    // HashEntry* tt_entry = tt_probe(board_hash, depth, alpha, beta);
-    // if (tt_entry != NULL) return tt_entry->score;
+    // Transposition Table Lookup
+    TTEntry* tt_entry = tt_probe(board->zobristKey, depth, &alpha, &beta);
+    if (tt_entry != NULL && tt_entry->depth >= depth) {
+        return tt_entry->score;
+    }
 
     if (depth == 0) {
         return quiescence_search(board, alpha, beta, maximizingPlayer, info, ply);
@@ -131,7 +133,19 @@ int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximiz
         return 0; // Simplified: could be stalemate or checkmate
     }
 
-    // TODO: Implement move ordering (MVV-LVA, killer moves, history heuristic)
+    // Wenn ein TT-Eintrag existiert, verwenden wir dessen best_move als ersten Zug
+    if (tt_entry != NULL) {
+        // Bringe den TT-Move an die erste Stelle der move_list
+        for (int i = 0; i < move_list.count; i++) {
+            if (move_list.moves[i] == tt_entry->bestMove) {
+                // Tausche den TT-Move mit dem ersten Move
+                Move temp = move_list.moves[0];
+                move_list.moves[0] = move_list.moves[i];
+                move_list.moves[i] = temp;
+                break;
+            }
+        }
+    }
 
     Move best_move_this_node = 0;
 
@@ -142,15 +156,8 @@ int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximiz
             MoveUndoInfo undo_info;
             applyMove(board, current_move, &undo_info);
             int eval = alpha_beta_search(board, depth - 1, alpha, beta, false, info, ply + 1);
-            printf("%s", outputFEN(board)); // For debugging, print the board state after applying the move
             undoMove(board, current_move, &undo_info);
-            printf("DEBUG: Completed move %d/%d: %u with eval %d at depth %d, ply %d, nodes: %i\n",
-                   i + 1, move_list.count, current_move, eval, depth, ply, info->nodesSearched);
 
-
-            // If search was stopped by a deeper call, and we are at a non-root node, propagate a neutral score.
-            // At the root (ply == 0), we want to continue to update bestMoveThisIteration with the current eval,
-            // and then the outer loop in iterative_deepening_search will handle the stop.
             if (info->stopSearch && ply > 0) {
                 return 0; 
             }
@@ -160,22 +167,24 @@ int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximiz
                 if (ply == 0) { // Root node
                     info->bestMoveThisIteration = current_move;
                 }
-                // best_move_this_node = current_move; // For TT
+                best_move_this_node = current_move;
             }
             alpha = (alpha > eval) ? alpha : eval; // max(alpha, eval)
             
             if (beta <= alpha) {
-                // TODO: Store in Transposition Table (type EXACT or LOWERBOUND)
+                // Speichere in TT
+                tt_store(board->zobristKey, depth, max_eval, TT_LOWERBOUND, best_move_this_node);
                 break; // Beta cut-off
             }
 
-            // If at the root and search is stopped, break from iterating more root moves.
-            // The best move found so far (if any) is already in info->bestMoveThisIteration.
             if (ply == 0 && info->stopSearch) {
                 break;
             }
         }
-        // TODO: Store in Transposition Table if not a beta cutoff
+        // Speichere in TT wenn kein Beta-Cutoff
+        if (alpha < beta) {
+            tt_store(board->zobristKey, depth, max_eval, TT_EXACT, best_move_this_node);
+        }
         return max_eval;
     } else { // minimizingPlayer
         int min_eval = INT_MAX;
@@ -192,15 +201,16 @@ int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximiz
 
             if (eval < min_eval) {
                 min_eval = eval;
-                 if (ply == 0) { // Root node
+                if (ply == 0) { // Root node
                     info->bestMoveThisIteration = current_move;
                 }
-                // best_move_this_node = current_move; // For TT
+                best_move_this_node = current_move;
             }
             beta = (beta < eval) ? beta : eval; // min(beta, eval)
 
             if (beta <= alpha) {
-                // TODO: Store in Transposition Table (type EXACT or UPPERBOUND)
+                // Speichere in TT
+                tt_store(board->zobristKey, depth, min_eval, TT_UPPERBOUND, best_move_this_node);
                 break; // Alpha cut-off
             }
             
@@ -208,7 +218,10 @@ int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximiz
                 break;
             }
         }
-        // TODO: Store in Transposition Table if not an alpha cutoff
+        // Speichere in TT wenn kein Alpha-Cutoff
+        if (alpha < beta) {
+            tt_store(board->zobristKey, depth, min_eval, TT_EXACT, best_move_this_node);
+        }
         return min_eval;
     }
 }
