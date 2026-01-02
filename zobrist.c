@@ -41,7 +41,6 @@ void init_zobrist_keys() {
 
 uint64_t calculate_zobrist_key(const Board* board) {
     uint64_t key = 0ULL;
-    Bitboard bb;
 
     // Piece positions
     for (int sq = 0; sq < 64; ++sq) {

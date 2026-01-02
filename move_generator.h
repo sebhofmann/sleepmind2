@@ -14,9 +14,19 @@ bool findAndInitMagicNumbers();
 // Generate all pseudo-legal moves for the current player
 void generateMoves(const Board* board, MoveList* moveList);
 
+// Generate only pseudo-legal capture moves for the current player
+void generateCaptureMoves(const Board* board, MoveList* moveList);
+
+// Generate only pseudo-legal capture and promotion moves for the current player
+void generateCaptureAndPromotionMoves(const Board* board, MoveList* moveList);
+
 // Functions to get attacks for sliding pieces (using magic bitboards)
 Bitboard getRookAttacks(Square square, Bitboard occupancy);
 Bitboard getBishopAttacks(Square square, Bitboard occupancy);
 Bitboard getQueenAttacks(Square square, Bitboard occupancy); // Combines rook and bishop
+bool isKingAttacked(const Board* board, bool isWhite);
+static inline int pop_lsb(Bitboard *bb);
+static inline int get_lsb_index(Bitboard bb);
+
 
 #endif // MOVE_GENERATOR_H

@@ -25,7 +25,7 @@ void init_zobrist_keys();
 void init_tt(size_t table_size_mb);
 void clear_tt();
 void tt_store(uint64_t key, int depth, int score, uint8_t flag, Move best_move);
-TTEntry* tt_probe(uint64_t key, int depth, int* alpha, int* beta); // Probes and may adjust alpha/beta
+TTEntry* tt_probe(uint64_t key); // Probes and may adjust alpha/beta
 void free_tt();
 
 

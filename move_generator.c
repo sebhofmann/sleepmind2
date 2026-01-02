@@ -1,5 +1,6 @@
 #include "move_generator.h"
 #include "bitboard_utils.h" // For POPCOUNT and other bit utilities
+#include "board_modifiers.h" // For Board struct, PieceTypeToken, Square
 #include "board.h"          // For Square constants, Board struct, Castling rights
 #include "move.h"           // For Move structure, macros, PieceTypeToken, addMove
 #include "board_io.h"       // For outputFEN, printBoard
@@ -677,6 +678,231 @@ static void generateCastlingMoves(const Board* board, MoveList* list, bool isWhi
     }
 }
 
+bool isKingAttacked(const Board* board, bool kingColor) {
+    Bitboard kingPosBitboard = kingColor ? board->whiteKings : board->blackKings;
+    Square kingSq = get_lsb_index(kingPosBitboard);
+
+    if (kingSq == SQ_NONE) { 
+        return false; 
+    }
+    return isSquareAttacked(board, kingSq, !kingColor);
+}
+
+// Generate only pseudo-legal CAPTURE moves for the current player
+void generateCaptureMoves(const Board* board, MoveList* list) {
+    list->count = 0; // Initialize list
+    bool isWhite = board->whiteToMove;
+
+    Bitboard friendlyPieces = getOccupiedByColor(board, isWhite);
+    Bitboard enemyPieces = getOccupiedByColor(board, !isWhite);
+    Bitboard allPieces = friendlyPieces | enemyPieces;
+
+    // 1. Pawn Captures (including en-passant, excluding promotions for this specific function)
+    Bitboard pawns = isWhite ? board->whitePawns : board->blackPawns;
+    int direction = isWhite ? 1 : -1;
+    int promotionRank = isWhite ? 7 : 0;
+    Bitboard currentPawns = pawns;
+    while (currentPawns) {
+        Square fromSq = BIT_SCAN_FORWARD(currentPawns);
+        CLEAR_BIT(currentPawns, fromSq);
+        int rank = fromSq / 8;
+
+        Bitboard pawnAttacks = PAWN_ATTACKS[isWhite ? 0 : 1][fromSq];
+        Bitboard validCaptures = pawnAttacks & enemyPieces;
+        while (validCaptures) {
+            Square toSq_capture = BIT_SCAN_FORWARD(validCaptures);
+            CLEAR_BIT(validCaptures, toSq_capture);
+            // Exclude promotions if this function is strictly for non-promoting captures
+            if (rank + direction != promotionRank) { 
+                addMove(list, CREATE_MOVE(fromSq, toSq_capture, 0, 1, 0, 0, 0));
+            }
+        }
+        if (board->enPassantSquare != -1) {
+            if (GET_BIT(pawnAttacks, board->enPassantSquare)) {
+                 addMove(list, CREATE_MOVE(fromSq, board->enPassantSquare, 0, 1, 0, 1, 0));
+            }
+        }
+    }
+
+    // 2. Knight Captures
+    Bitboard knights = isWhite ? board->whiteKnights : board->blackKnights;
+    Bitboard currentKnights = knights;
+    while (currentKnights) {
+        Square fromSq = BIT_SCAN_FORWARD(currentKnights);
+        CLEAR_BIT(currentKnights, fromSq);
+        Bitboard attacks = KNIGHT_ATTACKS[fromSq];
+        Bitboard validCapturesOnEnemy = attacks & enemyPieces;
+        while (validCapturesOnEnemy) {
+            Square toSq = BIT_SCAN_FORWARD(validCapturesOnEnemy);
+            CLEAR_BIT(validCapturesOnEnemy, toSq);
+            addMove(list, CREATE_MOVE(fromSq, toSq, 0, 1, 0, 0, 0));
+        }
+    }
+
+    // 3. King Captures (Kings cannot castle and capture simultaneously)
+    Bitboard king = isWhite ? board->whiteKings : board->blackKings;
+    if (king) { // Should always be true unless king is captured (which means game over)
+        Square fromSq = BIT_SCAN_FORWARD(king);
+        Bitboard attacks = KING_ATTACKS[fromSq];
+        Bitboard validCapturesOnEnemy = attacks & enemyPieces;
+        while (validCapturesOnEnemy) {
+            Square toSq = BIT_SCAN_FORWARD(validCapturesOnEnemy);
+            CLEAR_BIT(validCapturesOnEnemy, toSq);
+            addMove(list, CREATE_MOVE(fromSq, toSq, 0, 1, 0, 0, 0));
+        }
+    }
+
+    // 4. Sliding Piece Captures (Bishops, Rooks, Queens)
+    PieceTypeToken slidingPieceTypes[] = {BISHOP_T, ROOK_T, QUEEN_T};
+    for (int i = 0; i < 3; ++i) {
+        PieceTypeToken pieceType = slidingPieceTypes[i];
+        Bitboard pieces;
+        if (isWhite) {
+            if (pieceType == BISHOP_T) pieces = board->whiteBishops;
+            else if (pieceType == ROOK_T) pieces = board->whiteRooks;
+            else pieces = board->whiteQueens;
+        } else {
+            if (pieceType == BISHOP_T) pieces = board->blackBishops;
+            else if (pieceType == ROOK_T) pieces = board->blackRooks;
+            else pieces = board->blackQueens;
+        }
+
+        Bitboard currentSlidingPieces = pieces;
+        while (currentSlidingPieces) {
+            Square fromSq = BIT_SCAN_FORWARD(currentSlidingPieces);
+            CLEAR_BIT(currentSlidingPieces, fromSq);
+            Bitboard attacks;
+            if (pieceType == ROOK_T) attacks = getRookAttacks(fromSq, allPieces);
+            else if (pieceType == BISHOP_T) attacks = getBishopAttacks(fromSq, allPieces);
+            else /* QUEEN_T */ attacks = getQueenAttacks(fromSq, allPieces);
+            
+            Bitboard validCapturesOnEnemy = attacks & enemyPieces;
+            while (validCapturesOnEnemy) {
+                Square toSq = BIT_SCAN_FORWARD(validCapturesOnEnemy);
+                CLEAR_BIT(validCapturesOnEnemy, toSq);
+                addMove(list, CREATE_MOVE(fromSq, toSq, 0, 1, 0, 0, 0));
+            }
+        }
+    }
+}
+
+// Generate only pseudo-legal CAPTURE and PROMOTION moves for the current player
+void generateCaptureAndPromotionMoves(const Board* board, MoveList* list) {
+    list->count = 0; // Initialize list
+    bool isWhite = board->whiteToMove;
+
+    Bitboard friendlyPieces = getOccupiedByColor(board, isWhite);
+    Bitboard enemyPieces = getOccupiedByColor(board, !isWhite);
+    Bitboard allPieces = friendlyPieces | enemyPieces;
+
+    // 1. Pawn Moves (Captures, Promotions, Capture-Promotions)
+    Bitboard pawns = isWhite ? board->whitePawns : board->blackPawns;
+    int direction = isWhite ? 1 : -1;
+    int promotionRank = isWhite ? 7 : 0;
+    Bitboard currentPawns = pawns;
+    while (currentPawns) {
+        Square fromSq = BIT_SCAN_FORWARD(currentPawns);
+        CLEAR_BIT(currentPawns, fromSq);
+        int rank = fromSq / 8;
+
+        // Pawn Pushes resulting in Promotion (no capture)
+        Square toSq_single_push = fromSq + 8 * direction;
+        if (rank + direction == promotionRank && toSq_single_push >=0 && toSq_single_push < 64 && !GET_BIT(allPieces, toSq_single_push)) {
+            addMove(list, CREATE_MOVE(fromSq, toSq_single_push, PROMOTION_Q, 0,0,0,0));
+            addMove(list, CREATE_MOVE(fromSq, toSq_single_push, PROMOTION_R, 0,0,0,0));
+            addMove(list, CREATE_MOVE(fromSq, toSq_single_push, PROMOTION_B, 0,0,0,0));
+            addMove(list, CREATE_MOVE(fromSq, toSq_single_push, PROMOTION_N, 0,0,0,0));
+        }
+
+        // Pawn Captures (including those that result in promotion)
+        Bitboard pawnAttacks = PAWN_ATTACKS[isWhite ? 0 : 1][fromSq];
+        Bitboard validPawnAttackTargets = pawnAttacks & enemyPieces;
+        while (validPawnAttackTargets) {
+            Square toSq_capture = BIT_SCAN_FORWARD(validPawnAttackTargets);
+            CLEAR_BIT(validPawnAttackTargets, toSq_capture);
+            if (rank + direction == promotionRank) {
+                addMove(list, CREATE_MOVE(fromSq, toSq_capture, PROMOTION_Q, 1,0,0,0));
+                addMove(list, CREATE_MOVE(fromSq, toSq_capture, PROMOTION_R, 1,0,0,0));
+                addMove(list, CREATE_MOVE(fromSq, toSq_capture, PROMOTION_B, 1,0,0,0));
+                addMove(list, CREATE_MOVE(fromSq, toSq_capture, PROMOTION_N, 1,0,0,0));
+            } else {
+                addMove(list, CREATE_MOVE(fromSq, toSq_capture, 0,1,0,0,0));
+            }
+        }
+        
+        // En Passant (is a capture, cannot be a promotion)
+        if (board->enPassantSquare != -1) {
+            if (GET_BIT(pawnAttacks, board->enPassantSquare)) {
+                 addMove(list, CREATE_MOVE(fromSq, board->enPassantSquare, 0,1,0,1,0));
+            }
+        }
+    }
+
+    // 2. Knight Captures (Knights cannot promote)
+    Bitboard knights = isWhite ? board->whiteKnights : board->blackKnights;
+    Bitboard currentKnights = knights;
+    while (currentKnights) {
+        Square fromSq = BIT_SCAN_FORWARD(currentKnights);
+        CLEAR_BIT(currentKnights, fromSq);
+        Bitboard attacks = KNIGHT_ATTACKS[fromSq];
+        Bitboard validCapturesOnEnemy = attacks & enemyPieces;
+        while (validCapturesOnEnemy) {
+            Square toSq = BIT_SCAN_FORWARD(validCapturesOnEnemy);
+            CLEAR_BIT(validCapturesOnEnemy, toSq);
+            addMove(list, CREATE_MOVE(fromSq, toSq, 0, 1, 0, 0, 0));
+        }
+    }
+
+    // 3. King Captures (Kings cannot promote or castle-capture)
+    Bitboard king = isWhite ? board->whiteKings : board->blackKings;
+    if (king) { 
+        Square fromSq = BIT_SCAN_FORWARD(king);
+        Bitboard attacks = KING_ATTACKS[fromSq];
+        Bitboard validCapturesOnEnemy = attacks & enemyPieces;
+        while (validCapturesOnEnemy) {
+            Square toSq = BIT_SCAN_FORWARD(validCapturesOnEnemy);
+            CLEAR_BIT(validCapturesOnEnemy, toSq);
+            addMove(list, CREATE_MOVE(fromSq, toSq, 0, 1, 0, 0, 0));
+        }
+    }
+
+    // 4. Sliding Piece Captures (Bishops, Rooks, Queens - cannot promote)
+    PieceTypeToken slidingPieceTypes[] = {BISHOP_T, ROOK_T, QUEEN_T};
+    for (int i = 0; i < 3; ++i) {
+        PieceTypeToken pieceType = slidingPieceTypes[i];
+        Bitboard pieces;
+        if (isWhite) {
+            if (pieceType == BISHOP_T) pieces = board->whiteBishops;
+            else if (pieceType == ROOK_T) pieces = board->whiteRooks;
+            else pieces = board->whiteQueens;
+        } else {
+            if (pieceType == BISHOP_T) pieces = board->blackBishops;
+            else if (pieceType == ROOK_T) pieces = board->blackRooks;
+            else pieces = board->blackQueens;
+        }
+
+        Bitboard currentSlidingPieces = pieces;
+        while (currentSlidingPieces) {
+            Square fromSq = BIT_SCAN_FORWARD(currentSlidingPieces);
+            CLEAR_BIT(currentSlidingPieces, fromSq);
+            Bitboard attacks;
+            if (pieceType == ROOK_T) attacks = getRookAttacks(fromSq, allPieces);
+            else if (pieceType == BISHOP_T) attacks = getBishopAttacks(fromSq, allPieces);
+            else /* QUEEN_T */ attacks = getQueenAttacks(fromSq, allPieces);
+            
+            Bitboard validCapturesOnEnemy = attacks & enemyPieces;
+            while (validCapturesOnEnemy) {
+                Square toSq = BIT_SCAN_FORWARD(validCapturesOnEnemy);
+                CLEAR_BIT(validCapturesOnEnemy, toSq);
+                addMove(list, CREATE_MOVE(fromSq, toSq, 0, 1, 0, 0, 0));
+            }
+        }
+    }
+    // Note: This function does not check for legality (king in check after move).
+    // That should be handled by the caller or a subsequent filtering step if needed.
+}
+
+
 void generateMoves(const Board* board, MoveList* list) {
     MoveList pseudoLegalMoves;
     pseudoLegalMoves.count = 0;
@@ -699,102 +925,23 @@ void generateMoves(const Board* board, MoveList* list) {
         Move currentMove = pseudoLegalMoves.moves[i];
         Board tempBoard = *board; // Create a copy of the board to simulate the move
 
-        Square from = MOVE_FROM(currentMove);
-        Square to = MOVE_TO(currentMove);
-        Bitboard fromBit = 1ULL << from;
-        Bitboard toBit = 1ULL << to;
-        int promotionPieceType = MOVE_PROMOTION(currentMove);
+        MoveUndoInfo undo_info;
 
-        Bitboard* movingPieceBitboard = getMutablePieceBitboardAtSquare(&tempBoard, from, isWhite);
-
-        if (!movingPieceBitboard) {
-            // Should not happen if pseudo-legal generation is correct and 'from' has a piece of current player's color
-            continue; 
-        }
-
-        // 1. Handle captures (must be done before moving the piece to 'to')
-        if (MOVE_IS_CAPTURE(currentMove)) {
-            if (MOVE_IS_EN_PASSANT(currentMove)) {
-                Square capturedPawnSq;
-                if (isWhite) { // White makes en passant capture, black pawn is captured
-                    capturedPawnSq = to - 8; // Black pawn was one square behind 'to'
-                    tempBoard.blackPawns &= ~(1ULL << capturedPawnSq);
-                } else { // Black makes en passant capture, white pawn is captured
-                    capturedPawnSq = to + 8; // White pawn was one square behind 'to'
-                    tempBoard.whitePawns &= ~(1ULL << capturedPawnSq);
-                }
-            } else {
-                // Regular capture: remove whatever piece is on the 'to' square
-                // Note: clearSquareOnAllBitboards clears from ALL bitboards.
-                // This is okay as only one piece (opponent's) should be there.
-                clearSquareOnAllBitboards(&tempBoard, to);
-            }
-        }
-
-        // 2. Move the piece: clear 'from', set 'to'
-        *movingPieceBitboard &= ~fromBit; // Clear piece from 'from' square
-
-        if (promotionPieceType != 0) { // Handle promotion
-            // The pawn is removed from its bitboard above. Now add the new piece.
-            if (isWhite) {
-                if (promotionPieceType == PROMOTION_N) tempBoard.whiteKnights |= toBit;
-                else if (promotionPieceType == PROMOTION_B) tempBoard.whiteBishops |= toBit;
-                else if (promotionPieceType == PROMOTION_R) tempBoard.whiteRooks |= toBit;
-                else if (promotionPieceType == PROMOTION_Q) tempBoard.whiteQueens |= toBit;
-            } else { // Black promotes
-                if (promotionPieceType == PROMOTION_N) tempBoard.blackKnights |= toBit;
-                else if (promotionPieceType == PROMOTION_B) tempBoard.blackBishops |= toBit;
-                else if (promotionPieceType == PROMOTION_R) tempBoard.blackRooks |= toBit;
-                else if (promotionPieceType == PROMOTION_Q) tempBoard.blackQueens |= toBit;
-            }
-        } else {
-            // No promotion, just move the piece to the 'to' square in its original bitboard
-            *movingPieceBitboard |= toBit;
-        }
-
-        // 3. Special handling for castling (rook movement)
-        if (MOVE_IS_CASTLING(currentMove)) {
-            // King's part of the move (e.g., E1->G1) is handled by the general logic above
-            // as movingPieceBitboard would point to the king's bitboard.
-            // Now, move the rook.
-            if (to == SQ_G1) { // White kingside (King E1->G1, Rook H1->F1)
-                tempBoard.whiteRooks &= ~(1ULL << SQ_H1); tempBoard.whiteRooks |= (1ULL << SQ_F1);
-            } else if (to == SQ_C1) { // White queenside (King E1->C1, Rook A1->D1)
-                tempBoard.whiteRooks &= ~(1ULL << SQ_A1); tempBoard.whiteRooks |= (1ULL << SQ_D1);
-            } else if (to == SQ_G8) { // Black kingside (King E8->G8, Rook H8->F8)
-                tempBoard.blackRooks &= ~(1ULL << SQ_H8); tempBoard.blackRooks |= (1ULL << SQ_F8);
-            } else if (to == SQ_C8) { // Black queenside (King E8->C8, Rook A8->D8)
-                tempBoard.blackRooks &= ~(1ULL << SQ_A8); tempBoard.blackRooks |= (1ULL << SQ_D8);
-            }
-        }
-        
-        // 4. Find the current player's king on the temporary board
-        Bitboard kingPosBitboard = isWhite ? tempBoard.whiteKings : tempBoard.blackKings;
-        Square kingSq = get_lsb_index(kingPosBitboard);
-
-        if (kingSq == SQ_NONE) { // King not found (e.g., captured itself - illegal)
-            continue; 
-        }
-
-        // 5. Update the board state: toggle turn
-        tempBoard.whiteToMove = !isWhite; // Toggle turn for the next player
-        // Note: Castling rights and en passant square are not updated here.
-
-        // 5. Check if the king is attacked by the opponent
-        // If current player is white (isWhite=true), check attacks by black (byWhite=false)
-        // If current player is black (isWhite=false), check attacks by white (byWhite=true)
-        // So, the 'byWhite' argument for isSquareAttacked should be !isWhite.
-        // if (!isSquareAttacked(&tempBoard, kingSq, isWhite)) { // THIS WAS THE ORIGINAL LINE causing issues with previous user input
-        if (!isSquareAttacked(&tempBoard, kingSq, !isWhite)) { // CORRECTED: check attacks by the OPPONENT
+        applyMove(&tempBoard, currentMove, &undo_info); // Apply the move to the temporary board
+            
+        if (!isKingAttacked(&tempBoard, board->whiteToMove)) { // CORRECTED: check attacks by the OPPONENT
             addMove(list, currentMove); // If king is not in check, the move is legal
-        } else {
-            /*char moveStr[16];
+        } /*else {
+            char moveStr[16];
             moveToString(currentMove, moveStr);
             char kingSqStr[3];
             squareToString(kingSq, kingSqStr);
             const char* fen_after_move = outputFEN(&tempBoard); // Requires board_io.h
             printf("DEBUG: Move %s (King on %s) puts king in check. Skipping. FEN after move: %s\n", moveStr, kingSqStr, fen_after_move);
-            fflush(stdout);*/
-        }
+            fflush(stdout);
+        }*/
+        undoMove(board, currentMove, &undo_info);
+
+
     }
 }

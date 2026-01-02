@@ -11,7 +11,7 @@
 int main(int argc, char const *argv[])
 {
    init_zobrist_keys(); // Initialize Zobrist hashing keys
-   init_tt(64);         // Initialize transposition table with 64MB size
+   init_tt(256);         // Initialize transposition table with 64MB size
    initMoveGenerator(); // Initialize move generator data
 
     uci_loop(); // Start the UCI loop

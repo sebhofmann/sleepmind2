@@ -65,36 +65,16 @@ void tt_store(uint64_t key, int depth, int score, uint8_t flag, Move best_move) 
     // }
 }
 
-TTEntry* tt_probe(uint64_t key, int depth_searched, int* alpha, int* beta) {
+TTEntry* tt_probe(uint64_t key) { // Removed depth_searched, alpha, beta
     if (transposition_table == NULL || tt_size_entries == 0) return NULL;
 
     uint64_t index = key % tt_size_entries;
     TTEntry* entry = &transposition_table[index];
 
-    if (entry->zobristKey == key) { // Check for collision
-        // Entry found
-        if (entry->depth >= depth_searched) {
-            // Adjust score for mate distance from root if mate score
-            int score = entry->score;
-            // if (score > MATE_THRESHOLD) score -= ply; // If mate found deeper, it takes longer
-            // else if (score < -MATE_THRESHOLD) score += ply;
-
-            if (entry->flag == TT_EXACT) {
-                return entry; // Return the entry directly, its score is exact
-            }
-            if (entry->flag == TT_LOWERBOUND && score >= *beta) {
-                 // *alpha = (*alpha > score) ? *alpha : score; // max(*alpha, score)
-                return entry; // Score is a lower bound, and it's already causing a beta cutoff
-            }
-            if (entry->flag == TT_UPPERBOUND && score <= *alpha) {
-                // *beta = (*beta < score) ? *beta : score;   // min(*beta, score)
-                return entry; // Score is an upper bound, and it's already causing an alpha cutoff
-            }
-        }
-        // Can still use the bestMove from a shallower search for move ordering
-        return entry; // Return entry even if depth is not sufficient, bestMove might be useful
+    if (entry->zobristKey == key) { // Check for collision / valid entry
+        return entry; // Return the entry if key matches
     }
-    return NULL; // Entry not found or collision
+    return NULL; // Entry not found or key mismatch
 }
 
 

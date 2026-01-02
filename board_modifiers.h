@@ -30,4 +30,13 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo);
  */
 void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo);
 
+PieceTypeToken getPieceTypeAtSquare(const Board* board, Square sq, bool* pieceIsWhite);
+void addPieceToBoard(Board* board, Square sq, PieceTypeToken pieceType, bool isWhite);
+void removePieceFromBoard(Board* board, Square sq, PieceTypeToken pieceType, bool isWhite);
+PieceTypeToken getPieceTypeFromPromotionFlag(int promoFlag);
+Bitboard* getMutablePieceBitboardPointer(Board* board, Square sq, bool isPieceWhite);
+void clearCaptureSquareOnAllBitboards(Board* board, Square sq);
+
+
+
 #endif // BOARD_MODIFIERS_H

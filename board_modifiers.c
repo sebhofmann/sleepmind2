@@ -4,21 +4,11 @@
 #include <stdio.h> // For NULL if not in other headers
 #include <stdlib.h>
 
-// --- Static Helper Function Prototypes ---
-static PieceTypeToken getPieceTypeAtSquare(const Board* board, Square sq, bool* pieceIsWhite);
-static void addPieceToBoard(Board* board, Square sq, PieceTypeToken pieceType, bool isWhite);
-static void removePieceFromBoard(Board* board, Square sq, PieceTypeToken pieceType, bool isWhite);
-static PieceTypeToken getPieceTypeFromPromotionFlag(int promoFlag);
-// The following two functions are similar to those in move_generator.c
-// For simplicity, they are redefined here as static.
-// If they were to be shared, they should be in a common utility file.
-static Bitboard* getMutablePieceBitboardPointer(Board* board, Square sq, bool isPieceWhite);
-static void clearCaptureSquareOnAllBitboards(Board* board, Square sq);
 
 
 // --- Helper Function Implementations ---
 
-static PieceTypeToken getPieceTypeAtSquare(const Board* board, Square sq, bool* pieceIsWhite) {
+PieceTypeToken getPieceTypeAtSquare(const Board* board, Square sq, bool* pieceIsWhite) {
     Bitboard s = 1ULL << sq;
     if (board->whitePawns & s) { *pieceIsWhite = true; return PAWN_T; }
     if (board->whiteKnights & s) { *pieceIsWhite = true; return KNIGHT_T; }
@@ -38,7 +28,7 @@ static PieceTypeToken getPieceTypeAtSquare(const Board* board, Square sq, bool* 
     return NO_PIECE_TYPE;
 }
 
-static void addPieceToBoard(Board* board, Square sq, PieceTypeToken pieceType, bool isWhite) {
+void addPieceToBoard(Board* board, Square sq, PieceTypeToken pieceType, bool isWhite) {
     Bitboard s = 1ULL << sq;
     if (isWhite) {
         switch (pieceType) {
@@ -63,7 +53,7 @@ static void addPieceToBoard(Board* board, Square sq, PieceTypeToken pieceType, b
     }
 }
 
-static void removePieceFromBoard(Board* board, Square sq, PieceTypeToken pieceType, bool isWhite) {
+void removePieceFromBoard(Board* board, Square sq, PieceTypeToken pieceType, bool isWhite) {
     Bitboard s_clear = ~(1ULL << sq);
     if (isWhite) {
         switch (pieceType) {
@@ -88,7 +78,7 @@ static void removePieceFromBoard(Board* board, Square sq, PieceTypeToken pieceTy
     }
 }
 
-static PieceTypeToken getPieceTypeFromPromotionFlag(int promoFlag) {
+PieceTypeToken getPieceTypeFromPromotionFlag(int promoFlag) {
     switch (promoFlag) {
         case PROMOTION_N: return KNIGHT_T;
         case PROMOTION_B: return BISHOP_T;
@@ -100,7 +90,7 @@ static PieceTypeToken getPieceTypeFromPromotionFlag(int promoFlag) {
 
 // Gets a pointer to the bitboard of the piece at a given square.
 // Used to remove the piece from its original bitboard.
-static Bitboard* getMutablePieceBitboardPointer(Board* board, Square sq, bool isPieceWhite) {
+Bitboard* getMutablePieceBitboardPointer(Board* board, Square sq, bool isPieceWhite) {
     Bitboard s = 1ULL << sq;
     if (isPieceWhite) {
         if (board->whitePawns & s) return &board->whitePawns;
@@ -121,7 +111,7 @@ static Bitboard* getMutablePieceBitboardPointer(Board* board, Square sq, bool is
 }
 
 // Removes any piece from a square on all bitboards (used for captures).
-static void clearCaptureSquareOnAllBitboards(Board* board, Square sq) {
+void clearCaptureSquareOnAllBitboards(Board* board, Square sq) {
     Bitboard s_clear = ~(1ULL << sq); 
     board->whitePawns &= s_clear; board->whiteKnights &= s_clear; board->whiteBishops &= s_clear;
     board->whiteRooks &= s_clear; board->whiteQueens &= s_clear; board->whiteKings &= s_clear;
