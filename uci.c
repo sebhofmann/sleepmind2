@@ -1,3 +1,6 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 199309L
+#endif
 #include "uci.h"
 #include "board.h"
 #include "board_io.h"
@@ -10,6 +13,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h> // For time management
+#include <stdint.h>
 #include <string.h>
 
 #define ENGINE_NAME "SleepMind UCI"
@@ -104,6 +108,56 @@ Move parse_uci_move(Board* board, const char* move_str) {
     return 0; // Move not found or invalid
 }
 
+// Perft: count leaf nodes to given depth. Uses global move_list and existing apply/undo.
+static unsigned long long perft(Board* board, int depth) {
+    if (depth == 0) return 1ULL;
+
+    MoveList local_moves;
+    local_moves.count = 0;
+    generateMoves(board, &local_moves);
+
+    if (depth == 1) {
+        return (unsigned long long)(local_moves.count);
+    }
+
+
+    unsigned long long nodes = 0ULL;
+    for (int i = 0; i < local_moves.count; ++i) {
+        Move m = local_moves.moves[i];
+        MoveUndoInfo undo_info;
+        applyMove(board, m, &undo_info);
+        nodes += perft(board, depth - 1);
+        undoMove(board, m, &undo_info);
+    }
+    return nodes;
+}
+
+// Perft divide: print per-move counts and return total
+static unsigned long long perft_divide(Board* board, int depth) {
+    MoveList local_moves;
+    local_moves.count = 0;
+    generateMoves(board, &local_moves);
+    unsigned long long total = 0ULL;
+
+    for (int i = 0; i < local_moves.count; ++i) {
+        Move m = local_moves.moves[i];
+        MoveUndoInfo undo_info;
+        applyMove(board, m, &undo_info);
+        unsigned long long cnt = perft(board, depth - 1);
+        undoMove(board, m, &undo_info);
+
+        char move_str[6];
+        moveToString(m, move_str);
+        printf("%s: %llu\n", move_str, cnt);
+        fflush(stdout);
+        total += cnt;
+    }
+
+    printf("Total: %llu\n", total);
+    fflush(stdout);
+    return total;
+}
+
 
 void uci_loop() {
     char line[4096];
@@ -111,6 +165,9 @@ void uci_loop() {
 
     initMoveGenerator(); // Initialize move generator data
     // init_tt(); // Initialize transposition table - will be added later
+
+    // Default to standard start position so commands like "perft" work
+    current_board = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 
     printf("%s by %s\n", ENGINE_NAME, ENGINE_AUTHOR);
 
@@ -200,44 +257,134 @@ void uci_loop() {
                 }
                 printf("info string DEBUG: UCI: Exited moves parsing loop. Processed %d moves.\n", move_idx); fflush(stdout);
             }
+        } else if (strncmp(line, "perft", 5) == 0) {
+            char* token;
+            char* rest = line + 6; // skip "perft "
+            int divide = 0;
+            token = __strtok_r(rest, " ", &rest);
+            if (token && strcmp(token, "divide") == 0) {
+                divide = 1;
+                token = __strtok_r(NULL, " ", &rest);
+            }
+            int depth = 0;
+            if (token) depth = atoi(token);
+            if (depth <= 0) {
+                printf("info string Error: perft requires positive depth\n");
+                fflush(stdout);
+            } else {
+                printf("info string DEBUG: UCI: Running perft depth %d (divide=%s)\n", depth, divide ? "true" : "false"); fflush(stdout);
+                struct timespec t_start, t_end;
+                clock_gettime(CLOCK_MONOTONIC, &t_start);
+                if (divide) {
+                    unsigned long long total = perft_divide(&current_board, depth);
+                    clock_gettime(CLOCK_MONOTONIC, &t_end);
+                    double elapsed_ms = (t_end.tv_sec - t_start.tv_sec) * 1000.0 + (t_end.tv_nsec - t_start.tv_nsec) / 1e6;
+                    double nps = elapsed_ms > 0.0 ? (total / (elapsed_ms / 1000.0)) : 0.0;
+                    printf("info string perft depth %d completed: %llu nodes in %.3f ms (nps: %.0f)\n", depth, total, elapsed_ms, nps);
+                    fflush(stdout);
+                } else {
+                    unsigned long long nodes = perft(&current_board, depth);
+                    clock_gettime(CLOCK_MONOTONIC, &t_end);
+                    double elapsed_ms = (t_end.tv_sec - t_start.tv_sec) * 1000.0 + (t_end.tv_nsec - t_start.tv_nsec) / 1e6;
+                    double nps = elapsed_ms > 0.0 ? (nodes / (elapsed_ms / 1000.0)) : 0.0;
+                    printf("perft %d: %llu\n", depth, nodes);
+                    printf("info string perft time: %.3f ms, nps: %.0f\n", elapsed_ms, nps);
+                    fflush(stdout);
+                }
+            }
         } else if (strncmp(line, "go", 2) == 0) {
             printf("info string DEBUG: UCI: Received \'go\' command: %s\n", line);
             fflush(stdout); 
 
-            // Basic time management: use 1/20th of available time
-            long wtime = 0, btime = 0; //, winc = 0, binc = 0; // movestogo = 0; // REMOVED winc, binc
-            // int depth_to_search = 6; // Default depth
-            long time_for_move = 1000; // Default 1 second if no time control
+            // Verbesstes Zeitmanagement mit Soft- und Hard-Limits
+            long wtime = 0, btime = 0, winc = 0, binc = 0;
+            int movestogo = 0;
+            int depth_limit = 0;
+            long movetime = 0;  // Feste Zeit pro Zug (go movetime X)
+            bool infinite = false;
 
             char* token;
             char* rest = line + 3;
             while((token = __strtok_r(rest, " ", &rest))) {
                 if(strcmp(token, "wtime") == 0 && (token = __strtok_r(NULL, " ", &rest))) wtime = atol(token);
                 else if(strcmp(token, "btime") == 0 && (token = __strtok_r(NULL, " ", &rest))) btime = atol(token);
-                // else if(strcmp(token, "winc") == 0 && (token = __strtok_r(NULL, " ", &rest))) winc = atol(token); // REMOVED
-                // else if(strcmp(token, "binc") == 0 && (token = __strtok_r(NULL, " ", &rest))) binc = atol(token); // REMOVED
-                // else if(strcmp(token, "movestogo") == 0 && (token = __strtok_r(NULL, " ", &rest))) movestogo = atoi(token);
-                // else if(strcmp(token, "depth") == 0 && (token = __strtok_r(NULL, " ", &rest))) depth_to_search = atoi(token);
+                else if(strcmp(token, "winc") == 0 && (token = __strtok_r(NULL, " ", &rest))) winc = atol(token);
+                else if(strcmp(token, "binc") == 0 && (token = __strtok_r(NULL, " ", &rest))) binc = atol(token);
+                else if(strcmp(token, "movestogo") == 0 && (token = __strtok_r(NULL, " ", &rest))) movestogo = atoi(token);
+                else if(strcmp(token, "depth") == 0 && (token = __strtok_r(NULL, " ", &rest))) depth_limit = atoi(token);
+                else if(strcmp(token, "movetime") == 0 && (token = __strtok_r(NULL, " ", &rest))) movetime = atol(token);
+                else if(strcmp(token, "infinite") == 0) infinite = true;
             }
 
             long current_player_time = current_board.whiteToMove ? wtime : btime;
-            // long current_player_inc = current_board.whiteToMove ? winc : binc;
+            long current_player_inc = current_board.whiteToMove ? winc : binc;
 
-            if (current_player_time > 0) {
-                time_for_move = current_player_time / 20;
-                if (time_for_move == 0 && current_player_time > 0) time_for_move = 1; // Ensure at least 1ms if time is very low but >0
-            } else if (wtime == 0 && btime == 0) { // No time control given, could be infinite or fixed depth
-                 time_for_move = 2000; // Default to 2 seconds if no time control, adjust as needed
+            long soft_limit, hard_limit;
+
+            if (infinite || depth_limit > 0) {
+                // Unendliche Suche oder Tiefenbegrenzung
+                soft_limit = 0;
+                hard_limit = 0;
+            } else if (movetime > 0) {
+                // Feste Zeit pro Zug
+                soft_limit = movetime;
+                hard_limit = movetime;
+            } else if (current_player_time > 0) {
+                // Normale Zeitkontrolle
+                // Berechne die erwartete Anzahl der verbleibenden Züge
+                int expected_moves = movestogo > 0 ? movestogo : 25;  // Annahme: 25 Züge bis Spielende (aggressiver)
+                
+                // Basis-Zeit pro Zug
+                long base_time = current_player_time / expected_moves;
+                
+                // Inkrement voll hinzufügen
+                long inc_bonus = current_player_inc;
+                
+                // Soft-Limit: Zeit, nach der keine neue Tiefe begonnen wird
+                soft_limit = base_time + inc_bonus;
+                
+                // Stelle sicher, dass wir nicht zu viel Zeit nutzen (max 25% der Gesamtzeit)
+                long max_time = current_player_time / 4;
+                if (soft_limit > max_time) {
+                    soft_limit = max_time;
+                }
+                
+                // Hard-Limit: Absolutes Maximum (2.5x Soft-Limit, aber max 40% der Zeit)
+                hard_limit = (soft_limit * 5) / 2;
+                long absolute_max = (current_player_time * 40) / 100;
+                if (hard_limit > absolute_max) {
+                    hard_limit = absolute_max;
+                }
+                
+                // Mindestzeit garantieren
+                if (soft_limit < 50) soft_limit = 50;
+                if (hard_limit < 100) hard_limit = 100;
+                
+                // Bei sehr wenig Zeit: aggressivere Einstellungen
+                if (current_player_time < 1000) {
+                    soft_limit = current_player_time / 8;
+                    hard_limit = current_player_time / 4;
+                    if (soft_limit < 10) soft_limit = 10;
+                    if (hard_limit < 20) hard_limit = 20;
+                }
+            } else {
+                // Keine Zeitkontrolle angegeben - Standard
+                soft_limit = 2000;
+                hard_limit = 5000;
             }
-            printf("info string DEBUG: UCI: Time for move: %ld ms (wtime: %ld, btime: %ld)\n", time_for_move, wtime, btime);
-            fflush(stdout); // CHANGED from stderr
+
+            printf("info string Time management: soft=%ld ms, hard=%ld ms (time=%ld, inc=%ld, movestogo=%d)\n",
+                   soft_limit, hard_limit, current_player_time, current_player_inc, movestogo);
+            fflush(stdout);
 
             printBoard(&current_board); // Print the current board state for debugging
 
             SearchInfo search_info;
             search_info.startTime = clock();
-            search_info.timeLimit = time_for_move; // in milliseconds
+            search_info.softTimeLimit = soft_limit;
+            search_info.hardTimeLimit = hard_limit;
             search_info.stopSearch = false;
+            search_info.lastIterationTime = 0;
 
 
             // This is where the search will be called.

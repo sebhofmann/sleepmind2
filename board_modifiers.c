@@ -4,27 +4,46 @@
 #include <stdio.h> // For NULL if not in other headers
 #include <stdlib.h>
 
-
-
 // --- Helper Function Implementations ---
+
+// Optimized: Only checks bitboards for the specified color
+PieceTypeToken getPieceTypeAtSquareForColor(const Board* board, Square sq, bool isWhite) {
+    Bitboard s = 1ULL << sq;
+    if (isWhite) {
+        if (board->whitePawns & s) return PAWN_T;
+        if (board->whiteKnights & s) return KNIGHT_T;
+        if (board->whiteBishops & s) return BISHOP_T;
+        if (board->whiteRooks & s) return ROOK_T;
+        if (board->whiteQueens & s) return QUEEN_T;
+        if (board->whiteKings & s) return KING_T;
+    } else {
+        if (board->blackPawns & s) return PAWN_T;
+        if (board->blackKnights & s) return KNIGHT_T;
+        if (board->blackBishops & s) return BISHOP_T;
+        if (board->blackRooks & s) return ROOK_T;
+        if (board->blackQueens & s) return QUEEN_T;
+        if (board->blackKings & s) return KING_T;
+    }
+    return NO_PIECE_TYPE;
+}
 
 PieceTypeToken getPieceTypeAtSquare(const Board* board, Square sq, bool* pieceIsWhite) {
     Bitboard s = 1ULL << sq;
-    if (board->whitePawns & s) { *pieceIsWhite = true; return PAWN_T; }
-    if (board->whiteKnights & s) { *pieceIsWhite = true; return KNIGHT_T; }
-    if (board->whiteBishops & s) { *pieceIsWhite = true; return BISHOP_T; }
-    if (board->whiteRooks & s) { *pieceIsWhite = true; return ROOK_T; }
-    if (board->whiteQueens & s) { *pieceIsWhite = true; return QUEEN_T; }
-    if (board->whiteKings & s) { *pieceIsWhite = true; return KING_T; }
-
-    if (board->blackPawns & s) { *pieceIsWhite = false; return PAWN_T; }
+    // Check each bitboard directly - avoid double lookup
+    if (board->whitePawns & s)   { *pieceIsWhite = true;  return PAWN_T; }
+    if (board->blackPawns & s)   { *pieceIsWhite = false; return PAWN_T; }
+    if (board->whiteKnights & s) { *pieceIsWhite = true;  return KNIGHT_T; }
     if (board->blackKnights & s) { *pieceIsWhite = false; return KNIGHT_T; }
+    if (board->whiteBishops & s) { *pieceIsWhite = true;  return BISHOP_T; }
     if (board->blackBishops & s) { *pieceIsWhite = false; return BISHOP_T; }
-    if (board->blackRooks & s) { *pieceIsWhite = false; return ROOK_T; }
-    if (board->blackQueens & s) { *pieceIsWhite = false; return QUEEN_T; }
-    if (board->blackKings & s) { *pieceIsWhite = false; return KING_T; }
+    if (board->whiteRooks & s)   { *pieceIsWhite = true;  return ROOK_T; }
+    if (board->blackRooks & s)   { *pieceIsWhite = false; return ROOK_T; }
+    if (board->whiteQueens & s)  { *pieceIsWhite = true;  return QUEEN_T; }
+    if (board->blackQueens & s)  { *pieceIsWhite = false; return QUEEN_T; }
+    if (board->whiteKings & s)   { *pieceIsWhite = true;  return KING_T; }
+    if (board->blackKings & s)   { *pieceIsWhite = false; return KING_T; }
     
-    *pieceIsWhite = false; // Should not happen on a valid board if sq has a piece
+    *pieceIsWhite = false; 
     return NO_PIECE_TYPE;
 }
 
@@ -78,14 +97,15 @@ void removePieceFromBoard(Board* board, Square sq, PieceTypeToken pieceType, boo
     }
 }
 
+// Inline helper for promotion type lookup
+static inline PieceTypeToken getPieceTypeFromPromotionFlag_inline(int promoFlag) {
+    // Use lookup table for speed
+    static const PieceTypeToken promo_table[5] = {NO_PIECE_TYPE, KNIGHT_T, BISHOP_T, ROOK_T, QUEEN_T};
+    return (promoFlag >= 0 && promoFlag <= 4) ? promo_table[promoFlag] : NO_PIECE_TYPE;
+}
+
 PieceTypeToken getPieceTypeFromPromotionFlag(int promoFlag) {
-    switch (promoFlag) {
-        case PROMOTION_N: return KNIGHT_T;
-        case PROMOTION_B: return BISHOP_T;
-        case PROMOTION_R: return ROOK_T;
-        case PROMOTION_Q: return QUEEN_T;
-        default: return NO_PIECE_TYPE; 
-    }
+    return getPieceTypeFromPromotionFlag_inline(promoFlag);
 }
 
 // Gets a pointer to the bitboard of the piece at a given square.
@@ -119,137 +139,280 @@ void clearCaptureSquareOnAllBitboards(Board* board, Square sq) {
     board->blackRooks &= s_clear; board->blackQueens &= s_clear; board->blackKings &= s_clear;
 }
 
+// --- Get bitboard pointer by piece type (avoid repeated switch) ---
+static inline Bitboard* getBitboardForPiece(Board* board, PieceTypeToken pieceType, bool isWhite) {
+    if (isWhite) {
+        switch (pieceType) {
+            case PAWN_T: return &board->whitePawns;
+            case KNIGHT_T: return &board->whiteKnights;
+            case BISHOP_T: return &board->whiteBishops;
+            case ROOK_T: return &board->whiteRooks;
+            case QUEEN_T: return &board->whiteQueens;
+            case KING_T: return &board->whiteKings;
+            default: return NULL;
+        }
+    } else {
+        switch (pieceType) {
+            case PAWN_T: return &board->blackPawns;
+            case KNIGHT_T: return &board->blackKnights;
+            case BISHOP_T: return &board->blackBishops;
+            case ROOK_T: return &board->blackRooks;
+            case QUEEN_T: return &board->blackQueens;
+            case KING_T: return &board->blackKings;
+            default: return NULL;
+        }
+    }
+}
 
-// --- Public Function Implementations ---
+// --- Optimized applyMove ---
 
 void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo) {
-    // 0. Store current state for undo
-    undoInfo->previousBoard = *board; // Store the entire board state
-
     Square from = MOVE_FROM(move);
     Square to = MOVE_TO(move);
-    bool movingPlayerIsWhite = board->whiteToMove;
+    bool isWhite = board->whiteToMove;
+    int colorIdx = isWhite ? 0 : 1;
+    int oppColorIdx = 1 - colorIdx;
     
-    bool pieceIsWhiteTemp; 
-    PieceTypeToken movingPieceType = getPieceTypeAtSquare(board, from, &pieceIsWhiteTemp);
+    // Pre-calculate masks
+    Bitboard from_mask = 1ULL << from;
+    Bitboard to_mask = 1ULL << to;
+    Bitboard from_clear = ~from_mask;
+    Bitboard to_clear = ~to_mask;
+    
+    // Accumulate zobrist changes locally - single write at end
+    uint64_t zobrist = board->zobristKey;
+    
+    // Find moving piece type by checking bitboards directly
+    PieceTypeToken movingPieceType;
+    Bitboard* movingBB;
+    
+    if (isWhite) {
+        if (board->whitePawns & from_mask) { movingPieceType = PAWN_T; movingBB = &board->whitePawns; }
+        else if (board->whiteKnights & from_mask) { movingPieceType = KNIGHT_T; movingBB = &board->whiteKnights; }
+        else if (board->whiteBishops & from_mask) { movingPieceType = BISHOP_T; movingBB = &board->whiteBishops; }
+        else if (board->whiteRooks & from_mask) { movingPieceType = ROOK_T; movingBB = &board->whiteRooks; }
+        else if (board->whiteQueens & from_mask) { movingPieceType = QUEEN_T; movingBB = &board->whiteQueens; }
+        else { movingPieceType = KING_T; movingBB = &board->whiteKings; }
+    } else {
+        if (board->blackPawns & from_mask) { movingPieceType = PAWN_T; movingBB = &board->blackPawns; }
+        else if (board->blackKnights & from_mask) { movingPieceType = KNIGHT_T; movingBB = &board->blackKnights; }
+        else if (board->blackBishops & from_mask) { movingPieceType = BISHOP_T; movingBB = &board->blackBishops; }
+        else if (board->blackRooks & from_mask) { movingPieceType = ROOK_T; movingBB = &board->blackRooks; }
+        else if (board->blackQueens & from_mask) { movingPieceType = QUEEN_T; movingBB = &board->blackQueens; }
+        else { movingPieceType = KING_T; movingBB = &board->blackKings; }
+    }
 
-    bool isPawnMove = (movingPieceType == PAWN_T);
-    bool isCapture = MOVE_IS_CAPTURE(move);
-    PieceTypeToken capturedPieceType = NO_PIECE_TYPE; // Default
+    // Store undo info
+    undoInfo->oldEnPassantSquare = board->enPassantSquare;
+    undoInfo->oldCastlingRights = board->castlingRights;
+    undoInfo->oldHalfMoveClock = board->halfMoveClock;
+    undoInfo->oldZobristKey = board->zobristKey;
+    undoInfo->capturedPieceType = NO_PIECE_TYPE;
 
-    // 1. Handle captures & determine captured piece type
-    if (isCapture) {
-        Square capturedPawnSq = SQ_NONE; // Only relevant for en passant
+    // Update zobrist: remove piece from source
+    zobrist ^= ZOBRIST_PIECE_KEY(movingPieceType, colorIdx, from);
+
+    // Handle captures
+    if (MOVE_IS_CAPTURE(move)) {
         if (MOVE_IS_EN_PASSANT(move)) {
-            capturedPieceType = PAWN_T; // En passant always captures a pawn
-            capturedPawnSq = movingPlayerIsWhite ? (to - 8) : (to + 8);
-            removePieceFromBoard(board, capturedPawnSq, PAWN_T, !movingPlayerIsWhite);
+            Square capturedSq = isWhite ? (to - 8) : (to + 8);
+            Bitboard cap_clear = ~(1ULL << capturedSq);
+            undoInfo->capturedPieceType = PAWN_T;
+            
+            if (isWhite) {
+                board->blackPawns &= cap_clear;
+            } else {
+                board->whitePawns &= cap_clear;
+            }
+            zobrist ^= ZOBRIST_PIECE_KEY(PAWN_T, oppColorIdx, capturedSq);
         } else {
-            bool capturedPieceIsWhite; // Temporary holder for color
-            capturedPieceType = getPieceTypeAtSquare(board, to, &capturedPieceIsWhite);
-            // No need to remove the captured piece explicitly here if we are clearing the 'to' square anyway
-            // before adding the moving piece. However, clearCaptureSquareOnAllBitboards is more robust.
-            clearCaptureSquareOnAllBitboards(board, to); 
+            // Find captured piece type
+            PieceTypeToken capturedType;
+            if (!isWhite) {
+                // Capturing white piece
+                if (board->whitePawns & to_mask) { capturedType = PAWN_T; board->whitePawns &= to_clear; }
+                else if (board->whiteKnights & to_mask) { capturedType = KNIGHT_T; board->whiteKnights &= to_clear; }
+                else if (board->whiteBishops & to_mask) { capturedType = BISHOP_T; board->whiteBishops &= to_clear; }
+                else if (board->whiteRooks & to_mask) { capturedType = ROOK_T; board->whiteRooks &= to_clear; }
+                else { capturedType = QUEEN_T; board->whiteQueens &= to_clear; }
+            } else {
+                // Capturing black piece
+                if (board->blackPawns & to_mask) { capturedType = PAWN_T; board->blackPawns &= to_clear; }
+                else if (board->blackKnights & to_mask) { capturedType = KNIGHT_T; board->blackKnights &= to_clear; }
+                else if (board->blackBishops & to_mask) { capturedType = BISHOP_T; board->blackBishops &= to_clear; }
+                else if (board->blackRooks & to_mask) { capturedType = ROOK_T; board->blackRooks &= to_clear; }
+                else { capturedType = QUEEN_T; board->blackQueens &= to_clear; }
+            }
+            undoInfo->capturedPieceType = capturedType;
+            zobrist ^= ZOBRIST_PIECE_KEY(capturedType, oppColorIdx, to);
         }
     }
 
-    // 2. Move the piece: Remove from 'from', add to 'to'
-    removePieceFromBoard(board, from, movingPieceType, movingPlayerIsWhite);
-
-    if (MOVE_IS_PROMOTION(move)) {
-        PieceTypeToken promotionType = getPieceTypeFromPromotionFlag(MOVE_PROMOTION(move));
-        addPieceToBoard(board, to, promotionType, movingPlayerIsWhite);
+    // Move piece: remove from source
+    *movingBB &= from_clear;
+    
+    // Handle promotion or regular move
+    int promoFlag = MOVE_PROMOTION(move);
+    if (promoFlag) {
+        PieceTypeToken promoType = getPieceTypeFromPromotionFlag_inline(promoFlag);
+        Bitboard* promoBB = getBitboardForPiece(board, promoType, isWhite);
+        *promoBB |= to_mask;
+        zobrist ^= ZOBRIST_PIECE_KEY(promoType, colorIdx, to);
     } else {
-        addPieceToBoard(board, to, movingPieceType, movingPlayerIsWhite);
+        *movingBB |= to_mask;
+        zobrist ^= ZOBRIST_PIECE_KEY(movingPieceType, colorIdx, to);
     }
 
-    // 3. Update castling rights
-    uint8_t currentCastlingRights = undoInfo->previousBoard.castlingRights; // Use rights from before this move
-
+    // Update castling rights
+    uint8_t oldCastling = board->castlingRights;
+    
+    // King move removes all castling rights for that side
     if (movingPieceType == KING_T) {
-        if (movingPlayerIsWhite) board->castlingRights &= ~(WHITE_KINGSIDE_CASTLE | WHITE_QUEENSIDE_CASTLE);
-        else board->castlingRights &= ~(BLACK_KINGSIDE_CASTLE | BLACK_QUEENSIDE_CASTLE);
-    }
-    // If a rook moves from its starting square
-    if (movingPieceType == ROOK_T) {
-        if (movingPlayerIsWhite) {
-            if (from == SQ_A1) board->castlingRights &= ~WHITE_QUEENSIDE_CASTLE;
-            else if (from == SQ_H1) board->castlingRights &= ~WHITE_KINGSIDE_CASTLE;
-        } else {
-            if (from == SQ_A8) board->castlingRights &= ~BLACK_QUEENSIDE_CASTLE;
-            else if (from == SQ_H8) board->castlingRights &= ~BLACK_KINGSIDE_CASTLE;
-        }
-    }
-    // If a rook is captured on its starting square (check original rights)
-    if (isCapture && capturedPieceType == ROOK_T) {
-        if (!movingPlayerIsWhite) { // Opponent's (White) rook was captured
-            if (to == SQ_A1 && (currentCastlingRights & WHITE_QUEENSIDE_CASTLE)) board->castlingRights &= ~WHITE_QUEENSIDE_CASTLE;
-            else if (to == SQ_H1 && (currentCastlingRights & WHITE_KINGSIDE_CASTLE)) board->castlingRights &= ~WHITE_KINGSIDE_CASTLE;
-        } else { // Opponent's (Black) rook was captured
-            if (to == SQ_A8 && (currentCastlingRights & BLACK_QUEENSIDE_CASTLE)) board->castlingRights &= ~BLACK_QUEENSIDE_CASTLE;
-            else if (to == SQ_H8 && (currentCastlingRights & BLACK_KINGSIDE_CASTLE)) board->castlingRights &= ~BLACK_KINGSIDE_CASTLE;
-        }
+        board->castlingRights &= isWhite ? ~(WHITE_KINGSIDE_CASTLE | WHITE_QUEENSIDE_CASTLE) 
+                                          : ~(BLACK_KINGSIDE_CASTLE | BLACK_QUEENSIDE_CASTLE);
     }
     
-    // 4. Handle castling: move the rook (king already moved by general logic)
+    // Rook move or capture affects specific castling rights
+    if (movingPieceType == ROOK_T) {
+        if (from == SQ_A1) board->castlingRights &= ~WHITE_QUEENSIDE_CASTLE;
+        else if (from == SQ_H1) board->castlingRights &= ~WHITE_KINGSIDE_CASTLE;
+        else if (from == SQ_A8) board->castlingRights &= ~BLACK_QUEENSIDE_CASTLE;
+        else if (from == SQ_H8) board->castlingRights &= ~BLACK_KINGSIDE_CASTLE;
+    }
+    
+    if (MOVE_IS_CAPTURE(move) && undoInfo->capturedPieceType == ROOK_T) {
+        if (to == SQ_A1) board->castlingRights &= ~WHITE_QUEENSIDE_CASTLE;
+        else if (to == SQ_H1) board->castlingRights &= ~WHITE_KINGSIDE_CASTLE;
+        else if (to == SQ_A8) board->castlingRights &= ~BLACK_QUEENSIDE_CASTLE;
+        else if (to == SQ_H8) board->castlingRights &= ~BLACK_KINGSIDE_CASTLE;
+    }
+    
+    // Only update zobrist for castling if rights changed
+    if (oldCastling != board->castlingRights) {
+        zobrist ^= zobrist_castling_keys[oldCastling] ^ zobrist_castling_keys[board->castlingRights];
+    }
+
+    // Handle castling rook movement
     if (MOVE_IS_CASTLING(move)) {
-        if (movingPlayerIsWhite) {
-            if (to == SQ_G1) { // Kingside
-                removePieceFromBoard(board, SQ_H1, ROOK_T, true);
-                addPieceToBoard(board, SQ_F1, ROOK_T, true);
-            } else { // Queenside (to == SQ_C1)
-                removePieceFromBoard(board, SQ_A1, ROOK_T, true);
-                addPieceToBoard(board, SQ_D1, ROOK_T, true);
+        if (isWhite) {
+            if (to == SQ_G1) {
+                board->whiteRooks = (board->whiteRooks & ~(1ULL << SQ_H1)) | (1ULL << SQ_F1);
+                zobrist ^= ZOBRIST_PIECE_KEY(ROOK_T, 0, SQ_H1) ^ ZOBRIST_PIECE_KEY(ROOK_T, 0, SQ_F1);
+            } else {
+                board->whiteRooks = (board->whiteRooks & ~(1ULL << SQ_A1)) | (1ULL << SQ_D1);
+                zobrist ^= ZOBRIST_PIECE_KEY(ROOK_T, 0, SQ_A1) ^ ZOBRIST_PIECE_KEY(ROOK_T, 0, SQ_D1);
             }
-        } else { // Black castling
-            if (to == SQ_G8) { // Kingside
-                removePieceFromBoard(board, SQ_H8, ROOK_T, false);
-                addPieceToBoard(board, SQ_F8, ROOK_T, false);
-            } else { // Queenside (to == SQ_C8)
-                removePieceFromBoard(board, SQ_A8, ROOK_T, false);
-                addPieceToBoard(board, SQ_D8, ROOK_T, false);
+        } else {
+            if (to == SQ_G8) {
+                board->blackRooks = (board->blackRooks & ~(1ULL << SQ_H8)) | (1ULL << SQ_F8);
+                zobrist ^= ZOBRIST_PIECE_KEY(ROOK_T, 1, SQ_H8) ^ ZOBRIST_PIECE_KEY(ROOK_T, 1, SQ_F8);
+            } else {
+                board->blackRooks = (board->blackRooks & ~(1ULL << SQ_A8)) | (1ULL << SQ_D8);
+                zobrist ^= ZOBRIST_PIECE_KEY(ROOK_T, 1, SQ_A8) ^ ZOBRIST_PIECE_KEY(ROOK_T, 1, SQ_D8);
             }
         }
     }
 
-    // 5. Update en passant square
+    // En passant square update - simplified
+    int oldEpSq = undoInfo->oldEnPassantSquare;
+    if (oldEpSq != SQ_NONE) {
+        zobrist ^= zobrist_enpassant_keys[oldEpSq];
+    }
+
     if (MOVE_IS_DOUBLE_PAWN_PUSH(move)) {
-        board->enPassantSquare = movingPlayerIsWhite ? (from + 8) : (from - 8);
+        board->enPassantSquare = isWhite ? (from + 8) : (from - 8);
+        zobrist ^= zobrist_enpassant_keys[board->enPassantSquare];
     } else {
-        board->enPassantSquare = SQ_NONE; 
+        board->enPassantSquare = SQ_NONE;
     }
 
-    // 6. Update halfmove clock
-    if (isPawnMove || isCapture) {
-        board->halfMoveClock = 0;
-    } else {
-        board->halfMoveClock++;
-    }
+    // Halfmove clock
+    board->halfMoveClock = (movingPieceType == PAWN_T || MOVE_IS_CAPTURE(move)) ? 0 : board->halfMoveClock + 1;
 
-    // 7. Update fullmove number
-    if (!movingPlayerIsWhite) { // If black just moved
-        board->fullMoveNumber++;
-    }
+    // Fullmove number
+    board->fullMoveNumber += !isWhite;
 
-    // 8. Switch side to move
-    board->whiteToMove = !movingPlayerIsWhite;
+    // Switch side
+    board->whiteToMove = !isWhite;
+    zobrist ^= zobrist_side_to_move_key;
 
+    // Single write of zobrist key
+    board->zobristKey = zobrist;
 
-
-    // 9. Update history
-    if (board->historyIndex < 1000) { // Ensure we don't overflow history
-        board->history[board->historyIndex++] = board->zobristKey;
-    } else {
-        // exit
-        fprintf(stderr, "History overflow: too many moves made.\n");
-        exit(1);
-    }
-
-        // 10. Update Zobrist key
-    board->zobristKey = calculate_zobrist_key(board);
-
+    // History
+    board->history[board->historyIndex++] = zobrist;
 }
 
 void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo) {
-    *board = undoInfo->previousBoard; // Restore the entire board state
+    Square from = MOVE_FROM(move);
+    Square to = MOVE_TO(move);
+    
+    // Revert side to move first
+    board->whiteToMove = !board->whiteToMove;
+    bool movingPlayerIsWhite = board->whiteToMove;
+
+    // Revert fullmove number
+    if (!movingPlayerIsWhite) {
+        board->fullMoveNumber--;
+    }
+
+    // Revert halfmove clock
+    board->halfMoveClock = undoInfo->oldHalfMoveClock;
+
+    // Revert en passant square
+    board->enPassantSquare = undoInfo->oldEnPassantSquare;
+
+    // Revert castling rights
+    board->castlingRights = undoInfo->oldCastlingRights;
+
+    // Revert history
+    board->historyIndex--;
+
+    // Revert pieces
+    PieceTypeToken movedPieceType;
+    if (MOVE_IS_PROMOTION(move)) {
+        PieceTypeToken promotedPieceType = getPieceTypeFromPromotionFlag(MOVE_PROMOTION(move));
+        removePieceFromBoard(board, to, promotedPieceType, movingPlayerIsWhite);
+        addPieceToBoard(board, from, PAWN_T, movingPlayerIsWhite);
+        movedPieceType = PAWN_T;
+    } else {
+        bool dummy;
+        movedPieceType = getPieceTypeAtSquare(board, to, &dummy);
+        removePieceFromBoard(board, to, movedPieceType, movingPlayerIsWhite);
+        addPieceToBoard(board, from, movedPieceType, movingPlayerIsWhite);
+    }
+
+    // 2. Restore captured piece
+    if (MOVE_IS_CAPTURE(move)) {
+        if (MOVE_IS_EN_PASSANT(move)) {
+            Square capturedSq = movingPlayerIsWhite ? (to - 8) : (to + 8);
+            addPieceToBoard(board, capturedSq, PAWN_T, !movingPlayerIsWhite);
+        } else {
+            addPieceToBoard(board, to, undoInfo->capturedPieceType, !movingPlayerIsWhite);
+        }
+    }
+
+    // 3. Revert castling rook move
+    if (MOVE_IS_CASTLING(move)) {
+        if (movingPlayerIsWhite) {
+            if (to == SQ_G1) { // Kingside
+                removePieceFromBoard(board, SQ_F1, ROOK_T, true);
+                addPieceToBoard(board, SQ_H1, ROOK_T, true);
+            } else { // Queenside
+                removePieceFromBoard(board, SQ_D1, ROOK_T, true);
+                addPieceToBoard(board, SQ_A1, ROOK_T, true);
+            }
+        } else {
+            if (to == SQ_G8) { // Kingside
+                removePieceFromBoard(board, SQ_F8, ROOK_T, false);
+                addPieceToBoard(board, SQ_H8, ROOK_T, false);
+            } else { // Queenside
+                removePieceFromBoard(board, SQ_D8, ROOK_T, false);
+                addPieceToBoard(board, SQ_A8, ROOK_T, false);
+            }
+        }
+    }
+
+    // Restore Zobrist key
+    board->zobristKey = undoInfo->oldZobristKey;
 }

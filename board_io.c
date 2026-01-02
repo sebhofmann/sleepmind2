@@ -108,7 +108,7 @@ Board parseFEN(const char* fen) {
             board.enPassantSquare = epRank * 8 + epFile;
             fenIndex += 2;
         } else {
-            board.enPassantSquare = -1; // No en passant
+            board.enPassantSquare = SQ_NONE; // No en passant
             fenIndex++; // Skip '-'
         }
     } else {
@@ -258,7 +258,7 @@ const char* outputFEN(const Board* board) {
 
     // 4. En passant target square
     fen[index++] = ' ';
-    if (board->enPassantSquare != -1) {
+    if (board->enPassantSquare != SQ_NONE) {
         fen[index++] = 'a' + (board->enPassantSquare % 8);
         fen[index++] = '1' + (board->enPassantSquare / 8);
     } else {
@@ -333,7 +333,7 @@ void printBoard(const Board* board) {
     // Print game state information
     printf("To move: %s\n", board->whiteToMove ? "White" : "Black");
     
-    if (board->enPassantSquare != -1) {
+    if (board->enPassantSquare != SQ_NONE) {
         char epFile = 'a' + (board->enPassantSquare % 8);
         int epRank = (board->enPassantSquare / 8) + 1;
         printf("En passant: %c%d\n", epFile, epRank);

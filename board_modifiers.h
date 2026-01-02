@@ -7,7 +7,11 @@
 
 // Structure to hold information needed to undo a move
 typedef struct {
-    Board previousBoard; // Stores the entire board state before the move
+    int capturedPieceType; // PieceTypeToken of captured piece (or NO_PIECE_TYPE)
+    int oldEnPassantSquare;
+    uint8_t oldCastlingRights;
+    int oldHalfMoveClock;
+    uint64_t oldZobristKey;
 } MoveUndoInfo;
 
 // --- Function Prototypes ---

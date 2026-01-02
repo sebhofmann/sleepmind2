@@ -520,7 +520,7 @@ static void generatePawnMoves(const Board* board, MoveList* list, bool isWhite) 
         }
         
         // 4. En Passant
-        if (board->enPassantSquare != -1) {
+        if (board->enPassantSquare != SQ_NONE) {
             if (GET_BIT(pawnAttacks, board->enPassantSquare)) {
                  addMove(list, CREATE_MOVE(fromSq, board->enPassantSquare, 0,1,0,1,0));
             }
@@ -571,67 +571,35 @@ static void generateSlidingPieceMoves(const Board* board, MoveList* list, bool i
 // Helper function to check if squares are attacked
 // Parameter 'byWhite' means "is the attacker white?"
 static bool isSquareAttacked(const Board* board, Square sq, bool byWhite) {
-    Bitboard targetSqBit = 1ULL << sq;
+    // Bitboard targetSqBit = 1ULL << sq; // Not needed for sliding optimization
 
     Bitboard occupiedWhite = getOccupiedByColor(board, true);
     Bitboard occupiedBlack = getOccupiedByColor(board, false);
     Bitboard allPieces = occupiedWhite | occupiedBlack;
 
     if (byWhite) { // Check attacks by white pieces
-        // White pawns: PAWN_ATTACKS[1][sq] gives squares from which a black pawn would attack sq.
-        // So, if a white pawn is on one of those squares, it attacks sq.
+        // White pawns
         if (PAWN_ATTACKS[1][sq] & board->whitePawns) return true;
+        // White Knights
         if (KNIGHT_ATTACKS[sq] & board->whiteKnights) return true;
+        // White King
         if (KING_ATTACKS[sq] & board->whiteKings) return true;
 
-        // Sliding pieces: Iterate over opponent's pieces and see if they attack 'sq'
-        Bitboard attackers;
-        // White Rooks
-        attackers = board->whiteRooks;
-        while(attackers) {
-            Square attackerSq = pop_lsb(&attackers);
-            if (getRookAttacks(attackerSq, allPieces) & targetSqBit) return true;
-        }
-        // White Bishops
-        attackers = board->whiteBishops;
-        while(attackers) {
-            Square attackerSq = pop_lsb(&attackers);
-            if (getBishopAttacks(attackerSq, allPieces) & targetSqBit) return true;
-        }
-        // White Queens
-        attackers = board->whiteQueens;
-        while(attackers) {
-            Square attackerSq = pop_lsb(&attackers);
-            if (getQueenAttacks(attackerSq, allPieces) & targetSqBit) return true;
-        }
+        // White Sliding pieces (Optimized)
+        if (getRookAttacks(sq, allPieces) & (board->whiteRooks | board->whiteQueens)) return true;
+        if (getBishopAttacks(sq, allPieces) & (board->whiteBishops | board->whiteQueens)) return true;
 
     } else { // Check attacks by black pieces
-        // Black pawns: PAWN_ATTACKS[0][sq] gives squares from which a white pawn would attack sq.
-        // So, if a black pawn is on one of those squares, it attacks sq.
+        // Black pawns
         if (PAWN_ATTACKS[0][sq] & board->blackPawns) return true;
+        // Black Knights
         if (KNIGHT_ATTACKS[sq] & board->blackKnights) return true;
+        // Black King
         if (KING_ATTACKS[sq] & board->blackKings) return true;
 
-        // Sliding pieces: Iterate over opponent's pieces and see if they attack 'sq'
-        Bitboard attackers;
-        // Black Rooks
-        attackers = board->blackRooks;
-        while(attackers) {
-            Square attackerSq = pop_lsb(&attackers);
-            if (getRookAttacks(attackerSq, allPieces) & targetSqBit) return true;
-        }
-        // Black Bishops
-        attackers = board->blackBishops;
-        while(attackers) {
-            Square attackerSq = pop_lsb(&attackers);
-            if (getBishopAttacks(attackerSq, allPieces) & targetSqBit) return true;
-        }
-        // Black Queens
-        attackers = board->blackQueens;
-        while(attackers) {
-            Square attackerSq = pop_lsb(&attackers);
-            if (getQueenAttacks(attackerSq, allPieces) & targetSqBit) return true;
-        }
+        // Black Sliding pieces (Optimized)
+        if (getRookAttacks(sq, allPieces) & (board->blackRooks | board->blackQueens)) return true;
+        if (getBishopAttacks(sq, allPieces) & (board->blackBishops | board->blackQueens)) return true;
     }
 
     return false; // Square is not attacked by the specified side
@@ -717,7 +685,7 @@ void generateCaptureMoves(const Board* board, MoveList* list) {
                 addMove(list, CREATE_MOVE(fromSq, toSq_capture, 0, 1, 0, 0, 0));
             }
         }
-        if (board->enPassantSquare != -1) {
+        if (board->enPassantSquare != SQ_NONE) {
             if (GET_BIT(pawnAttacks, board->enPassantSquare)) {
                  addMove(list, CREATE_MOVE(fromSq, board->enPassantSquare, 0, 1, 0, 1, 0));
             }
@@ -831,7 +799,7 @@ void generateCaptureAndPromotionMoves(const Board* board, MoveList* list) {
         }
         
         // En Passant (is a capture, cannot be a promotion)
-        if (board->enPassantSquare != -1) {
+        if (board->enPassantSquare != SQ_NONE) {
             if (GET_BIT(pawnAttacks, board->enPassantSquare)) {
                  addMove(list, CREATE_MOVE(fromSq, board->enPassantSquare, 0,1,0,1,0));
             }
@@ -921,27 +889,22 @@ void generateMoves(const Board* board, MoveList* list) {
 
     list->count = 0; // Reset the original list to store only legal moves
 
+    // Cast away const to allow applyMove/undoMove on the board itself
+    // This avoids copying the entire Board struct (8KB) for every pseudo-legal move.
+    Board* mutableBoard = (Board*)board;
+
     for (int i = 0; i < pseudoLegalMoves.count; i++) {
         Move currentMove = pseudoLegalMoves.moves[i];
-        Board tempBoard = *board; // Create a copy of the board to simulate the move
-
+        
         MoveUndoInfo undo_info;
-
-        applyMove(&tempBoard, currentMove, &undo_info); // Apply the move to the temporary board
+        applyMove(mutableBoard, currentMove, &undo_info); 
             
-        if (!isKingAttacked(&tempBoard, board->whiteToMove)) { // CORRECTED: check attacks by the OPPONENT
-            addMove(list, currentMove); // If king is not in check, the move is legal
-        } /*else {
-            char moveStr[16];
-            moveToString(currentMove, moveStr);
-            char kingSqStr[3];
-            squareToString(kingSq, kingSqStr);
-            const char* fen_after_move = outputFEN(&tempBoard); // Requires board_io.h
-            printf("DEBUG: Move %s (King on %s) puts king in check. Skipping. FEN after move: %s\n", moveStr, kingSqStr, fen_after_move);
-            fflush(stdout);
-        }*/
-        undoMove(board, currentMove, &undo_info);
-
-
+        // Check if the king of the side that just moved is in check.
+        // applyMove flips the side to move, so we check !mutableBoard->whiteToMove.
+        if (!isKingAttacked(mutableBoard, !mutableBoard->whiteToMove)) { 
+            addMove(list, currentMove); 
+        }
+        
+        undoMove(mutableBoard, currentMove, &undo_info);
     }
 }

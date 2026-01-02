@@ -351,7 +351,7 @@ int evaluate(const Board* board) {
     score += evaluate_piece_square_tables_c(board, game_phase);
     score += evaluate_pawn_structure_c(board, game_phase);
     score += evaluate_center_control_c(board, game_phase);
-    score += evaluate_space_c(board, game_phase);
+    //score += evaluate_space_c(board, game_phase);
     
     return score;
 }

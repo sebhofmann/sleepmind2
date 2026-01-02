@@ -9,7 +9,8 @@
 
 typedef struct {
     clock_t startTime;
-    long timeLimit; // in milliseconds
+    long softTimeLimit;  // Zeit, nach der keine neue Tiefe begonnen wird
+    long hardTimeLimit;  // Absolutes Zeitlimit (Abbruch der Suche)
     bool stopSearch;
     int nodesSearched;
     Move bestMoveThisIteration;
@@ -17,6 +18,7 @@ typedef struct {
     // TranspositionTable* tt; // Will be added later
     Move pv_table[MAX_PLY][MAX_PLY]; // For storing the Principal Variation
     int pv_length[MAX_PLY];      // Length of PV at each ply
+    long lastIterationTime;  // Zeit der letzten Iteration für Vorhersage
 } SearchInfo;
 
 Move iterative_deepening_search(Board* board, SearchInfo* info);
