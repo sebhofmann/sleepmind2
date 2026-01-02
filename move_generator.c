@@ -10,6 +10,7 @@
 #include <time.h>   // For time() to seed rand
 #include <stdbool.h>// For bool type
 
+
 // --- Magic Bitboard Data ---
 static Bitboard ROOK_MAGICS[64];
 static Bitboard BISHOP_MAGICS[64];
@@ -153,12 +154,11 @@ static Bitboard generate_bishop_attacks_otf_user(Square sq, Bitboard blockers) {
 // Random bitboard generation (adapted from user's reference code)
 static Bitboard random_u64() {
   Bitboard u1, u2, u3, u4;
-  // Assuming random() is available (common on POSIX systems like macOS)
-  // and returns long, so casting to Bitboard (uint64_t) is fine.
-  u1 = (Bitboard)(random()) & 0xFFFFULL;
-  u2 = (Bitboard)(random()) & 0xFFFFULL;
-  u3 = (Bitboard)(random()) & 0xFFFFULL;
-  u4 = (Bitboard)(random()) & 0xFFFFULL;
+    // Use rand() from stdlib; mask pieces to build a 64-bit value
+    u1 = (Bitboard)(rand()) & 0xFFFFULL;
+    u2 = (Bitboard)(rand()) & 0xFFFFULL;
+    u3 = (Bitboard)(rand()) & 0xFFFFULL;
+    u4 = (Bitboard)(rand()) & 0xFFFFULL;
   return u1 | (u2 << 16) | (u3 << 32) | (u4 << 48);
 }
 
@@ -296,7 +296,7 @@ static bool find_magic_for_square_user(Square sq, bool is_rook, int max_attempts
 }
 
 bool findAndInitMagicNumbers() {
-    srandom((unsigned int)time(NULL)); // Use srandom for random()
+    srand((unsigned int)time(NULL)); // Seed rand()
     printf("Attempting to find magic numbers (user logic, corrected random)... This may take a while.\n");
     int magicAttemptsPerSquare = 10000000; // Kept high, but should succeed faster if logic is good.
 
