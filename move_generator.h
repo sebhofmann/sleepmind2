@@ -25,8 +25,6 @@ Bitboard getRookAttacks(Square square, Bitboard occupancy);
 Bitboard getBishopAttacks(Square square, Bitboard occupancy);
 Bitboard getQueenAttacks(Square square, Bitboard occupancy); // Combines rook and bishop
 bool isKingAttacked(const Board* board, bool isWhite);
-static inline int pop_lsb(Bitboard *bb);
-static inline int get_lsb_index(Bitboard bb);
 
 
 #endif // MOVE_GENERATOR_H

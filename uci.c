@@ -185,7 +185,7 @@ void uci_loop() {
             char* token;
             char* rest = line + 9; // Skip "position "
 
-            token = __strtok_r(rest, " ", &rest);
+            token = strtok_r(rest, " ", &rest);
             if (strcmp(token, "startpos") == 0) {
                 current_board = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
                 printf("info string DEBUG: UCI: Parsed startpos. WhiteToMove: %s. e2_pawn: %llu, d2_pawn: %llu, e7_pawn: %llu\n", // MODIFIED %d to %llu
@@ -194,11 +194,11 @@ void uci_loop() {
                        GET_BIT(current_board.whitePawns, SQ_D2),
                        GET_BIT(current_board.blackPawns, SQ_E7));
                 fflush(stdout);
-                token = __strtok_r(NULL, " ", &rest); // Check for "moves"
+                token = strtok_r(NULL, " ", &rest); // Check for "moves"
             } else if (strcmp(token, "fen") == 0) {
                 char fen_str[256] = "";
                 int fen_parts = 0;
-                while ((token = __strtok_r(NULL, " ", &rest)) != NULL && fen_parts < 6) {
+                while ((token = strtok_r(NULL, " ", &rest)) != NULL && fen_parts < 6) {
                     strcat(fen_str, token);
                     strcat(fen_str, " ");
                     fen_parts++;
@@ -213,7 +213,7 @@ void uci_loop() {
                        fen_str, current_board.whiteToMove ? "true" : "false");
                 fflush(stdout);
                 if (token && strcmp(token, "moves") != 0) { // if "moves" was not the last part of fen
-                     token = __strtok_r(NULL, " ", &rest); // Check for "moves"
+                     token = strtok_r(NULL, " ", &rest); // Check for "moves"
                 }
 
             }
@@ -222,7 +222,7 @@ void uci_loop() {
                 printf("info string DEBUG: UCI: Entering moves parsing loop.\n"); fflush(stdout);
                 int move_idx = 0;
                 char* current_move_token; 
-                while ((current_move_token = __strtok_r(NULL, " ", &rest)) != NULL) {
+                while ((current_move_token = strtok_r(NULL, " ", &rest)) != NULL) {
                     Move move = parse_uci_move(&current_board, current_move_token);
                     if (move != 0) {
                         applyMove(&current_board, move, &undo_info);
@@ -261,10 +261,10 @@ void uci_loop() {
             char* token;
             char* rest = line + 6; // skip "perft "
             int divide = 0;
-            token = __strtok_r(rest, " ", &rest);
+            token = strtok_r(rest, " ", &rest);
             if (token && strcmp(token, "divide") == 0) {
                 divide = 1;
-                token = __strtok_r(NULL, " ", &rest);
+                token = strtok_r(NULL, " ", &rest);
             }
             int depth = 0;
             if (token) depth = atoi(token);
@@ -305,14 +305,14 @@ void uci_loop() {
 
             char* token;
             char* rest = line + 3;
-            while((token = __strtok_r(rest, " ", &rest))) {
-                if(strcmp(token, "wtime") == 0 && (token = __strtok_r(NULL, " ", &rest))) wtime = atol(token);
-                else if(strcmp(token, "btime") == 0 && (token = __strtok_r(NULL, " ", &rest))) btime = atol(token);
-                else if(strcmp(token, "winc") == 0 && (token = __strtok_r(NULL, " ", &rest))) winc = atol(token);
-                else if(strcmp(token, "binc") == 0 && (token = __strtok_r(NULL, " ", &rest))) binc = atol(token);
-                else if(strcmp(token, "movestogo") == 0 && (token = __strtok_r(NULL, " ", &rest))) movestogo = atoi(token);
-                else if(strcmp(token, "depth") == 0 && (token = __strtok_r(NULL, " ", &rest))) depth_limit = atoi(token);
-                else if(strcmp(token, "movetime") == 0 && (token = __strtok_r(NULL, " ", &rest))) movetime = atol(token);
+            while((token = strtok_r(rest, " ", &rest))) {
+                if(strcmp(token, "wtime") == 0 && (token = strtok_r(NULL, " ", &rest))) wtime = atol(token);
+                else if(strcmp(token, "btime") == 0 && (token = strtok_r(NULL, " ", &rest))) btime = atol(token);
+                else if(strcmp(token, "winc") == 0 && (token = strtok_r(NULL, " ", &rest))) winc = atol(token);
+                else if(strcmp(token, "binc") == 0 && (token = strtok_r(NULL, " ", &rest))) binc = atol(token);
+                else if(strcmp(token, "movestogo") == 0 && (token = strtok_r(NULL, " ", &rest))) movestogo = atoi(token);
+                else if(strcmp(token, "depth") == 0 && (token = strtok_r(NULL, " ", &rest))) depth_limit = atoi(token);
+                else if(strcmp(token, "movetime") == 0 && (token = strtok_r(NULL, " ", &rest))) movetime = atol(token);
                 else if(strcmp(token, "infinite") == 0) infinite = true;
             }
 
