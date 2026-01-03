@@ -1,10 +1,15 @@
 #include "board.h"          // Expected to define Board struct and U64
 #include "bitboard_utils.h" // For POPCOUNT
 #include "evaluation.h"     // For function signature
+#include "nnue.h"           // For NNUE evaluation
 
 #include <stdbool.h>
 #include <math.h>   // For fabs, fmin, fmax for game phase, abs for integer comparison
 #include <stdlib.h> // For abs with integers if math.h one is for doubles
+#include <stdio.h>  // For printf
+
+// Use NNUE evaluation by default
+static bool use_nnue = true;
 
 // Fallback U64 definition if not in board.h or bitboard_utils.h
 #ifndef U64
@@ -338,8 +343,8 @@ static int evaluate_space_c(const Board* board, double game_phase) {
     return score;
 }
 
-// Main evaluation function
-int evaluate(const Board* board) {
+// Classical/HCE evaluation (fallback when NNUE not available)
+int evaluate_classical(const Board* board) {
     int score = 0;
 
     // Game phase
@@ -354,4 +359,37 @@ int evaluate(const Board* board) {
     //score += evaluate_space_c(board, game_phase);
     
     return score;
+}
+
+// NNUE evaluation with accumulator
+int evaluate_nnue(const Board* board, NNUEAccumulator* acc) {
+    if (!nnue_net.loaded) {
+        return evaluate_classical(board);
+    }
+    return nnue_evaluate(board, acc);
+}
+
+// Initialize evaluation system
+void eval_init(const char* nnue_path) {
+    if (nnue_path != NULL && nnue_load(nnue_path)) {
+        use_nnue = true;
+        printf("info string NNUE evaluation enabled\n");
+    } else {
+        // Initialize with random weights for testing
+        nnue_init_random();
+        use_nnue = true;
+        printf("info string Using random NNUE weights (no net file loaded)\n");
+    }
+}
+
+// Main evaluation function
+int evaluate(const Board* board) {
+    if (use_nnue && nnue_net.loaded) {
+        // Create a temporary accumulator for non-incremental evaluation
+        NNUEAccumulator acc = {0};
+        acc.computed = false;
+        return nnue_evaluate(board, &acc);
+    }
+    
+    return evaluate_classical(board);
 }
