@@ -6,6 +6,7 @@
 #include "board_io.h"
 #include "board.h"
 #include "move.h"
+#include "bitboard_utils.h"
 #include <stdio.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -16,21 +17,25 @@
 // Constants
 // =============================================================================
 
-// Late Move Reduction parameters (conservative for weaker eval)
-static const int LMR_FULL_DEPTH_MOVES = 6;  // Search more moves at full depth
-static const int LMR_REDUCTION_LIMIT = 4;   // Higher minimum depth for LMR
+// Late Move Reduction parameters (tuned for NNUE)
+static const int LMR_FULL_DEPTH_MOVES = 4;  // Start LMR earlier with reliable eval
+static const int LMR_REDUCTION_LIMIT = 3;   // Lower minimum depth for LMR
 
-// Null Move Pruning parameters (conservative)
-static const int NULL_MOVE_REDUCTION = 2;   // Smaller R value for safety
-static const int NULL_MOVE_MIN_DEPTH = 4;   // Higher minimum depth
+// Null Move Pruning parameters
+static const int NULL_MOVE_REDUCTION = 3;   // Standard R=3 with NNUE
+static const int NULL_MOVE_MIN_DEPTH = 3;   // Can be more aggressive
 
-// Futility pruning margins (disabled for now - eval not reliable enough)
-// Set to 0 to effectively disable futility pruning
-static const int FUTILITY_MARGIN = 0;
-static const int EXTENDED_FUTILITY_MARGIN = 0;
+// Futility pruning margins (enabled with NNUE)
+static const int FUTILITY_MARGIN = 150;           // Depth 1
+static const int EXTENDED_FUTILITY_MARGIN = 300;  // Depth 2
+static const int FUTILITY_MARGIN_DEPTH3 = 450;    // Depth 3
 
-// Delta pruning margin for quiescence (larger margin = less aggressive)
-static const int DELTA_MARGIN = 400;
+// Reverse Futility Pruning (Static Null Move Pruning) margins
+static const int RFP_MARGIN = 120;  // Per depth margin
+static const int RFP_MAX_DEPTH = 6; // Maximum depth for RFP
+
+// Delta pruning margin for quiescence
+static const int DELTA_MARGIN = 200;  // Tighter with reliable eval
 
 // Aspiration window
 static const int ASPIRATION_WINDOW = 50;
@@ -60,6 +65,224 @@ static int get_promotion_value(int promo) {
         case PROMOTION_Q: return 900;
         default:          return 0;
     }
+}
+
+// SEE piece values (simple array for fast lookup)
+static const int SEE_VALUES[7] = {
+    0,      // NONE
+    100,    // PAWN
+    320,    // KNIGHT
+    330,    // BISHOP
+    500,    // ROOK
+    900,    // QUEEN
+    20000   // KING
+};
+
+// External attack tables from move_generator.c
+extern Bitboard getRookAttacks(int square, Bitboard occupancy);
+extern Bitboard getBishopAttacks(int square, Bitboard occupancy);
+
+// Precomputed attack tables (declared in move_generator.c, we need access)
+// We'll compute attackers dynamically
+
+// Get all attackers to a square
+static Bitboard get_all_attackers(const Board* board, int square, Bitboard occupied) {
+    Bitboard attackers = 0ULL;
+    
+    // Pawn attacks (reverse lookup - who can attack this square with a pawn?)
+    // White pawns attack diagonally upward, so square must be attacked from below
+    Bitboard white_pawn_attackers = 0ULL;
+    if (square >= 9 && (square % 8) > 0) white_pawn_attackers |= (1ULL << (square - 9));
+    if (square >= 7 && (square % 8) < 7) white_pawn_attackers |= (1ULL << (square - 7));
+    attackers |= white_pawn_attackers & board->whitePawns;
+    
+    // Black pawns attack diagonally downward
+    Bitboard black_pawn_attackers = 0ULL;
+    if (square <= 54 && (square % 8) < 7) black_pawn_attackers |= (1ULL << (square + 9));
+    if (square <= 56 && (square % 8) > 0) black_pawn_attackers |= (1ULL << (square + 7));
+    attackers |= black_pawn_attackers & board->blackPawns;
+    
+    // Knight attacks (symmetric)
+    static const int knight_offsets[8] = {-17, -15, -10, -6, 6, 10, 15, 17};
+    Bitboard knights = board->whiteKnights | board->blackKnights;
+    for (int i = 0; i < 8; i++) {
+        int from = square + knight_offsets[i];
+        if (from >= 0 && from < 64) {
+            int from_file = from % 8;
+            int to_file = square % 8;
+            if (abs(from_file - to_file) <= 2) {
+                attackers |= (1ULL << from) & knights;
+            }
+        }
+    }
+    
+    // King attacks (symmetric)
+    static const int king_offsets[8] = {-9, -8, -7, -1, 1, 7, 8, 9};
+    Bitboard kings = board->whiteKings | board->blackKings;
+    for (int i = 0; i < 8; i++) {
+        int from = square + king_offsets[i];
+        if (from >= 0 && from < 64) {
+            int from_file = from % 8;
+            int to_file = square % 8;
+            if (abs(from_file - to_file) <= 1) {
+                attackers |= (1ULL << from) & kings;
+            }
+        }
+    }
+    
+    // Sliding pieces
+    Bitboard rook_attacks = getRookAttacks(square, occupied);
+    attackers |= rook_attacks & (board->whiteRooks | board->blackRooks | 
+                                  board->whiteQueens | board->blackQueens);
+    
+    Bitboard bishop_attacks = getBishopAttacks(square, occupied);
+    attackers |= bishop_attacks & (board->whiteBishops | board->blackBishops | 
+                                    board->whiteQueens | board->blackQueens);
+    
+    return attackers;
+}
+
+// Get the least valuable attacker from a set of attackers
+static int get_smallest_attacker(const Board* board, Bitboard attackers, bool white, int* piece_square) {
+    Bitboard our_pieces;
+    
+    // Check in order: Pawns, Knights, Bishops, Rooks, Queens, King
+    our_pieces = attackers & (white ? board->whitePawns : board->blackPawns);
+    if (our_pieces) {
+        *piece_square = BIT_SCAN_FORWARD(our_pieces);
+        return SEE_VALUES[1]; // PAWN
+    }
+    
+    our_pieces = attackers & (white ? board->whiteKnights : board->blackKnights);
+    if (our_pieces) {
+        *piece_square = BIT_SCAN_FORWARD(our_pieces);
+        return SEE_VALUES[2]; // KNIGHT
+    }
+    
+    our_pieces = attackers & (white ? board->whiteBishops : board->blackBishops);
+    if (our_pieces) {
+        *piece_square = BIT_SCAN_FORWARD(our_pieces);
+        return SEE_VALUES[3]; // BISHOP
+    }
+    
+    our_pieces = attackers & (white ? board->whiteRooks : board->blackRooks);
+    if (our_pieces) {
+        *piece_square = BIT_SCAN_FORWARD(our_pieces);
+        return SEE_VALUES[4]; // ROOK
+    }
+    
+    our_pieces = attackers & (white ? board->whiteQueens : board->blackQueens);
+    if (our_pieces) {
+        *piece_square = BIT_SCAN_FORWARD(our_pieces);
+        return SEE_VALUES[5]; // QUEEN
+    }
+    
+    our_pieces = attackers & (white ? board->whiteKings : board->blackKings);
+    if (our_pieces) {
+        *piece_square = BIT_SCAN_FORWARD(our_pieces);
+        return SEE_VALUES[6]; // KING
+    }
+    
+    return 0; // No attacker
+}
+
+// Static Exchange Evaluation
+// Returns the expected material gain/loss from a capture sequence
+static int see(const Board* board, Move move) {
+    int from = MOVE_FROM(move);
+    int to = MOVE_TO(move);
+    
+    // Get initial attacker value
+    bool attacker_white = board->whiteToMove;
+    bool attacker_side = attacker_white;
+    PieceTypeToken attacker_type = getPieceTypeAtSquare(board, from, &attacker_white);
+    int attacker_value = get_piece_value(attacker_type);
+    
+    // Get victim value
+    bool victim_white = !board->whiteToMove;
+    PieceTypeToken victim_type = getPieceTypeAtSquare(board, to, &victim_white);
+    int victim_value = get_piece_value(victim_type);
+    
+    // Handle en passant
+    if (MOVE_IS_EN_PASSANT(move)) {
+        victim_value = SEE_VALUES[1]; // Pawn
+    }
+    
+    // If capturing nothing (shouldn't happen for captures), return 0
+    if (victim_value == 0 && !MOVE_IS_EN_PASSANT(move)) {
+        return 0;
+    }
+    
+    // Gain array to track material balance at each step
+    int gain[32];
+    int depth = 0;
+    
+    // Initial capture
+    gain[depth] = victim_value;
+    
+    // Simulate the capture
+    Bitboard occupied = board->whitePawns | board->whiteKnights | board->whiteBishops |
+                        board->whiteRooks | board->whiteQueens | board->whiteKings |
+                        board->blackPawns | board->blackKnights | board->blackBishops |
+                        board->blackRooks | board->blackQueens | board->blackKings;
+    
+    // Remove the initial attacker from occupancy
+    occupied &= ~(1ULL << from);
+    
+    // Get all attackers to the target square
+    Bitboard attackers = get_all_attackers(board, to, occupied);
+    
+    // Remove the initial attacker
+    attackers &= ~(1ULL << from);
+    
+    // Current piece on the target square (the one that just captured)
+    int current_piece_value = attacker_value;
+    
+    // Alternate sides
+    bool side_to_move = !attacker_side;
+    
+    while (attackers) {
+        depth++;
+        if (depth >= 32) break;
+        
+        // Find smallest attacker for current side
+        int piece_square;
+        int next_attacker_value = get_smallest_attacker(board, attackers, side_to_move, &piece_square);
+        
+        if (next_attacker_value == 0) break;
+        
+        // Calculate gain: capture the current piece, but we might lose our attacker
+        gain[depth] = current_piece_value - gain[depth - 1];
+        
+        // Prune if even the best case (opponent doesn't recapture) is bad
+        if (-gain[depth - 1] > 0 && -gain[depth] > 0) break;
+        
+        // Update occupied (remove the attacker)
+        occupied &= ~(1ULL << piece_square);
+        attackers &= ~(1ULL << piece_square);
+        
+        // Update attackers (x-ray through the removed piece)
+        attackers |= get_all_attackers(board, to, occupied) & occupied;
+        
+        // Update current piece value
+        current_piece_value = next_attacker_value;
+        
+        // Switch sides
+        side_to_move = !side_to_move;
+    }
+    
+    // Negamax the gain array
+    while (depth > 0) {
+        gain[depth - 1] = -(-gain[depth - 1] > gain[depth] ? -gain[depth - 1] : gain[depth]);
+        depth--;
+    }
+    
+    return gain[0];
+}
+
+// Quick SEE check: is the capture likely good (>= threshold)?
+static bool see_ge(const Board* board, Move move, int threshold) {
+    return see(board, move) >= threshold;
 }
 
 // =============================================================================
@@ -97,23 +320,25 @@ static void score_moves(Board* board, MoveList* moves, ScoredMove* scored,
             continue;
         }
         
-        // 2. Winning/equal captures (MVV-LVA)
+        // 2. Captures - use SEE for accurate ordering
         if (MOVE_IS_CAPTURE(m)) {
+            int see_value = see(board, m);
+            
+            // Also compute MVV-LVA as tiebreaker
             bool isWhite = board->whiteToMove;
             bool isBlack = !isWhite;
             PieceTypeToken victim = getPieceTypeAtSquare(board, to, &isBlack);
             PieceTypeToken attacker = getPieceTypeAtSquare(board, from, &isWhite);
             int victim_val = get_piece_value(victim);
             int attacker_val = get_piece_value(attacker);
-            
-            // MVV-LVA: prioritize capturing high value pieces with low value pieces
             int mvv_lva = victim_val * 10 - attacker_val;
             
-            // Good captures get high priority, bad captures get low priority
-            if (victim_val >= attacker_val) {
-                scored[i].score = 8000000 + mvv_lva;  // Winning/equal capture
+            if (see_value >= 0) {
+                // Good/equal captures: high priority, sorted by SEE then MVV-LVA
+                scored[i].score = 8000000 + see_value * 100 + mvv_lva;
             } else {
-                scored[i].score = 2000000 + mvv_lva;  // Losing capture (but still interesting)
+                // Bad captures: low priority but still above quiet moves with bad history
+                scored[i].score = 2000000 + see_value * 100 + mvv_lva;
             }
             continue;
         }
@@ -156,13 +381,22 @@ static void score_captures(Board* board, MoveList* moves, ScoredMove* scored) {
         scored[i].score = 0;
         
         if (MOVE_IS_CAPTURE(m)) {
+            // Use SEE for accurate capture ordering in qsearch
+            int see_value = see(board, m);
+            
+            // MVV-LVA as tiebreaker
             bool isWhite = board->whiteToMove;
             bool isBlack = !isWhite;
             PieceTypeToken victim = getPieceTypeAtSquare(board, MOVE_TO(m), &isBlack);
             PieceTypeToken attacker = getPieceTypeAtSquare(board, MOVE_FROM(m), &isWhite);
-            int victim_val = get_piece_value(victim);
-            int attacker_val = get_piece_value(attacker);
-            scored[i].score = victim_val * 10 - attacker_val + 1000000;
+            int mvv_lva = get_piece_value(victim) * 10 - get_piece_value(attacker);
+            
+            // Good captures first, then by MVV-LVA
+            if (see_value >= 0) {
+                scored[i].score = 1000000 + see_value * 100 + mvv_lva;
+            } else {
+                scored[i].score = see_value * 100 + mvv_lva;  // Bad captures at the end
+            }
         } else if (MOVE_IS_PROMOTION(m)) {
             scored[i].score = get_promotion_value(MOVE_PROMOTION(m)) + 500000;
         }
@@ -187,7 +421,7 @@ static void update_killers(SearchInfo* info, Move m, int ply) {
     info->killers[ply][0] = m;
 }
 
-// Update history heuristic
+// Update history heuristic with gravity (bonus for good moves, malus for bad)
 static void update_history(SearchInfo* info, Board* board, Move m, int depth) {
     int side = board->whiteToMove ? 0 : 1;
     int from = MOVE_FROM(m);
@@ -196,20 +430,22 @@ static void update_history(SearchInfo* info, Board* board, Move m, int depth) {
     // Bonus proportional to depth^2
     int bonus = depth * depth;
     
-    // Aging: scale down and add bonus
-    info->history[side][from][to] += bonus;
+    // Gravity formula to prevent runaway values
+    int current = info->history[side][from][to];
+    int max_history = 16384;
+    info->history[side][from][to] += bonus - (current * abs(bonus) / max_history);
+}
+
+// Penalize quiet moves that didn't cause a cutoff
+static void update_history_malus(SearchInfo* info, Board* board, Move m, int depth) {
+    int side = board->whiteToMove ? 0 : 1;
+    int from = MOVE_FROM(m);
+    int to = MOVE_TO(m);
     
-    // Cap history values to prevent overflow
-    if (info->history[side][from][to] > 1000000) {
-        // Age all history
-        for (int s = 0; s < 2; s++) {
-            for (int f = 0; f < 64; f++) {
-                for (int t = 0; t < 64; t++) {
-                    info->history[s][f][t] /= 2;
-                }
-            }
-        }
-    }
+    int malus = depth * depth;
+    int current = info->history[side][from][to];
+    int max_history = 16384;
+    info->history[side][from][to] -= malus - (current * abs(malus) / max_history);
 }
 
 // Clear search heuristics
@@ -506,19 +742,35 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     }
     
     // ==========================================================================
-    // Futility Pruning (disabled until eval is more reliable)
+    // Reverse Futility Pruning (Static Null Move Pruning)
+    // If static eval is way above beta, we can assume a beta cutoff
+    // ==========================================================================
+    if (!is_pv && !in_check && depth <= RFP_MAX_DEPTH &&
+        abs(beta) < MATE_SCORE - 100) {
+        int rfp_margin = RFP_MARGIN * depth;
+        if (static_eval - rfp_margin >= beta) {
+            return static_eval - rfp_margin;
+        }
+    }
+    
+    // ==========================================================================
+    // Futility Pruning (now enabled with NNUE)
     // ==========================================================================
     bool futility_pruning = false;
-    // Futility pruning requires a reliable evaluation function.
-    // Enable this when NNUE or better eval is implemented:
-    // if (!is_pv && !in_check && depth <= 2 && FUTILITY_MARGIN > 0 &&
-    //     abs(alpha) < MATE_SCORE - 100 && abs(beta) < MATE_SCORE - 100) {
-    //     int margin = (depth == 1) ? FUTILITY_MARGIN : EXTENDED_FUTILITY_MARGIN;
-    //     if (static_eval + margin < alpha) {
-    //         futility_pruning = true;
-    //     }
-    // }
-    (void)static_eval; // Suppress unused warning when futility is disabled
+    int futility_margin = 0;
+    if (!is_pv && !in_check && depth <= 3 &&
+        abs(alpha) < MATE_SCORE - 100 && abs(beta) < MATE_SCORE - 100) {
+        if (depth == 1) {
+            futility_margin = FUTILITY_MARGIN;
+        } else if (depth == 2) {
+            futility_margin = EXTENDED_FUTILITY_MARGIN;
+        } else {
+            futility_margin = FUTILITY_MARGIN_DEPTH3;
+        }
+        if (static_eval + futility_margin <= alpha) {
+            futility_pruning = true;
+        }
+    }
     
     // Generate moves
     MoveList moves;
@@ -570,26 +822,46 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             // First move: full window search
             score = -negamax(board, depth - 1, -beta, -alpha, info, ply + 1, true);
         } else {
-            // Late Move Reductions
+            // Late Move Reductions (tuned for NNUE)
             int reduction = 0;
             
             if (!in_check && !is_tactical && depth >= LMR_REDUCTION_LIMIT && 
                 moves_searched >= LMR_FULL_DEPTH_MOVES) {
-// Base reduction (conservative)
-            reduction = 1;
-            
-            // Increase reduction for later moves (less aggressive)
-            if (moves_searched > 10) {
-                reduction++;
-            }
-            // Removed extra reduction for very late moves
+                // Log-based reduction formula: more aggressive with reliable eval
+                // Base: ln(depth) * ln(moves_searched) / 2
+                reduction = 1;
                 
-                // Reduce reduction for killer moves
+                // Depth-based increase
+                if (depth >= 6) reduction++;
+                if (depth >= 10) reduction++;
+                
+                // Move count based increase
+                if (moves_searched >= 8) reduction++;
+                if (moves_searched >= 16) reduction++;
+                if (moves_searched >= 32) reduction++;
+                
+                // Reduce less for PV nodes
+                if (is_pv) {
+                    reduction--;
+                }
+                
+                // Reduce less for killer moves
                 if (ply < MAX_PLY && (m == info->killers[ply][0] || m == info->killers[ply][1])) {
                     reduction--;
                 }
                 
-                // Don't reduce below 1
+                // Reduce more for moves with bad history
+                int side = board->whiteToMove ? 0 : 1;
+                int from = MOVE_FROM(m);
+                int to = MOVE_TO(m);
+                if (info->history[side][from][to] < 0) {
+                    reduction++;
+                } else if (info->history[side][from][to] > 5000) {
+                    reduction--;  // Good history = less reduction
+                }
+                
+                // Clamp reduction
+                if (reduction < 0) reduction = 0;
                 if (depth - 1 - reduction < 1) {
                     reduction = depth - 2;
                 }
@@ -637,6 +909,14 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             if (!is_capture) {
                 update_killers(info, m, ply);
                 update_history(info, board, m, depth);
+                
+                // Apply malus to all previously searched quiet moves
+                for (int j = 0; j < i; j++) {
+                    Move prev = scored[j].move;
+                    if (!MOVE_IS_CAPTURE(prev) && !MOVE_IS_PROMOTION(prev)) {
+                        update_history_malus(info, board, prev, depth);
+                    }
+                }
             }
             break;
         }
