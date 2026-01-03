@@ -456,7 +456,7 @@ void clear_search_history(SearchInfo* info) {
 }
 
 // Forward declaration
-int evaluate(const Board* board);
+int evaluate(const Board* board, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net);
 
 // Check time limit (hard limit - sofortiger Abbruch)
 static bool check_time(SearchInfo* info) {
@@ -530,8 +530,8 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     
     // Max ply check
     if (ply >= MAX_PLY) {
-        int eval = evaluate(board);
-        return board->whiteToMove ? eval : -eval;
+        int eval = evaluate(board, info->nnue_acc, info->nnue_net);
+        return board->whiteToMove ? eval : -eval;  // Convert from White perspective to side-to-move
     }
     
     // Check if we're in check
@@ -558,9 +558,12 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
             Move m = scored[i].move;
             
             MoveUndoInfo undo;
-            applyMove(board, m, &undo);
+            applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+            #ifdef DEBUG_NNUE_EVAL
+            eval_set_last_move(m, MOVE_FROM(m), MOVE_TO(m));
+            #endif
             int score = -quiescence(board, -beta, -alpha, info, ply + 1);
-            undoMove(board, m, &undo);
+            undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
             
             if (info->stopSearch) return 0;
             
@@ -575,7 +578,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     }
     
     // Not in check: use stand pat
-    int stand_pat = evaluate(board);
+    int stand_pat = evaluate(board, info->nnue_acc, info->nnue_net);
     if (!board->whiteToMove) {
         stand_pat = -stand_pat;
     }
@@ -616,9 +619,12 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         }
         
         MoveUndoInfo undo;
-        applyMove(board, m, &undo);
+        applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+        #ifdef DEBUG_NNUE_EVAL
+        eval_set_last_move(m, MOVE_FROM(m), MOVE_TO(m));
+        #endif
         int score = -quiescence(board, -beta, -alpha, info, ply + 1);
-        undoMove(board, m, &undo);
+        undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
         
         if (info->stopSearch) return 0;
         
@@ -658,8 +664,8 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     
     // Max ply check
     if (ply >= MAX_PLY) {
-        int eval = evaluate(board);
-        return board->whiteToMove ? eval : -eval;
+        int eval = evaluate(board, info->nnue_acc, info->nnue_net);
+        return board->whiteToMove ? eval : -eval;  // Convert from White perspective to side-to-move
     }
     
     // Check if in check (needed for various extensions/reductions)
@@ -705,7 +711,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     }
     
     // Static evaluation for pruning decisions
-    int static_eval = evaluate(board);
+    int static_eval = evaluate(board, info->nnue_acc, info->nnue_net);
     if (!board->whiteToMove) {
         static_eval = -static_eval;
     }
@@ -807,8 +813,21 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // Prefetch TT entry for likely next position
         // (This is a simple optimization that can help cache performance)
         
+        // DEBUG: Save accumulator state before move
+        #ifdef DEBUG_NNUE_INCREMENTAL
+        NNUEAccumulator saved_acc;
+        if (info->nnue_acc) {
+            memcpy(&saved_acc, info->nnue_acc, sizeof(NNUEAccumulator));
+        }
+        #endif
+        
         MoveUndoInfo undo;
-        applyMove(board, m, &undo);
+        applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+        
+        // Track last move for debug
+        #ifdef DEBUG_NNUE_EVAL
+        eval_set_last_move(m, MOVE_FROM(m), MOVE_TO(m));
+        #endif
         
         // Prefetch next position's TT entry
         tt_prefetch(board->zobristKey);
@@ -883,7 +902,48 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             }
         }
         
-        undoMove(board, m, &undo);
+        undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+        
+        // DEBUG: Compare accumulator state after undo
+        #ifdef DEBUG_NNUE_INCREMENTAL
+        if (info->nnue_acc && saved_acc.computed && info->nnue_acc->computed) {
+            bool mismatch = false;
+            int first_mismatch_white = -1, first_mismatch_black = -1;
+            int16_t diff_white = 0, diff_black = 0;
+            for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) {
+                if (info->nnue_acc->white[i] != saved_acc.white[i]) {
+                    if (first_mismatch_white < 0) {
+                        first_mismatch_white = i;
+                        diff_white = info->nnue_acc->white[i] - saved_acc.white[i];
+                    }
+                    mismatch = true;
+                }
+                if (info->nnue_acc->black[i] != saved_acc.black[i]) {
+                    if (first_mismatch_black < 0) {
+                        first_mismatch_black = i;
+                        diff_black = info->nnue_acc->black[i] - saved_acc.black[i];
+                    }
+                    mismatch = true;
+                }
+            }
+            if (mismatch) {
+                char move_str[6];
+                moveToString(m, move_str);
+                int from_sq = MOVE_FROM(m);
+                int to_sq = MOVE_TO(m);
+                bool is_capture = MOVE_IS_CAPTURE(m);
+                bool is_ep = MOVE_IS_EN_PASSANT(m);
+                bool is_castle = MOVE_IS_CASTLING(m);
+                bool is_promo = MOVE_IS_PROMOTION(m);
+                printf("info string NNUE MISMATCH move=%s ply=%d from=%d to=%d cap=%d ep=%d castle=%d promo=%d\n", 
+                       move_str, ply, from_sq, to_sq, is_capture, is_ep, is_castle, is_promo);
+                printf("info string   white_idx=%d diff=%d | black_idx=%d diff=%d\n",
+                       first_mismatch_white, diff_white, first_mismatch_black, diff_black);
+                fflush(stdout);
+            }
+        }
+        #endif
+        
         moves_searched++;
         
         if (info->stopSearch) return 0;
@@ -954,7 +1014,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
 Move iterative_deepening_search(Board* board, SearchInfo* info) {
     printf("DEBUG: Starting search. White to move: %s\n", board->whiteToMove ? "true" : "false");
     printf("info string Time limits: soft=%ld ms, hard=%ld ms\n", info->softTimeLimit, info->hardTimeLimit);
-    
+
     Move best_move = 0;
     int best_score = 0;
     

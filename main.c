@@ -6,20 +6,15 @@
 #include <stdio.h>
 #include "uci.h"
 #include "zobrist.h"
-#include "tt.h" // Added for Zobrist and TT initialization
-#include "evaluation.h" // Added for NNUE initialization
+#include "tt.h"
 
 int main(int argc, char const *argv[])
 {
    init_zobrist_keys(); // Initialize Zobrist hashing keys
-   init_tt(256);         // Initialize transposition table with 64MB size
-   initMoveGenerator(); // Initialize move generator data
+   init_tt(256);        // Initialize transposition table with 256MB size
+   // initMoveGenerator() is called in uci_loop() - don't call it twice
    
-   // Initialize NNUE evaluation
-   // Try to load nnue.bin from current directory, or use random weights if not found
-   eval_init("nnue_i768_h1024_bin5_bout8_v2_1200.bin");
-
-    uci_loop(); // Start the UCI loop
+   uci_loop(); // Start the UCI loop - handles NNUE initialization and move generator init
 
     return 0;
 }

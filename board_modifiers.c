@@ -4,6 +4,13 @@
 #include <stdio.h> // For NULL if not in other headers
 #include <stdlib.h>
 
+// --- Helper: Convert PieceTypeToken to NNUE piece type ---
+// PieceTypeToken: NO_PIECE_TYPE=0, PAWN_T=1, KNIGHT_T=2, ...
+// NNUE: PAWN=0, KNIGHT=1, BISHOP=2, ...
+static inline int pieceTypeToNNUE(PieceTypeToken pt) {
+    return (pt == NO_PIECE_TYPE) ? -1 : (pt - 1);
+}
+
 // --- Helper Function Implementations ---
 
 // Optimized: Only checks bitboards for the specified color
@@ -166,7 +173,7 @@ static inline Bitboard* getBitboardForPiece(Board* board, PieceTypeToken pieceTy
 
 // --- Optimized applyMove ---
 
-void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo) {
+void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net) {
     Square from = MOVE_FROM(move);
     Square to = MOVE_TO(move);
     bool isWhite = board->whiteToMove;
@@ -208,17 +215,61 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo) {
     undoInfo->oldHalfMoveClock = board->halfMoveClock;
     undoInfo->oldZobristKey = board->zobristKey;
     undoInfo->capturedPieceType = NO_PIECE_TYPE;
+    
+    // Determine captured piece type BEFORE modifying board (for NNUE)
+    PieceTypeToken capturedType = NO_PIECE_TYPE;
+    if (MOVE_IS_CAPTURE(move)) {
+        if (MOVE_IS_EN_PASSANT(move)) {
+            capturedType = PAWN_T;
+        } else {
+            if (!isWhite) {
+                if (board->whitePawns & to_mask) capturedType = PAWN_T;
+                else if (board->whiteKnights & to_mask) capturedType = KNIGHT_T;
+                else if (board->whiteBishops & to_mask) capturedType = BISHOP_T;
+                else if (board->whiteRooks & to_mask) capturedType = ROOK_T;
+                else if (board->whiteQueens & to_mask) capturedType = QUEEN_T;
+            } else {
+                if (board->blackPawns & to_mask) capturedType = PAWN_T;
+                else if (board->blackKnights & to_mask) capturedType = KNIGHT_T;
+                else if (board->blackBishops & to_mask) capturedType = BISHOP_T;
+                else if (board->blackRooks & to_mask) capturedType = ROOK_T;
+                else if (board->blackQueens & to_mask) capturedType = QUEEN_T;
+            }
+        }
+        undoInfo->capturedPieceType = capturedType;
+    }
+    
+    // =========================================================================
+    // NNUE UPDATE - BEFORE board modification!
+    // =========================================================================
+    int promoFlag = MOVE_PROMOTION(move);
+    bool isKingMove = (movingPieceType == KING_T);
+    if (nnue_acc != NULL && nnue_net != NULL) {
+        if (MOVE_IS_CASTLING(move) || promoFlag || isKingMove) {
+            // Rochade, Promotion und Königszüge: Refresh nach Board-Update (unten)
+            // Bei Königszügen ändern sich die Buckets, daher kompletter Refresh nötig
+        } else {
+            // Normale Züge: NNUE jetzt updaten, Board ist noch im alten Zustand
+            // Convert PieceTypeToken to NNUE piece type (PAWN_T=1 -> NNUE_PAWN=0)
+            int nnue_piece = pieceTypeToNNUE(movingPieceType);
+            int nnue_captured = pieceTypeToNNUE(capturedType);
+            nnue_apply_move(board, nnue_acc, nnue_net, from, to, nnue_piece, 
+                           nnue_captured, isWhite, MOVE_IS_EN_PASSANT(move));
+        }
+    }
 
+    // =========================================================================
+    // BOARD UPDATE
+    // =========================================================================
+    
     // Update zobrist: remove piece from source
     zobrist ^= ZOBRIST_PIECE_KEY(movingPieceType, colorIdx, from);
 
-    // Handle captures
+    // Handle captures - remove captured piece from board
     if (MOVE_IS_CAPTURE(move)) {
         if (MOVE_IS_EN_PASSANT(move)) {
             Square capturedSq = isWhite ? (to - 8) : (to + 8);
             Bitboard cap_clear = ~(1ULL << capturedSq);
-            undoInfo->capturedPieceType = PAWN_T;
-            
             if (isWhite) {
                 board->blackPawns &= cap_clear;
             } else {
@@ -226,24 +277,20 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo) {
             }
             zobrist ^= ZOBRIST_PIECE_KEY(PAWN_T, oppColorIdx, capturedSq);
         } else {
-            // Find captured piece type
-            PieceTypeToken capturedType;
+            // Remove captured piece
             if (!isWhite) {
-                // Capturing white piece
-                if (board->whitePawns & to_mask) { capturedType = PAWN_T; board->whitePawns &= to_clear; }
-                else if (board->whiteKnights & to_mask) { capturedType = KNIGHT_T; board->whiteKnights &= to_clear; }
-                else if (board->whiteBishops & to_mask) { capturedType = BISHOP_T; board->whiteBishops &= to_clear; }
-                else if (board->whiteRooks & to_mask) { capturedType = ROOK_T; board->whiteRooks &= to_clear; }
-                else { capturedType = QUEEN_T; board->whiteQueens &= to_clear; }
+                if (board->whitePawns & to_mask) board->whitePawns &= to_clear;
+                else if (board->whiteKnights & to_mask) board->whiteKnights &= to_clear;
+                else if (board->whiteBishops & to_mask) board->whiteBishops &= to_clear;
+                else if (board->whiteRooks & to_mask) board->whiteRooks &= to_clear;
+                else board->whiteQueens &= to_clear;
             } else {
-                // Capturing black piece
-                if (board->blackPawns & to_mask) { capturedType = PAWN_T; board->blackPawns &= to_clear; }
-                else if (board->blackKnights & to_mask) { capturedType = KNIGHT_T; board->blackKnights &= to_clear; }
-                else if (board->blackBishops & to_mask) { capturedType = BISHOP_T; board->blackBishops &= to_clear; }
-                else if (board->blackRooks & to_mask) { capturedType = ROOK_T; board->blackRooks &= to_clear; }
-                else { capturedType = QUEEN_T; board->blackQueens &= to_clear; }
+                if (board->blackPawns & to_mask) board->blackPawns &= to_clear;
+                else if (board->blackKnights & to_mask) board->blackKnights &= to_clear;
+                else if (board->blackBishops & to_mask) board->blackBishops &= to_clear;
+                else if (board->blackRooks & to_mask) board->blackRooks &= to_clear;
+                else board->blackQueens &= to_clear;
             }
-            undoInfo->capturedPieceType = capturedType;
             zobrist ^= ZOBRIST_PIECE_KEY(capturedType, oppColorIdx, to);
         }
     }
@@ -252,9 +299,9 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo) {
     *movingBB &= from_clear;
     
     // Handle promotion or regular move
-    int promoFlag = MOVE_PROMOTION(move);
+    PieceTypeToken promoType = NO_PIECE_TYPE;
     if (promoFlag) {
-        PieceTypeToken promoType = getPieceTypeFromPromotionFlag_inline(promoFlag);
+        promoType = getPieceTypeFromPromotionFlag_inline(promoFlag);
         Bitboard* promoBB = getBitboardForPiece(board, promoType, isWhite);
         *promoBB |= to_mask;
         zobrist ^= ZOBRIST_PIECE_KEY(promoType, colorIdx, to);
@@ -311,6 +358,20 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo) {
                 zobrist ^= ZOBRIST_PIECE_KEY(ROOK_T, 1, SQ_A8) ^ ZOBRIST_PIECE_KEY(ROOK_T, 1, SQ_D8);
             }
         }
+        // Refresh NNUE accumulator after castling (rook moved too)
+        if (nnue_acc != NULL && nnue_net != NULL) {
+            nnue_refresh_accumulator(board, nnue_acc, nnue_net);
+        }
+    }
+    
+    // Refresh NNUE for promotions (pawn became another piece)
+    if (promoFlag && nnue_acc != NULL && nnue_net != NULL) {
+        nnue_refresh_accumulator(board, nnue_acc, nnue_net);
+    }
+    
+    // Refresh NNUE for king moves (buckets change based on king position)
+    if (isKingMove && !MOVE_IS_CASTLING(move) && nnue_acc != NULL && nnue_net != NULL) {
+        nnue_refresh_accumulator(board, nnue_acc, nnue_net);
     }
 
     // En passant square update - simplified
@@ -343,7 +404,7 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo) {
     board->history[board->historyIndex++] = zobrist;
 }
 
-void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo) {
+void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net) {
     Square from = MOVE_FROM(move);
     Square to = MOVE_TO(move);
     
@@ -411,6 +472,27 @@ void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo) {
                 addPieceToBoard(board, SQ_A8, ROOK_T, false);
             }
         }
+        // Refresh NNUE accumulator after undoing castling
+        if (nnue_acc != NULL && nnue_net != NULL) {
+            nnue_refresh_accumulator(board, nnue_acc, nnue_net);
+        }
+    } else if (MOVE_IS_PROMOTION(move)) {
+        // Refresh NNUE for promotion undo (promoted piece became pawn again)
+        if (nnue_acc != NULL && nnue_net != NULL) {
+            nnue_refresh_accumulator(board, nnue_acc, nnue_net);
+        }
+    } else if (movedPieceType == KING_T) {
+        // Refresh NNUE for king move undo (buckets change based on king position)
+        if (nnue_acc != NULL && nnue_net != NULL) {
+            nnue_refresh_accumulator(board, nnue_acc, nnue_net);
+        }
+    } else {
+        // Update NNUE: undo the move (normal moves only)
+        // Convert PieceTypeToken to NNUE piece type (PAWN_T=1 -> NNUE_PAWN=0)
+        int nnue_piece = pieceTypeToNNUE(movedPieceType);
+        int nnue_captured = pieceTypeToNNUE(undoInfo->capturedPieceType);
+        nnue_undo_move(board, nnue_acc, nnue_net, from, to, nnue_piece, nnue_captured, 
+                       movingPlayerIsWhite, MOVE_IS_EN_PASSANT(move));
     }
 
     // Restore Zobrist key

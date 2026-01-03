@@ -9,6 +9,8 @@
 #include "board_modifiers.h"
 #include "search.h" // Will be created later
 #include "bitboard_utils.h" // ADDED
+#include "nnue.h" // For NNUE accumulator management
+#include "evaluation.h" // For eval_init
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -125,9 +127,9 @@ static unsigned long long perft(Board* board, int depth) {
     for (int i = 0; i < local_moves.count; ++i) {
         Move m = local_moves.moves[i];
         MoveUndoInfo undo_info;
-        applyMove(board, m, &undo_info);
+        applyMove(board, m, &undo_info, NULL, NULL);  // perft doesn't need NNUE
         nodes += perft(board, depth - 1);
-        undoMove(board, m, &undo_info);
+        undoMove(board, m, &undo_info, NULL, NULL);  // perft doesn't need NNUE
     }
     return nodes;
 }
@@ -142,9 +144,9 @@ static unsigned long long perft_divide(Board* board, int depth) {
     for (int i = 0; i < local_moves.count; ++i) {
         Move m = local_moves.moves[i];
         MoveUndoInfo undo_info;
-        applyMove(board, m, &undo_info);
+        applyMove(board, m, &undo_info, NULL, NULL);  // perft doesn't need NNUE
         unsigned long long cnt = perft(board, depth - 1);
-        undoMove(board, m, &undo_info);
+        undoMove(board, m, &undo_info, NULL, NULL);  // perft doesn't need NNUE
 
         char move_str[6];
         moveToString(m, move_str);
@@ -162,14 +164,32 @@ static unsigned long long perft_divide(Board* board, int depth) {
 void uci_loop() {
     char line[4096];
     MoveUndoInfo undo_info;
+    
+    // NNUE network is ~7.5 MB - must be on heap, not stack (stack is only ~1MB on Windows)
+    NNUENetwork* nnue_network = (NNUENetwork*)calloc(1, sizeof(NNUENetwork));
+    if (!nnue_network) {
+        fprintf(stderr, "Error: Failed to allocate memory for NNUE network\n");
+        return;
+    }
+    NNUEAccumulator nnue_accumulator = {0};  // Accumulator is small (~4KB), can stay on stack
 
+    printf("DEBUG: Starting uci_loop initialization\n"); fflush(stdout);
+    
     initMoveGenerator(); // Initialize move generator data
-    // init_tt(); // Initialize transposition table - will be added later
+    printf("DEBUG: Move generator initialized\n"); fflush(stdout);
+    
+    eval_init("nnue_i768_h1024_bin5_bout8_v2_1200.bin", nnue_network);  // Load NNUE network
+    printf("DEBUG: NNUE initialized, loaded=%d\n", nnue_network->loaded); fflush(stdout);
 
     // Default to standard start position so commands like "perft" work
     current_board = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    printf("DEBUG: Board parsed\n"); fflush(stdout);
+    
+    nnue_reset_accumulator(&current_board, &nnue_accumulator, nnue_network);  // Initialize NNUE for starting position
+    printf("DEBUG: NNUE accumulator reset\n"); fflush(stdout);
 
     printf("%s by %s\n", ENGINE_NAME, ENGINE_AUTHOR);
+    printf("DEBUG: Starting main loop\n"); fflush(stdout);
 
     while (fgets(line, sizeof(line), stdin)) {
         line[strcspn(line, "\n")] = 0; // Remove newline
@@ -188,6 +208,7 @@ void uci_loop() {
             token = strtok_r(rest, " ", &rest);
             if (strcmp(token, "startpos") == 0) {
                 current_board = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+                nnue_reset_accumulator(&current_board, &nnue_accumulator, nnue_network);  // Reset NNUE for new position
                 printf("info string DEBUG: UCI: Parsed startpos. WhiteToMove: %s. e2_pawn: %llu, d2_pawn: %llu, e7_pawn: %llu\n", // MODIFIED %d to %llu
                        current_board.whiteToMove ? "true" : "false",
                        GET_BIT(current_board.whitePawns, SQ_E2),
@@ -209,6 +230,7 @@ void uci_loop() {
                 }
                 fen_str[strlen(fen_str)-1] = '\0'; // remove trailing space
                 current_board = parseFEN(fen_str);
+                nnue_reset_accumulator(&current_board, &nnue_accumulator, nnue_network);  // Reset NNUE for new position
                 printf("info string DEBUG: UCI: Parsed FEN: \'%s\'. Resulting WhiteToMove: %s\n",
                        fen_str, current_board.whiteToMove ? "true" : "false");
                 fflush(stdout);
@@ -225,7 +247,7 @@ void uci_loop() {
                 while ((current_move_token = strtok_r(NULL, " ", &rest)) != NULL) {
                     Move move = parse_uci_move(&current_board, current_move_token);
                     if (move != 0) {
-                        applyMove(&current_board, move, &undo_info);
+                        applyMove(&current_board, move, &undo_info, &nnue_accumulator, nnue_network);  // Update NNUE
                         // Log after applying, to see the state if needed, or confirm application
                         printf("info string DEBUG: UCI: Move '%s' (parsed as %u) successfully applied.\n", current_move_token, move); fflush(stdout);
                     } else {
@@ -385,6 +407,13 @@ void uci_loop() {
             search_info.hardTimeLimit = hard_limit;
             search_info.stopSearch = false;
             search_info.lastIterationTime = 0;
+            search_info.nnue_acc = &nnue_accumulator;  // Use the local NNUE accumulator
+            search_info.nnue_net = nnue_network;       // Use the heap-allocated NNUE network
+            search_info.nodesSearched = 0;
+            search_info.bestMoveThisIteration = 0;
+            search_info.bestScoreThisIteration = 0;
+            search_info.seldepth = 0;
+            clear_search_history(&search_info);  // Initialize killer moves, history, etc.
 
 
             // This is where the search will be called.
@@ -427,4 +456,7 @@ void uci_loop() {
         fflush(stdout);
         // fflush(stderr); // Consider adding here as well for other commands if needed
     }
+    
+    // Free heap-allocated NNUE network
+    free(nnue_network);
 }

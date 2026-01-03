@@ -24,14 +24,14 @@
 #define NNUE_QB              64    // Output layer weight quantization
 #define NNUE_SCALE           400   // Final output scale
 
-// Accumulator for efficient incremental updates
+// Accumulator for efficient incremental updates (activation values only)
 typedef struct {
     int16_t white[NNUE_HIDDEN_SIZE];
     int16_t black[NNUE_HIDDEN_SIZE];
     bool computed;
 } NNUEAccumulator;
 
-// NNUE Network weights
+// NNUE Network weights (separate from accumulator, can be loaded from file)
 typedef struct {
     // Feature transformer weights: [INPUT_BUCKETS][INPUT_SIZE][HIDDEN_SIZE]
     int16_t ft_weights[NNUE_INPUT_BUCKETS][NNUE_INPUT_SIZE][NNUE_HIDDEN_SIZE];
@@ -46,7 +46,7 @@ typedef struct {
     bool loaded;
 } NNUENetwork;
 
-// Global network instance
+// Global network instance (deprecated - weights now in NNUEAccumulator)
 extern NNUENetwork nnue_net;
 
 // Input bucket map for king position
@@ -55,29 +55,36 @@ extern const int NNUE_INPUT_BUCKET_MAP[64];
 // Initialize NNUE with random weights (for testing without a trained net)
 void nnue_init_random(void);
 
-// Load NNUE weights from file
-bool nnue_load(const char* filename);
+// Load NNUE weights from file into network
+bool nnue_load(const char* filename, NNUENetwork* net);
 
 // Save NNUE weights to file
-bool nnue_save(const char* filename);
+bool nnue_save(const char* filename, const NNUENetwork* net);
 
-// Compute full accumulator from scratch
-void nnue_refresh_accumulator(const Board* board, NNUEAccumulator* acc);
+// Load NNUE weights from file into network
+bool nnue_load(const char* filename, NNUENetwork* net);
 
-// Evaluate position using NNUE
-int nnue_evaluate(const Board* board, NNUEAccumulator* acc);
+// Save NNUE weights to file from network
+bool nnue_save(const char* filename, const NNUENetwork* net);
 
-// Get feature index for a piece on a square from a perspective
-int nnue_get_feature_index(int piece_type, int piece_color, int square, int perspective);
+// Compute full accumulator from scratch - needs network for initial computation
+void nnue_reset_accumulator(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net);
 
-// Get input bucket for a king square from a perspective
-int nnue_get_input_bucket(int king_square, int perspective);
+// Refresh accumulator from current board state
+void nnue_refresh_accumulator(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net);
+
+// Evaluate position using NNUE - only needs accumulator
+int nnue_evaluate(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net);
 
 // Get output bucket based on piece count
 int nnue_get_output_bucket(const Board* board);
 
-// Incremental accumulator update functions
-void nnue_add_feature(NNUEAccumulator* acc, int bucket, int feature_index);
-void nnue_remove_feature(NNUEAccumulator* acc, int bucket, int feature_index);
+// Apply move incrementally - needs network for weights
+void nnue_apply_move(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net, int from_sq, int to_sq, 
+                     int piece_type, int captured_piece_type, bool is_white, bool is_en_passant);
+
+// Undo move incrementally - needs network for weights
+void nnue_undo_move(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net, int from_sq, int to_sq,
+                    int piece_type, int captured_piece_type, bool is_white, bool is_en_passant);
 
 #endif // NNUE_H

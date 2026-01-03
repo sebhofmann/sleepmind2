@@ -897,7 +897,7 @@ void generateMoves(const Board* board, MoveList* list) {
         Move currentMove = pseudoLegalMoves.moves[i];
         
         MoveUndoInfo undo_info;
-        applyMove(mutableBoard, currentMove, &undo_info); 
+        applyMove(mutableBoard, currentMove, &undo_info, NULL, NULL); 
             
         // Check if the king of the side that just moved is in check.
         // applyMove flips the side to move, so we check !mutableBoard->whiteToMove.
@@ -905,6 +905,6 @@ void generateMoves(const Board* board, MoveList* list) {
             addMove(list, currentMove); 
         }
         
-        undoMove(mutableBoard, currentMove, &undo_info);
+        undoMove(mutableBoard, currentMove, &undo_info, NULL, NULL);
     }
 }

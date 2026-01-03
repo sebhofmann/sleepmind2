@@ -3,6 +3,7 @@
 
 #include "board.h"
 #include "move.h"
+#include "nnue.h"
 #include <time.h> // For clock_t
 
 #define MAX_PLY 64 // Maximum search depth
@@ -29,6 +30,10 @@ typedef struct {
     
     // Counter moves (indexed by [piece][to_square])
     Move counter_moves[12][64];
+    
+    // NNUE accumulator and network for incremental updates
+    NNUEAccumulator* nnue_acc;
+    const NNUENetwork* nnue_net;
     
     long lastIterationTime;  // Zeit der letzten Iteration für Vorhersage
     int seldepth;            // Selective depth (max depth reached)

@@ -7,9 +7,7 @@
 #include <math.h>   // For fabs, fmin, fmax for game phase, abs for integer comparison
 #include <stdlib.h> // For abs with integers if math.h one is for doubles
 #include <stdio.h>  // For printf
-
-// Use NNUE evaluation by default
-static bool use_nnue = true;
+#include <string.h> // For memcpy
 
 // Fallback U64 definition if not in board.h or bitboard_utils.h
 #ifndef U64
@@ -362,33 +360,59 @@ int evaluate_classical(const Board* board) {
 }
 
 // NNUE evaluation with accumulator
-int evaluate_nnue(const Board* board, NNUEAccumulator* acc) {
-    if (!nnue_net.loaded) {
+int evaluate_nnue(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
+    if (net == NULL || !net->loaded || acc == NULL) {
         return evaluate_classical(board);
     }
-    return nnue_evaluate(board, acc);
+    return nnue_evaluate(board, acc, net);
 }
 
-// Initialize evaluation system
-void eval_init(const char* nnue_path) {
-    if (nnue_path != NULL && nnue_load(nnue_path)) {
-        use_nnue = true;
+// Initialize evaluation system - loads NNUE weights into network
+void eval_init(const char* nnue_path, NNUENetwork* net) {
+    if (nnue_path != NULL && net != NULL && nnue_load(nnue_path, net)) {
         printf("info string NNUE evaluation enabled\n");
-    } else {
-        // Initialize with random weights for testing
-        nnue_init_random();
-        use_nnue = true;
-        printf("info string Using random NNUE weights (no net file loaded)\n");
+    } else if (net != NULL) {
+        // No NNUE network loaded - use classical evaluation only
+        printf("info string NNUE not available, using classical evaluation\n");
+        net->loaded = false;
     }
 }
 
-// Main evaluation function
-int evaluate(const Board* board) {
-    if (use_nnue && nnue_net.loaded) {
-        // Create a temporary accumulator for non-incremental evaluation
-        NNUEAccumulator acc = {0};
-        acc.computed = false;
-        return nnue_evaluate(board, &acc);
+// Track last move for debugging
+static Move g_last_move = 0;
+static int g_last_from = -1;
+static int g_last_to = -1;
+
+void eval_set_last_move(Move m, int from, int to) {
+    g_last_move = m;
+    g_last_from = from;
+    g_last_to = to;
+}
+
+// Main evaluation function with NNUE accumulator and network
+int evaluate(const Board* board, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net) {
+    if (nnue_acc != NULL && nnue_net != NULL && nnue_net->loaded) {
+        #ifdef DEBUG_NNUE_EVAL
+        // Verify accumulator matches refresh
+        NNUEAccumulator temp_acc;
+        nnue_refresh_accumulator(board, &temp_acc, nnue_net);
+        
+        bool mismatch = false;
+        for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) {
+            if (nnue_acc->white[i] != temp_acc.white[i] || 
+                nnue_acc->black[i] != temp_acc.black[i]) {
+                mismatch = true;
+                break;
+            }
+        }
+        if (mismatch) {
+            printf("info string EVAL MISMATCH! last_move=%u from=%d to=%d\n", 
+                   g_last_move, g_last_from, g_last_to);
+            // Use the correct (refreshed) value
+            memcpy(nnue_acc, &temp_acc, sizeof(NNUEAccumulator));
+        }
+        #endif
+        return nnue_evaluate(board, nnue_acc, nnue_net);
     }
     
     return evaluate_classical(board);
