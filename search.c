@@ -14,6 +14,15 @@
 #include <string.h>
 
 // =============================================================================
+// Silent Mode (for training - disables info/debug output)
+// =============================================================================
+bool search_silent_mode = false;
+
+void set_search_silent(bool silent) {
+    search_silent_mode = silent;
+}
+
+// =============================================================================
 // Constants
 // =============================================================================
 
@@ -961,6 +970,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             
             if (ply == 0) {
                 info->bestMoveThisIteration = m;
+                info->bestScoreThisIteration = score;  // Track score for training mode
             }
         }
         
@@ -1012,8 +1022,11 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
 // =============================================================================
 
 Move iterative_deepening_search(Board* board, SearchInfo* info) {
-    printf("DEBUG: Starting search. White to move: %s\n", board->whiteToMove ? "true" : "false");
-    printf("info string Time limits: soft=%ld ms, hard=%ld ms\n", info->softTimeLimit, info->hardTimeLimit);
+    if (!search_silent_mode) {
+        printf("DEBUG: Starting search. White to move: %s\n", board->whiteToMove ? "true" : "false");
+        printf("info string Time limits: soft=%ld ms, hard=%ld ms\n", info->softTimeLimit, info->hardTimeLimit);
+        fflush(stdout);
+    }
 
     Move best_move = 0;
     int best_score = 0;
@@ -1037,7 +1050,8 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
     int beta = INT_MAX - 1;
     int prev_score = 0;
     
-    for (int depth = 1; depth <= MAX_PLY; depth++) {
+    int max_depth = (info->depthLimit > 0) ? info->depthLimit : MAX_PLY;
+    for (int depth = 1; depth <= max_depth; depth++) {
         long iteration_start = get_elapsed_time(info);
         int nodes_before = info->nodesSearched;
         
@@ -1073,6 +1087,8 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
             score = negamax(board, depth, alpha, beta, info, 0, true);
         }
         
+        info->bestScoreThisIteration = score;  // Set the best score for this iteration
+        
         long iteration_end = get_elapsed_time(info);
         info->lastIterationTime = iteration_end - iteration_start;
         int nodes_this_iteration = info->nodesSearched - nodes_before;
@@ -1084,6 +1100,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         
         if (info->stopSearch) {
             printf("info string Search stopped at depth %d (hard limit reached)\n", depth);
+            fflush(stdout);
             if (info->bestMoveThisIteration != 0) {
                 best_move = info->bestMoveThisIteration;
                 best_score = score;
@@ -1106,21 +1123,26 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         // Convert score to white's perspective for UCI output
         int uci_score = board->whiteToMove ? score : -score;
         
-        printf("info depth %d seldepth %d score cp %d nodes %d nps %d time %ld hashfull %d pv",
-               depth, info->seldepth, uci_score, info->nodesSearched, nps, time_ms, hashfull);
-        
-        for (int i = 0; i < info->pv_length[0]; i++) {
-            if (info->pv_table[0][i] == 0) break;
-            char move_str[10];
-            moveToString(info->pv_table[0][i], move_str);
-            printf(" %s", move_str);
+        if (!search_silent_mode) {
+            printf("info depth %d seldepth %d score cp %d nodes %d nps %d time %ld hashfull %d pv",
+                   depth, info->seldepth, uci_score, info->nodesSearched, nps, time_ms, hashfull);
+            
+            for (int i = 0; i < info->pv_length[0]; i++) {
+                if (info->pv_table[0][i] == 0) break;
+                char move_str[10];
+                moveToString(info->pv_table[0][i], move_str);
+                printf(" %s", move_str);
+            }
+            printf("\n");
+            fflush(stdout);
         }
-        printf("\n");
-        fflush(stdout);
         
         // Stop if mate found
         if (abs(score) > MATE_SCORE - 100) {
-            printf("info string Mate found, stopping search\n");
+            if (!search_silent_mode) {
+                printf("info string Mate found, stopping search\n");
+                fflush(stdout);
+            }
             break;
         }
         
@@ -1134,6 +1156,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
             
             if (time_ms >= info->softTimeLimit) {
                 printf("info string Soft time limit reached after depth %d\n", depth);
+                fflush(stdout);
                 break;
             }
             
@@ -1141,15 +1164,20 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
             bool still_early = (time_ms < (info->softTimeLimit * 60) / 100);
             
             if (!enough_time_for_next && !still_early) {
-                printf("info string Stopping before depth %d (estimated: %ld ms, remaining: %ld ms)\n",
-                       depth + 1, estimated_next, remaining);
+                if (!search_silent_mode) {
+                    printf("info string Stopping before depth %d (estimated: %ld ms, remaining: %ld ms)\n",
+                           depth + 1, estimated_next, remaining);
+                    fflush(stdout);
+                }
                 break;
             }
         }
     }
     
     (void)best_score;
-    printf("DEBUG: Best move: %u, Total time: %ld ms\n", best_move, get_elapsed_time(info));
+    if (!search_silent_mode) {
+        printf("DEBUG: Best move: %u, Total time: %ld ms\n", best_move, get_elapsed_time(info));
+    }
     return best_move;
 }
 

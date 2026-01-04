@@ -7,7 +7,7 @@
 
 // NNUE Network Architecture
 #define NNUE_INPUT_SIZE      768   // 64 squares * 6 piece types * 2 colors
-#define NNUE_HIDDEN_SIZE     1024  // Hidden layer neurons per perspective
+#define NNUE_HIDDEN_SIZE     768   // Hidden layer neurons per perspective
 #define NNUE_INPUT_BUCKETS   5     // King position buckets
 #define NNUE_OUTPUT_BUCKETS  8     // Output buckets
 
@@ -50,7 +50,6 @@ typedef struct {
 extern NNUENetwork nnue_net;
 
 // Input bucket map for king position
-extern const int NNUE_INPUT_BUCKET_MAP[64];
 
 // Initialize NNUE with random weights (for testing without a trained net)
 void nnue_init_random(void);

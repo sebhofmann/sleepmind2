@@ -3,19 +3,38 @@ CFLAGS = -g -Wall -Wextra -std=c11 -O3 -march=native # Added optimization flags 
 DEBUG_FLAGS = -g -Wall -Wextra -std=c11 -O0 -march=native -DDEBUG_NNUE_INCREMENTAL
 DEBUG_EVAL_FLAGS = -g -Wall -Wextra -std=c11 -O3 -march=native -DDEBUG_NNUE_EVAL
 
-# Dateien
-SRCS = main.c board_io.c move_generator.c move.c bitboard_utils.c uci.c search.c tt.c evaluation.c board_modifiers.c zobrist.c nnue.c
+# Build directory
 BUILD_DIR = build
-OBJS = $(addprefix $(BUILD_DIR)/, $(SRCS:.c=.o))
-EXEC = $(BUILD_DIR)/sleepmind
 
-# Regeln
-all: $(BUILD_DIR) $(EXEC)
+# Common source files (shared between engine and training)
+COMMON_SRCS = board_io.c move_generator.c move.c bitboard_utils.c search.c tt.c evaluation.c board_modifiers.c zobrist.c nnue.c
+
+# Engine source files
+ENGINE_SRCS = main.c uci.c $(COMMON_SRCS)
+ENGINE_OBJS = $(addprefix $(BUILD_DIR)/, $(ENGINE_SRCS:.c=.o))
+ENGINE_EXEC = $(BUILD_DIR)/sleepmind
+
+# Training data generator source files
+TRAINING_SRCS = training_main.c training_data.c $(COMMON_SRCS)
+TRAINING_OBJS = $(addprefix $(BUILD_DIR)/, $(TRAINING_SRCS:.c=.o))
+TRAINING_EXEC = $(BUILD_DIR)/training
+
+# Default target - build engine only
+all: $(BUILD_DIR) $(ENGINE_EXEC)
+
+# Training target
+training: $(BUILD_DIR) $(TRAINING_EXEC)
+
+# Both targets
+both: all training
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(EXEC): $(OBJS)
+$(ENGINE_EXEC): $(ENGINE_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^
+
+$(TRAINING_EXEC): $(TRAINING_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
 $(BUILD_DIR)/%.o: %.c
@@ -30,4 +49,4 @@ debug: clean all
 debug_eval: CFLAGS = $(DEBUG_EVAL_FLAGS)
 debug_eval: clean all
 
-.PHONY: all clean debug debug_eval
+.PHONY: all training both clean debug debug_eval

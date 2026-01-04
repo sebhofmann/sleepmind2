@@ -1,3 +1,6 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 199309L
 #endif
@@ -18,11 +21,15 @@
 #include <stdint.h>
 #include <string.h>
 
+
 #define ENGINE_NAME "SleepMind UCI"
 #define ENGINE_AUTHOR "Sebastian Hofmann (and Gemini, Claude and GPT-4)"
 
 static Board current_board;
 static MoveList move_list;
+static int current_ply = 0;
+
+// Function to parse moves in UCI format (e.g., "e2e4", "e7e8q")
 
 // Function to parse moves in UCI format (e.g., "e2e4", "e7e8q")
 Move parse_uci_move(Board* board, const char* move_str) {
@@ -178,7 +185,7 @@ void uci_loop() {
     initMoveGenerator(); // Initialize move generator data
     printf("DEBUG: Move generator initialized\n"); fflush(stdout);
     
-    eval_init("nnue_i768_h1024_bin5_bout8_v2_1200.bin", nnue_network);  // Load NNUE network
+    eval_init("quantised.bin", nnue_network);  // Load NNUE network
     printf("DEBUG: NNUE initialized, loaded=%d\n", nnue_network->loaded); fflush(stdout);
 
     // Default to standard start position so commands like "perft" work
@@ -197,10 +204,16 @@ void uci_loop() {
         if (strcmp(line, "uci") == 0) {
             printf("id name %s\n", ENGINE_NAME);
             printf("id author %s\n", ENGINE_AUTHOR);
-            // Add options here if any
             printf("uciok\n");
+            fflush(stdout);
         } else if (strcmp(line, "isready") == 0) {
             printf("readyok\n");
+            fflush(stdout);
+        } else if (strcmp(line, "ucinewgame") == 0) {
+            current_ply = 0;
+            // Reset board to startpos
+            current_board = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+            nnue_reset_accumulator(&current_board, &nnue_accumulator, nnue_network);
         } else if (strncmp(line, "position", 8) == 0) {
             char* token;
             char* rest = line + 9; // Skip "position "
@@ -209,6 +222,7 @@ void uci_loop() {
             if (strcmp(token, "startpos") == 0) {
                 current_board = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
                 nnue_reset_accumulator(&current_board, &nnue_accumulator, nnue_network);  // Reset NNUE for new position
+                current_ply = 0;
                 printf("info string DEBUG: UCI: Parsed startpos. WhiteToMove: %s. e2_pawn: %llu, d2_pawn: %llu, e7_pawn: %llu\n", // MODIFIED %d to %llu
                        current_board.whiteToMove ? "true" : "false",
                        GET_BIT(current_board.whitePawns, SQ_E2),
@@ -248,6 +262,7 @@ void uci_loop() {
                     Move move = parse_uci_move(&current_board, current_move_token);
                     if (move != 0) {
                         applyMove(&current_board, move, &undo_info, &nnue_accumulator, nnue_network);  // Update NNUE
+                        current_ply++;
                         // Log after applying, to see the state if needed, or confirm application
                         printf("info string DEBUG: UCI: Move '%s' (parsed as %u) successfully applied.\n", current_move_token, move); fflush(stdout);
                     } else {
@@ -413,6 +428,7 @@ void uci_loop() {
             search_info.bestMoveThisIteration = 0;
             search_info.bestScoreThisIteration = 0;
             search_info.seldepth = 0;
+            search_info.depthLimit = depth_limit;  // Set depth limit from UCI
             clear_search_history(&search_info);  // Initialize killer moves, history, etc.
 
 
@@ -424,17 +440,20 @@ void uci_loop() {
             printf("info string DEBUG: UCI: Generated %d moves before calling search.\n", move_list.count);
             fflush(stdout); // CHANGED from stderr
             Move best_move = 0;
+            
             if (move_list.count > 0) {
+                // Normal search
                 printf("info string DEBUG: UCI: Calling iterative_deepening_search...\n");
-                const char* fen_before_search = outputFEN(&current_board); // ADDED
-                printf("info string FEN: %s\n", fen_before_search); // ADDED
-                fflush(stdout); // CHANGED from stderr
+                const char* fen_before_search = outputFEN(&current_board);
+                printf("info string FEN: %s\n", fen_before_search);
+                fflush(stdout);
                 best_move = iterative_deepening_search(&current_board, &search_info);
                 printf("info string DEBUG: UCI: iterative_deepening_search returned. Best move: %u\n", best_move);
-                fflush(stdout); // CHANGED from stderr
+                fflush(stdout);
+                printf("Best score: %d\n", search_info.bestScoreThisIteration);
             } else {
                 printf("info string DEBUG: UCI: No moves generated, not calling search.\n");
-                fflush(stdout); // CHANGED from stderr
+                fflush(stdout);
             }
 
 

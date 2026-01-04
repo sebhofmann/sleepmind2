@@ -342,6 +342,7 @@ static int evaluate_space_c(const Board* board, double game_phase) {
 }
 
 // Classical/HCE evaluation (fallback when NNUE not available)
+// Returns score from side-to-move perspective (positive = good for STM)
 int evaluate_classical(const Board* board) {
     int score = 0;
 
@@ -349,14 +350,15 @@ int evaluate_classical(const Board* board) {
     int total_mat = get_total_material(board);
     double game_phase = calculate_game_phase(total_mat);
 
-    // Evaluations
+    // Evaluations (all return white-relative scores)
     score += evaluate_material_c(board);
     score += evaluate_piece_square_tables_c(board, game_phase);
     score += evaluate_pawn_structure_c(board, game_phase);
     score += evaluate_center_control_c(board, game_phase);
     //score += evaluate_space_c(board, game_phase);
     
-    return score;
+    // Convert to side-to-move relative
+    return score;//board->whiteToMove ? score : -score;
 }
 
 // NNUE evaluation with accumulator

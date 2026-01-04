@@ -2,3 +2,8 @@
 .vscode
 build
 main.dSYM
+training/target
+training_data
+checkpoints
+.idea
+training/.idea

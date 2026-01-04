@@ -5,8 +5,13 @@
 #include "move.h"
 #include "nnue.h"
 #include <time.h> // For clock_t
+#include <stdbool.h>
 
 #define MAX_PLY 64 // Maximum search depth
+
+// Silent mode - disables info and debug output (for training)
+extern bool search_silent_mode;
+void set_search_silent(bool silent);
 #define MAX_KILLERS 2  // Number of killer moves per ply
 
 typedef struct {
@@ -37,6 +42,7 @@ typedef struct {
     
     long lastIterationTime;  // Zeit der letzten Iteration für Vorhersage
     int seldepth;            // Selective depth (max depth reached)
+    int depthLimit;          // Maximum search depth (0 = no limit)
 } SearchInfo;
 
 Move iterative_deepening_search(Board* board, SearchInfo* info);
