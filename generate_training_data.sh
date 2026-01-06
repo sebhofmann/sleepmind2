@@ -20,6 +20,9 @@ RANDOM_MOVES=${RANDOM_MOVES:-12}      # Zufallszüge am Anfang
 RANDOM_PROB=${RANDOM_PROB:-100}       # Wahrscheinlichkeit für Zufallszüge (%)
 MAX_MOVES=${MAX_MOVES:-500}           # Maximale Züge pro Spiel
 DRAW_THRESHOLD=${DRAW_THRESHOLD:-100} # 50-Züge-Regel
+EVAL_THRESHOLD=${EVAL_THRESHOLD:-1}   # Max Bewertung in Bauern nach Zufallszügen (0=aus)
+ADJUDICATE=${ADJUDICATE:-10}          # Spiel beenden bei +/- N Bauern (0=aus)
+FILTER_TACTICS=${FILTER_TACTICS:-1}   # Taktische Positionen filtern (0=aus)
 VERBOSE=${VERBOSE:-1}                 # Verbosity Level
 
 # Farben für Output
@@ -58,6 +61,9 @@ echo "  Suchtiefe:         $DEPTH"
 echo "  Zufallszüge:       $RANDOM_MOVES (${RANDOM_PROB}%)"
 echo "  Max Züge/Spiel:    $MAX_MOVES"
 echo "  Draw-Threshold:    $DRAW_THRESHOLD"
+echo "  Eval-Threshold:    $EVAL_THRESHOLD Bauern (0=aus)"
+echo "  Adjudicate bei:    $ADJUDICATE Bauern (0=aus)"
+echo "  Filter Taktik:     $FILTER_TACTICS (1=an, 0=aus)"
 echo "  Output:            $OUTPUT_FILE"
 echo ""
 
@@ -103,6 +109,9 @@ for i in $(seq 1 $CONCURRENCY); do
         -d "$DEPTH" \
         -r "$RANDOM_MOVES" \
         -p "$RANDOM_PROB" \
+        -e "$EVAL_THRESHOLD" \
+        -a "$ADJUDICATE" \
+        -f "$FILTER_TACTICS" \
         --max-moves "$MAX_MOVES" \
         --draw-threshold "$DRAW_THRESHOLD" \
         -v "$VERBOSE" \
