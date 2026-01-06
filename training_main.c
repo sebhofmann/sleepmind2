@@ -33,6 +33,9 @@ typedef struct {
     int search_depth;           // Search depth for moves
     int search_time_ms;         // Search time in milliseconds (0 = use depth)
     int verbose;                // Verbosity level
+    int eval_threshold;         // Max eval (in pawns) after random moves, 0 = disabled
+    int adjudicate_threshold;   // Adjudicate game as won/lost if eval exceeds this (in pawns), 0 = disabled
+    bool filter_tactics;        // Filter out tactical positions (checks, captures)
 } TrainingConfig;
 
 static TrainingConfig config = {
@@ -44,7 +47,10 @@ static TrainingConfig config = {
     .num_games = 100,
     .search_depth = 8,
     .search_time_ms = 0,
-    .verbose = 1
+    .verbose = 1,
+    .eval_threshold = 1,        // Default: discard games with eval > +/-100cp after random moves
+    .adjudicate_threshold = 10, // Default: adjudicate at +/-1000cp
+    .filter_tactics = true      // Default: filter tactical positions
 };
 
 // Global flag for graceful shutdown
@@ -53,6 +59,8 @@ static int games_completed = 0;
 
 // Statistics tracking
 static int total_positions = 0;
+static int filtered_positions = 0;
+static int games_discarded = 0;
 static time_t start_time = 0;
 static time_t last_status_time = 0;
 
@@ -61,8 +69,8 @@ static void print_status(void) {
     double elapsed = difftime(now, start_time);
     if (elapsed > 0) {
         double pos_per_sec = total_positions / elapsed;
-        printf("[Status: %d games, %d positions, %.1f pos/sec, %.0fs elapsed]\n", 
-               games_completed, total_positions, pos_per_sec, elapsed);
+        printf("[Status: %d games, %d discarded, %d positions (%d filtered), %.1f pos/sec, %.0fs elapsed]\n", 
+               games_completed, games_discarded, total_positions, filtered_positions, pos_per_sec, elapsed);
         fflush(stdout);
     }
 }
@@ -198,7 +206,8 @@ static GameResult check_game_result(Board* board, int half_move_clock, MoveList*
 // Self-Play Game
 // =============================================================================
 
-static void play_game(int game_num, NNUENetwork* nnue_network) {
+// Returns true if game was valid, false if discarded (eval threshold exceeded)
+static bool play_game(int game_num, NNUENetwork* nnue_network) {
     Board board = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     NNUEAccumulator nnue_accumulator = {0};
     nnue_reset_accumulator(&board, &nnue_accumulator, nnue_network);
@@ -209,6 +218,7 @@ static void play_game(int game_num, NNUENetwork* nnue_network) {
     int ply = 0;
     int half_move_clock = 0;
     GameResult result = GAME_ONGOING;
+    bool checked_threshold = false;  // Track if we've checked eval after random moves
     
     // Reset position history and training data for this game
     reset_position_history();
@@ -281,8 +291,58 @@ static void play_game(int game_num, NNUENetwork* nnue_network) {
                 printf("  Ply %d: search move %s (score: %d)\n", ply, move_str, best_score);
             }
             
-            // Record training data (only for non-random moves)
-            add_training_entry(&board, best_score, ply);
+            // Check eval threshold after random moves (only once)
+            if (!checked_threshold && config.eval_threshold > 0 && ply >= config.random_moves) {
+                checked_threshold = true;
+                int threshold_cp = config.eval_threshold * 100;  // Convert pawns to centipawns
+                if (best_score > threshold_cp || best_score < -threshold_cp) {
+                    if (config.verbose >= 1) {
+                        printf("Game %d discarded: eval %d cp exceeds threshold +/-%d cp\n", 
+                               game_num, best_score, threshold_cp);
+                    }
+                    return false;  // Discard this game
+                }
+            }
+            
+            // Check adjudication threshold - stop logging and end game if position is hopeless
+            if (config.adjudicate_threshold > 0) {
+                int adj_threshold_cp = config.adjudicate_threshold * 100;
+                if (best_score > adj_threshold_cp || best_score < -adj_threshold_cp) {
+                    // Adjudicate the game
+                    if (best_score > adj_threshold_cp) {
+                        result = board.whiteToMove ? GAME_WHITE_WINS : GAME_BLACK_WINS;
+                    } else {
+                        result = board.whiteToMove ? GAME_BLACK_WINS : GAME_WHITE_WINS;
+                    }
+                    if (config.verbose >= 2) {
+                        printf("  Ply %d: adjudicated (eval %d cp)\n", ply, best_score);
+                    }
+                    break;  // Exit the game loop
+                }
+            }
+            
+            // Filter tactical positions if enabled
+            bool should_record = true;
+            if (config.filter_tactics) {
+                // Check if side to move is in check
+                bool in_check = isKingAttacked(&board, board.whiteToMove);
+                // Check if best move is a capture
+                bool is_capture_move = MOVE_IS_CAPTURE(best_move);
+                
+                if (in_check || is_capture_move) {
+                    should_record = false;
+                    filtered_positions++;
+                    if (config.verbose >= 2) {
+                        printf("  Ply %d: filtered (%s)\n", ply, 
+                               in_check ? "in check" : "capture move");
+                    }
+                }
+            }
+            
+            // Record training data (only for non-random, non-tactical moves)
+            if (should_record) {
+                add_training_entry(&board, best_score, ply);
+            }
         }
         
         if (best_move == 0) {
@@ -314,18 +374,6 @@ static void play_game(int game_num, NNUENetwork* nnue_network) {
         
         // Check for game end
         result = check_game_result(&board, half_move_clock, &moves);
-        
-        // Early termination if score is very high (adjudication)
-        if (!is_random_move && (best_score > 10000 || best_score < -10000)) {
-            // Near mate score - continue playing to actual mate
-        } else if (!is_random_move && ply >= config.random_moves + 20) {
-            // After opening, adjudicate if score is very one-sided for many moves
-            if (best_score > 2000) {
-                result = board.whiteToMove ? GAME_BLACK_WINS : GAME_WHITE_WINS; // score is for side that just moved
-            } else if (best_score < -2000) {
-                result = board.whiteToMove ? GAME_WHITE_WINS : GAME_BLACK_WINS;
-            }
-        }
     }
     
     // Determine final result
@@ -354,6 +402,7 @@ static void play_game(int game_num, NNUENetwork* nnue_network) {
     }
     
     games_completed++;
+    return true;  // Game was valid
 }
 
 // =============================================================================
@@ -371,10 +420,13 @@ static void print_usage(const char* program_name) {
     printf("  -t, --time MS           Search time in milliseconds (overrides depth)\n");
     printf("  --draw-threshold N      Moves without progress for draw (default: 100)\n");
     printf("  --max-moves N           Maximum moves per game (default: 500)\n");
+    printf("  -e, --eval-threshold N  Max eval in pawns after random moves, discard if exceeded (0=off)\n");
+    printf("  -a, --adjudicate N      Adjudicate game if eval exceeds N pawns (default: 10, 0=off)\n");
+    printf("  -f, --filter-tactics B  Filter tactical positions: checks/captures (default: 1, 0=off)\n");
     printf("  -v, --verbose LEVEL     Verbosity level 0-2 (default: 1)\n");
     printf("  -h, --help              Show this help message\n");
     printf("\nExample:\n");
-    printf("  %s -o data.txt -n 1000 -r 8 -d 6\n", program_name);
+    printf("  %s -o data.txt -n 1000 -r 8 -d 6 -e 4 -a 10 -f 1\n", program_name);
 }
 
 static void parse_arguments(int argc, char* argv[]) {
@@ -387,13 +439,16 @@ static void parse_arguments(int argc, char* argv[]) {
         {"time",           required_argument, 0, 't'},
         {"draw-threshold", required_argument, 0, 'D'},
         {"max-moves",      required_argument, 0, 'M'},
+        {"eval-threshold", required_argument, 0, 'e'},
+        {"adjudicate",     required_argument, 0, 'a'},
+        {"filter-tactics", required_argument, 0, 'f'},
         {"verbose",        required_argument, 0, 'v'},
         {"help",           no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
     
     int c;
-    while ((c = getopt_long(argc, argv, "o:n:r:p:d:t:v:h", long_options, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "o:n:r:p:d:t:e:a:f:v:h", long_options, NULL)) != -1) {
         switch (c) {
             case 'o':
                 strncpy(config.output_file, optarg, sizeof(config.output_file) - 1);
@@ -420,6 +475,15 @@ static void parse_arguments(int argc, char* argv[]) {
                 break;
             case 'M':
                 config.max_game_moves = atoi(optarg);
+                break;
+            case 'e':
+                config.eval_threshold = atoi(optarg);
+                break;
+            case 'a':
+                config.adjudicate_threshold = atoi(optarg);
+                break;
+            case 'f':
+                config.filter_tactics = atoi(optarg) != 0;
                 break;
             case 'v':
                 config.verbose = atoi(optarg);
@@ -484,6 +548,17 @@ int main(int argc, char* argv[]) {
     }
     printf("Draw threshold:    %d moves\n", config.draw_threshold);
     printf("Max moves/game:    %d\n", config.max_game_moves);
+    if (config.eval_threshold > 0) {
+        printf("Eval threshold:    +/-%d pawns (%d cp)\n", config.eval_threshold, config.eval_threshold * 100);
+    } else {
+        printf("Eval threshold:    disabled\n");
+    }
+    if (config.adjudicate_threshold > 0) {
+        printf("Adjudicate at:     +/-%d pawns (%d cp)\n", config.adjudicate_threshold, config.adjudicate_threshold * 100);
+    } else {
+        printf("Adjudicate at:     disabled\n");
+    }
+    printf("Filter tactics:    %s\n", config.filter_tactics ? "yes" : "no");
     printf("================================\n\n");
     
     // Initialize timing for statistics
@@ -491,8 +566,14 @@ int main(int argc, char* argv[]) {
     last_status_time = start_time;
     
     // Play games
-    for (int game = 1; game <= config.num_games && !should_stop; game++) {
-        play_game(game, nnue_network);
+    int game = 1;
+    while (game <= config.num_games && !should_stop) {
+        bool valid = play_game(game, nnue_network);
+        if (valid) {
+            game++;  // Only advance to next game if this one was valid
+        } else {
+            games_discarded++;
+        }
         check_status_output();
     }
     
@@ -503,7 +584,9 @@ int main(int argc, char* argv[]) {
     // Summary
     printf("\n=== Summary ===\n");
     printf("Games completed: %d/%d\n", games_completed, config.num_games);
+    printf("Games discarded: %d\n", games_discarded);
     printf("Total positions: %d\n", total_positions);
+    printf("Filtered (tactics): %d\n", filtered_positions);
     if (total_elapsed > 0) {
         printf("Total time:      %.1f seconds\n", total_elapsed);
         printf("Avg pos/sec:     %.1f\n", total_positions / total_elapsed);
