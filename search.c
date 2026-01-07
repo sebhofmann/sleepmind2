@@ -7,7 +7,11 @@
 #include "board.h"
 #include "move.h"
 #include "bitboard_utils.h"
+#include "zobrist.h"
 #include <stdio.h>
+
+// Define this to enable Zobrist hash verification after undo
+//#define DEBUG_ZOBRIST_VERIFY
 #include <limits.h>
 #include <stdlib.h>
 #include <time.h>
@@ -566,6 +570,10 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         for (int i = 0; i < all_moves.count; i++) {
             Move m = scored[i].move;
             
+            #ifdef DEBUG_ZOBRIST_VERIFY
+            uint64_t saved_zobrist = board->zobristKey;
+            #endif
+            
             MoveUndoInfo undo;
             applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
             #ifdef DEBUG_NNUE_EVAL
@@ -573,6 +581,17 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
             #endif
             int score = -quiescence(board, -beta, -alpha, info, ply + 1);
             undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+            
+            #ifdef DEBUG_ZOBRIST_VERIFY
+            if (board->zobristKey != saved_zobrist) {
+                char move_str[6];
+                moveToString(m, move_str);
+                printf("info string ZOBRIST MISMATCH (qsearch check) move=%s ply=%d\n", move_str, ply);
+                printf("info string   before=0x%llx after=0x%llx\n",
+                       (unsigned long long)saved_zobrist, (unsigned long long)board->zobristKey);
+                fflush(stdout);
+            }
+            #endif
             
             if (info->stopSearch) return 0;
             
@@ -627,6 +646,10 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
             }
         }
         
+        #ifdef DEBUG_ZOBRIST_VERIFY
+        uint64_t saved_zobrist = board->zobristKey;
+        #endif
+        
         MoveUndoInfo undo;
         applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
         #ifdef DEBUG_NNUE_EVAL
@@ -634,6 +657,17 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         #endif
         int score = -quiescence(board, -beta, -alpha, info, ply + 1);
         undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+        
+        #ifdef DEBUG_ZOBRIST_VERIFY
+        if (board->zobristKey != saved_zobrist) {
+            char move_str[6];
+            moveToString(m, move_str);
+            printf("info string ZOBRIST MISMATCH (qsearch) move=%s ply=%d\n", move_str, ply);
+            printf("info string   before=0x%llx after=0x%llx\n",
+                   (unsigned long long)saved_zobrist, (unsigned long long)board->zobristKey);
+            fflush(stdout);
+        }
+        #endif
         
         if (info->stopSearch) return 0;
         
@@ -822,6 +856,11 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // Prefetch TT entry for likely next position
         // (This is a simple optimization that can help cache performance)
         
+        // DEBUG: Save Zobrist key before move for verification
+        #ifdef DEBUG_ZOBRIST_VERIFY
+        uint64_t saved_zobrist = board->zobristKey;
+        #endif
+        
         // DEBUG: Save accumulator state before move
         #ifdef DEBUG_NNUE_INCREMENTAL
         NNUEAccumulator saved_acc;
@@ -912,6 +951,34 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         }
         
         undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+        
+        // DEBUG: Verify Zobrist hash is correctly restored after undo
+        #ifdef DEBUG_ZOBRIST_VERIFY
+        if (board->zobristKey != saved_zobrist) {
+            char move_str[6];
+            moveToString(m, move_str);
+            printf("info string ZOBRIST MISMATCH after undo move=%s ply=%d\n", move_str, ply);
+            printf("info string   before=0x%llx after=0x%llx diff=0x%llx\n", 
+                   (unsigned long long)saved_zobrist, 
+                   (unsigned long long)board->zobristKey,
+                   (unsigned long long)(saved_zobrist ^ board->zobristKey));
+            
+            // Additional info about the move
+            int from_sq = MOVE_FROM(m);
+            int to_sq = MOVE_TO(m);
+            printf("info string   from=%d to=%d cap=%d ep=%d castle=%d promo=%d\n",
+                   from_sq, to_sq, MOVE_IS_CAPTURE(m), MOVE_IS_EN_PASSANT(m), 
+                   MOVE_IS_CASTLING(m), MOVE_IS_PROMOTION(m));
+            
+            // Recalculate and compare
+            uint64_t recalc = calculate_zobrist_key(board);
+            printf("info string   recalculated=0x%llx matches_saved=%d matches_current=%d\n",
+                   (unsigned long long)recalc, 
+                   (recalc == saved_zobrist), 
+                   (recalc == board->zobristKey));
+            fflush(stdout);
+        }
+        #endif
         
         // DEBUG: Compare accumulator state after undo
         #ifdef DEBUG_NNUE_INCREMENTAL
@@ -1117,15 +1184,15 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         
         // UCI output
         long time_ms = get_elapsed_time(info);
-        int nps = time_ms > 0 ? (int)(info->nodesSearched * 1000L / time_ms) : 0;
+        uint64_t nps = time_ms > 0 ? (info->nodesSearched * 1000ULL / time_ms) : 0;
         int hashfull = tt_hashfull();
         
         // Convert score to white's perspective for UCI output
         int uci_score = board->whiteToMove ? score : -score;
         
         if (!search_silent_mode) {
-            printf("info depth %d seldepth %d score cp %d nodes %d nps %d time %ld hashfull %d pv",
-                   depth, info->seldepth, uci_score, info->nodesSearched, nps, time_ms, hashfull);
+            printf("info depth %d seldepth %d score cp %d nodes %llu nps %llu time %ld hashfull %d pv",
+                   depth, info->seldepth, uci_score, (unsigned long long)info->nodesSearched, (unsigned long long)nps, time_ms, hashfull);
             
             for (int i = 0; i < info->pv_length[0]; i++) {
                 if (info->pv_table[0][i] == 0) break;

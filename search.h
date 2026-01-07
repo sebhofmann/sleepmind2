@@ -19,7 +19,7 @@ typedef struct {
     long softTimeLimit;  // Zeit, nach der keine neue Tiefe begonnen wird
     long hardTimeLimit;  // Absolutes Zeitlimit (Abbruch der Suche)
     bool stopSearch;
-    int nodesSearched;
+    uint64_t nodesSearched;
     Move bestMoveThisIteration;
     int bestScoreThisIteration;
     
