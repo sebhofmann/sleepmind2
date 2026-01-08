@@ -1168,10 +1168,9 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         if (info->stopSearch) {
             printf("info string Search stopped at depth %d (hard limit reached)\n", depth);
             fflush(stdout);
-            if (info->bestMoveThisIteration != 0) {
-                best_move = info->bestMoveThisIteration;
-                best_score = score;
-            }
+            // DO NOT update best_move from incomplete iteration!
+            // The bestMoveThisIteration might be from a partial search and unreliable.
+            // Keep the best_move from the last completed iteration.
             break;
         }
         
@@ -1238,6 +1237,16 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                 }
                 break;
             }
+        }
+    }
+    
+    // Fallback: If we somehow have no best move (e.g., search stopped at depth 1 before finding anything),
+    // use the bestMoveThisIteration if available, otherwise return 0 (shouldn't happen in legal position)
+    if (best_move == 0 && info->bestMoveThisIteration != 0) {
+        best_move = info->bestMoveThisIteration;
+        if (!search_silent_mode) {
+            printf("info string Using fallback move from incomplete iteration\n");
+            fflush(stdout);
         }
     }
     
