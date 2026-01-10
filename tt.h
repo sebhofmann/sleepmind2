@@ -12,14 +12,20 @@
 #define TT_LOWERBOUND 1 // Alpha (score is at least this good)
 #define TT_UPPERBOUND 2 // Beta (score is at most this good)
 
+// Packed TT Entry - 16 bytes for optimal cache line usage
+// Key verification uses upper 16 bits stored separately
 typedef struct {
-    uint64_t zobristKey; // Store the full key to detect collisions
-    Move bestMove;
-    int16_t score;
-    int8_t depth;
-    uint8_t flag;    // EXACT, LOWERBOUND, UPPERBOUND
-    uint8_t age;     // For replacement strategy
-} __attribute__((packed)) TTEntry;
+    uint32_t key16;      // Upper 16 bits of zobrist key for verification (4 bytes due to alignment)
+    Move bestMove;       // 4 bytes
+    int16_t score;       // 2 bytes
+    int8_t depth;        // 1 byte
+    uint8_t flag_age;    // 2 bits flag, 6 bits age (1 byte)
+} TTEntry;
+
+// Helper macros for flag_age field
+#define TT_GET_FLAG(e) ((e)->flag_age & 0x03)
+#define TT_GET_AGE(e) ((e)->flag_age >> 2)
+#define TT_MAKE_FLAG_AGE(flag, age) (((age) << 2) | ((flag) & 0x03))
 
 // Current search age for replacement strategy
 extern uint8_t tt_age;

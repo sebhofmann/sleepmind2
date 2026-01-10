@@ -59,26 +59,29 @@ void tt_store(uint64_t key, int depth, int score, uint8_t flag, Move best_move) 
 
     uint64_t index = key % tt_size_entries;
     TTEntry* entry = &transposition_table[index];
+    uint32_t key16 = (uint32_t)(key >> 48);  // Upper 16 bits for verification
 
     // Replacement strategy: 
-    // 1. Always replace if empty (key == 0)
+    // 1. Always replace if empty (key16 == 0 and bestMove == 0)
     // 2. Always replace if same position (update with new info)
     // 3. Replace if new depth is >= old depth - 3 (depth preference with some tolerance)
     // 4. Replace if entry is from an old search (age difference >= 2)
     // 5. Always replace UPPERBOUND entries with other types (failed lows are less valuable)
     
     bool should_replace = false;
+    uint8_t entry_age = TT_GET_AGE(entry);
+    uint8_t entry_flag = TT_GET_FLAG(entry);
     
-    if (entry->zobristKey == 0) {
+    if (entry->key16 == 0 && entry->bestMove == 0) {
         // Empty entry
         should_replace = true;
-    } else if (entry->zobristKey == key) {
+    } else if (entry->key16 == key16) {
         // Same position - update if deeper or same depth with better flag
         should_replace = (depth >= entry->depth) || 
-                        (depth == entry->depth - 1 && flag == TT_EXACT && entry->flag != TT_EXACT);
+                        (depth == entry->depth - 1 && flag == TT_EXACT && entry_flag != TT_EXACT);
     } else {
         // Different position - use age and depth for replacement
-        int age_diff = (tt_age - entry->age) & 63;  // Handle wraparound
+        int age_diff = (tt_age - entry_age) & 63;  // Handle wraparound
         
         if (age_diff >= 2) {
             // Old entry, replace it
@@ -86,19 +89,18 @@ void tt_store(uint64_t key, int depth, int score, uint8_t flag, Move best_move) 
         } else if (depth >= entry->depth - 2) {
             // New search is deep enough
             should_replace = true;
-        } else if (entry->flag == TT_UPPERBOUND && flag != TT_UPPERBOUND) {
+        } else if (entry_flag == TT_UPPERBOUND && flag != TT_UPPERBOUND) {
             // Replace failed low with better info
             should_replace = true;
         }
     }
     
     if (should_replace) {
-        entry->zobristKey = key;
+        entry->key16 = key16;
         entry->depth = (int8_t)depth;
         entry->score = (int16_t)score;
-        entry->flag = flag;
+        entry->flag_age = TT_MAKE_FLAG_AGE(flag, tt_age);
         entry->bestMove = best_move;
-        entry->age = tt_age;
     }
 }
 
@@ -107,8 +109,9 @@ TTEntry* tt_probe(uint64_t key) {
 
     uint64_t index = key % tt_size_entries;
     TTEntry* entry = &transposition_table[index];
+    uint32_t key16 = (uint32_t)(key >> 48);
 
-    if (entry->zobristKey == key) {
+    if (entry->key16 == key16) {
         return entry;
     }
     return NULL;
@@ -129,8 +132,8 @@ int tt_hashfull() {
     uint64_t sample_size = tt_size_entries < 1000 ? tt_size_entries : 1000;
     
     for (uint64_t i = 0; i < sample_size; i++) {
-        if (transposition_table[i].zobristKey != 0 && 
-            transposition_table[i].age == tt_age) {
+        if ((transposition_table[i].key16 != 0 || transposition_table[i].bestMove != 0) && 
+            TT_GET_AGE(&transposition_table[i]) == tt_age) {
             used++;
         }
     }

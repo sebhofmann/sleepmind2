@@ -186,8 +186,8 @@ fn main() {
         net_id,
         eval_scale: 400.0,
         steps: TrainingSteps {
-            batch_size: 8000,
-            batches_per_superbatch: 4000,
+            batch_size: 16_384,
+            batches_per_superbatch: 25,
             start_superbatch,
             end_superbatch: superbatches,
         },

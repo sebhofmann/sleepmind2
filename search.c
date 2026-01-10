@@ -544,26 +544,23 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     // Max ply check
     if (ply >= MAX_PLY) {
         int eval = evaluate(board, info->nnue_acc, info->nnue_net);
-        return board->whiteToMove ? eval : -eval;  // Convert from White perspective to side-to-move
+        return board->whiteToMove ? eval : -eval;
     }
     
     // Check if we're in check
     bool in_check = isKingAttacked(board, board->whiteToMove);
     
-    // Generate all moves
-    MoveList all_moves;
-    generateMoves(board, &all_moves);
-    
-    // If no legal moves: checkmate or stalemate
-    if (all_moves.count == 0) {
-        if (in_check) {
-            return -MATE_SCORE + ply;
-        }
-        return 0;
-    }
-    
     // If in check, we must search all moves (not just captures)
     if (in_check) {
+        // Generate all legal moves when in check
+        MoveList all_moves;
+        generateMoves(board, &all_moves);
+        
+        // If no legal moves: checkmate
+        if (all_moves.count == 0) {
+            return -MATE_SCORE + ply;
+        }
+        
         ScoredMove scored[256];
         score_captures(board, &all_moves, scored);
         
@@ -623,17 +620,16 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         return alpha;
     }
     
+    // Generate only captures and promotions (much faster than generateMoves!)
+    MoveList capture_moves;
+    generateCaptureAndPromotionMoves(board, &capture_moves);
+    
     // Score and sort captures
     ScoredMove scored[256];
-    score_captures(board, &all_moves, scored);
+    score_captures(board, &capture_moves, scored);
     
-    for (int i = 0; i < all_moves.count; i++) {
+    for (int i = 0; i < capture_moves.count; i++) {
         Move m = scored[i].move;
-        
-        // Only search captures and promotions
-        if (!MOVE_IS_CAPTURE(m) && !MOVE_IS_PROMOTION(m)) {
-            continue;
-        }
         
         // Delta pruning: skip captures that can't possibly raise alpha
         if (!MOVE_IS_PROMOTION(m)) {
@@ -652,6 +648,13 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         
         MoveUndoInfo undo;
         applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+        
+        // Skip illegal moves (king left in check) - needed because generateCaptureAndPromotionMoves is pseudo-legal
+        if (isKingAttacked(board, !board->whiteToMove)) {
+            undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+            continue;
+        }
+        
         #ifdef DEBUG_NNUE_EVAL
         eval_set_last_move(m, MOVE_FROM(m), MOVE_TO(m));
         #endif
@@ -728,6 +731,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // Only use TT cutoff in non-PV nodes
         if (!is_pv && tt_entry->depth >= depth && ply > 0) {
             int tt_score = tt_entry->score;
+            uint8_t tt_flag = TT_GET_FLAG(tt_entry);
             
             // Adjust mate scores
             if (tt_score > MATE_SCORE - 100) {
@@ -736,13 +740,13 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                 tt_score += ply;
             }
             
-            if (tt_entry->flag == TT_EXACT) {
+            if (tt_flag == TT_EXACT) {
                 return tt_score;
             }
-            if (tt_entry->flag == TT_LOWERBOUND && tt_score >= beta) {
+            if (tt_flag == TT_LOWERBOUND && tt_score >= beta) {
                 return tt_score;
             }
-            if (tt_entry->flag == TT_UPPERBOUND && tt_score <= alpha) {
+            if (tt_flag == TT_UPPERBOUND && tt_score <= alpha) {
                 return tt_score;
             }
         }
