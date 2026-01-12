@@ -7,7 +7,7 @@
 
 // NNUE Network Architecture
 #define NNUE_INPUT_SIZE      768   // 64 squares * 6 piece types * 2 colors
-#define NNUE_HIDDEN_SIZE     768   // Hidden layer neurons per perspective
+#define NNUE_HIDDEN_SIZE     256   // Hidden layer neurons per perspective
 #define NNUE_INPUT_BUCKETS   5     // King position buckets
 #define NNUE_OUTPUT_BUCKETS  8     // Output buckets
 

@@ -114,7 +114,7 @@ fn main() {
     println!();
 
     // hyperparams
-    let hl_size = 768;
+    let hl_size = 256;
     let initial_lr = 0.001;
     let final_lr = 0.001 * 0.3f32.powi(5);
     let wdl_proportion = 0.0;
@@ -182,12 +182,14 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l0w", stricter_clipping);
     trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
 
+    // 209902601
+
     let schedule = TrainingSchedule {
         net_id,
         eval_scale: 400.0,
         steps: TrainingSteps {
             batch_size: 16_384,
-            batches_per_superbatch: 25,
+            batches_per_superbatch: 100,
             start_superbatch,
             end_superbatch: superbatches,
         },
