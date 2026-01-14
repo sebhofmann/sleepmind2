@@ -128,17 +128,20 @@ int tt_hashfull() {
     if (transposition_table == NULL || tt_size_entries == 0) return 0;
     
     int used = 0;
-    // Sample first 1000 entries for speed
-    uint64_t sample_size = tt_size_entries < 1000 ? tt_size_entries : 1000;
+    // Sample 1000 entries distributed across the table for accurate measurement
+    uint64_t sample_size = 1000;
+    uint64_t step = tt_size_entries / sample_size;
+    if (step == 0) step = 1;
     
-    for (uint64_t i = 0; i < sample_size; i++) {
-        if ((transposition_table[i].key16 != 0 || transposition_table[i].bestMove != 0) && 
-            TT_GET_AGE(&transposition_table[i]) == tt_age) {
+    for (uint64_t i = 0; i < sample_size && i * step < tt_size_entries; i++) {
+        uint64_t idx = i * step;
+        if ((transposition_table[idx].key16 != 0 || transposition_table[idx].bestMove != 0) && 
+            TT_GET_AGE(&transposition_table[idx]) == tt_age) {
             used++;
         }
     }
     
-    return (used * 1000) / (int)sample_size;
+    return used;  // Already in permille since sample_size is 1000
 }
 
 void free_tt() {

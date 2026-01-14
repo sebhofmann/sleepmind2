@@ -22,6 +22,11 @@
 // =============================================================================
 bool search_silent_mode = false;
 
+// TT Debug statistics
+static uint64_t tt_probes = 0;
+static uint64_t tt_hits = 0;
+static uint64_t tt_cutoffs = 0;
+
 void set_search_silent(bool silent) {
     search_silent_mode = silent;
 }
@@ -527,6 +532,9 @@ static bool can_do_null_move(Board* board) {
 // Quiescence Search
 // =============================================================================
 
+// Depth used for QS entries in TT (negative to distinguish from main search)
+#define QS_TT_DEPTH 0
+
 static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int ply) {
     info->nodesSearched++;
     
@@ -547,6 +555,45 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         return board->whiteToMove ? eval : -eval;
     }
     
+    int original_alpha = alpha;
+    
+    // ==========================================================================
+    // TT Probe in Quiescence Search
+    // ==========================================================================
+    Move tt_move = 0;
+    tt_probes++;
+    TTEntry* tt_entry = tt_probe(board->zobristKey);
+    if (tt_entry != NULL) {
+        tt_hits++;
+        tt_move = tt_entry->bestMove;
+        
+        // Use TT cutoff if depth is sufficient (QS entries have depth 0)
+        if (tt_entry->depth >= QS_TT_DEPTH) {
+            int tt_score = tt_entry->score;
+            uint8_t tt_flag = TT_GET_FLAG(tt_entry);
+            
+            // Adjust mate scores
+            if (tt_score > MATE_SCORE - 100) {
+                tt_score -= ply;
+            } else if (tt_score < -MATE_SCORE + 100) {
+                tt_score += ply;
+            }
+            
+            if (tt_flag == TT_EXACT) {
+                tt_cutoffs++;
+                return tt_score;
+            }
+            if (tt_flag == TT_LOWERBOUND && tt_score >= beta) {
+                tt_cutoffs++;
+                return tt_score;
+            }
+            if (tt_flag == TT_UPPERBOUND && tt_score <= alpha) {
+                tt_cutoffs++;
+                return tt_score;
+            }
+        }
+    }
+    
     // Check if we're in check
     bool in_check = isKingAttacked(board, board->whiteToMove);
     
@@ -563,6 +610,28 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         
         ScoredMove scored[256];
         score_captures(board, &all_moves, scored);
+        
+        // Boost TT move if available
+        if (tt_move != 0) {
+            for (int i = 0; i < all_moves.count; i++) {
+                if (scored[i].move == tt_move) {
+                    scored[i].score += 10000000;
+                    break;
+                }
+            }
+            // Re-sort
+            for (int i = 1; i < all_moves.count; i++) {
+                ScoredMove key = scored[i];
+                int j = i - 1;
+                while (j >= 0 && scored[j].score < key.score) {
+                    scored[j + 1] = scored[j];
+                    j--;
+                }
+                scored[j + 1] = key;
+            }
+        }
+        
+        Move best_move = 0;
         
         for (int i = 0; i < all_moves.count; i++) {
             Move m = scored[i].move;
@@ -593,12 +662,22 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
             if (info->stopSearch) return 0;
             
             if (score >= beta) {
+                // TT Store for beta cutoff
+                tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m);
                 return beta;
             }
             if (score > alpha) {
                 alpha = score;
+                best_move = m;
             }
         }
+        
+        // TT Store at end
+        if (!info->stopSearch) {
+            uint8_t tt_flag = (alpha <= original_alpha) ? TT_UPPERBOUND : TT_EXACT;
+            tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move);
+        }
+        
         return alpha;
     }
     
@@ -624,9 +703,31 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     MoveList capture_moves;
     generateCaptureAndPromotionMoves(board, &capture_moves);
     
-    // Score and sort captures
+    // Score and sort captures, with TT move bonus
     ScoredMove scored[256];
     score_captures(board, &capture_moves, scored);
+    
+    // Boost TT move score if it's in our capture list
+    if (tt_move != 0) {
+        for (int i = 0; i < capture_moves.count; i++) {
+            if (scored[i].move == tt_move) {
+                scored[i].score += 10000000;  // Ensure TT move is searched first
+                break;
+            }
+        }
+        // Re-sort after boosting TT move
+        for (int i = 1; i < capture_moves.count; i++) {
+            ScoredMove key = scored[i];
+            int j = i - 1;
+            while (j >= 0 && scored[j].score < key.score) {
+                scored[j + 1] = scored[j];
+                j--;
+            }
+            scored[j + 1] = key;
+        }
+    }
+    
+    Move best_move = 0;
     
     for (int i = 0; i < capture_moves.count; i++) {
         Move m = scored[i].move;
@@ -675,11 +776,20 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         if (info->stopSearch) return 0;
         
         if (score >= beta) {
+            // TT Store for beta cutoff
+            tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m);
             return beta;
         }
         if (score > alpha) {
             alpha = score;
+            best_move = m;
         }
+    }
+    
+    // TT Store at end of QS
+    if (!info->stopSearch) {
+        uint8_t tt_flag = (alpha <= original_alpha) ? TT_UPPERBOUND : TT_EXACT;
+        tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move);
     }
     
     return alpha;
@@ -690,7 +800,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
 // =============================================================================
 
 static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* info, 
-                   int ply, bool do_null) {
+                   int ply, bool do_null, bool is_null_move_search) {
     info->nodesSearched++;
     info->pv_length[ply] = 0;
     
@@ -724,8 +834,10 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     
     // TT Probe
     Move tt_move = 0;
+    tt_probes++;
     TTEntry* tt_entry = tt_probe(board->zobristKey);
     if (tt_entry != NULL) {
+        tt_hits++;
         tt_move = tt_entry->bestMove;
         
         // Only use TT cutoff in non-PV nodes
@@ -741,12 +853,15 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             }
             
             if (tt_flag == TT_EXACT) {
+                tt_cutoffs++;
                 return tt_score;
             }
             if (tt_flag == TT_LOWERBOUND && tt_score >= beta) {
+                tt_cutoffs++;
                 return tt_score;
             }
             if (tt_flag == TT_UPPERBOUND && tt_score <= alpha) {
+                tt_cutoffs++;
                 return tt_score;
             }
         }
@@ -769,25 +884,34 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     if (do_null && !in_check && !is_pv && depth >= NULL_MOVE_MIN_DEPTH && 
         can_do_null_move(board)) {
         
-        // Make null move
+        // Make null move - update zobrist key for consistent TT usage
         board->whiteToMove = !board->whiteToMove;
+        board->zobristKey ^= zobrist_side_to_move_key;
+        
         int old_ep = board->enPassantSquare;
+        if (old_ep != SQ_NONE) {
+            board->zobristKey ^= zobrist_enpassant_keys[old_ep];
+        }
         board->enPassantSquare = SQ_NONE;
         
-        // Search with reduced depth
+        // Search with reduced depth - mark as null move search to skip TT store for this node
         int null_score = -negamax(board, depth - 1 - NULL_MOVE_REDUCTION, -beta, -beta + 1, 
-                                  info, ply + 1, false);
+                                  info, ply + 1, false, true);
         
-        // Unmake null move
-        board->whiteToMove = !board->whiteToMove;
+        // Unmake null move - restore zobrist key
         board->enPassantSquare = old_ep;
+        if (old_ep != SQ_NONE) {
+            board->zobristKey ^= zobrist_enpassant_keys[old_ep];
+        }
+        board->whiteToMove = !board->whiteToMove;
+        board->zobristKey ^= zobrist_side_to_move_key;
         
         if (info->stopSearch) return 0;
         
         if (null_score >= beta) {
             // Always do verification search for safety (eval not yet reliable)
             int verify = negamax(board, depth - NULL_MOVE_REDUCTION - 1, beta - 1, beta, 
-                                info, ply, false);
+                                info, ply, false, false);
             if (verify >= beta) {
                 return beta;
             }
@@ -891,7 +1015,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // =======================================================================
         if (moves_searched == 0) {
             // First move: full window search
-            score = -negamax(board, depth - 1, -beta, -alpha, info, ply + 1, true);
+            score = -negamax(board, depth - 1, -beta, -alpha, info, ply + 1, true, false);
         } else {
             // Late Move Reductions (tuned for NNUE)
             int reduction = 0;
@@ -941,16 +1065,16 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             
             // Null window search with possible reduction
             score = -negamax(board, depth - 1 - reduction, -alpha - 1, -alpha, 
-                            info, ply + 1, true);
+                            info, ply + 1, true, false);
             
             // Re-search if LMR failed high
             if (reduction > 0 && score > alpha) {
-                score = -negamax(board, depth - 1, -alpha - 1, -alpha, info, ply + 1, true);
+                score = -negamax(board, depth - 1, -alpha - 1, -alpha, info, ply + 1, true, false);
             }
             
             // Re-search with full window if null window failed high
             if (score > alpha && score < beta) {
-                score = -negamax(board, depth - 1, -beta, -alpha, info, ply + 1, true);
+                score = -negamax(board, depth - 1, -beta, -alpha, info, ply + 1, true, false);
             }
         }
         
@@ -1063,8 +1187,8 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         }
     }
     
-    // TT Store
-    if (!info->stopSearch) {
+    // TT Store - skip for null move search positions (they can never be reached legally)
+    if (!info->stopSearch && !is_null_move_search) {
         uint8_t tt_flag;
         if (alpha <= original_alpha) {
             tt_flag = TT_UPPERBOUND;
@@ -1106,6 +1230,11 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
     info->lastIterationTime = 0;
     info->seldepth = 0;
     
+    // Reset TT statistics
+    tt_probes = 0;
+    tt_hits = 0;
+    tt_cutoffs = 0;
+    
     // Initialize TT for new search
     tt_new_search();
     
@@ -1137,7 +1266,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
             beta = prev_score + ASPIRATION_WINDOW;
             
             while (true) {
-                score = negamax(board, depth, alpha, beta, info, 0, true);
+                score = negamax(board, depth, alpha, beta, info, 0, true, false);
                 
                 if (info->stopSearch) break;
                 
@@ -1155,7 +1284,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                 }
             }
         } else {
-            score = negamax(board, depth, alpha, beta, info, 0, true);
+            score = negamax(board, depth, alpha, beta, info, 0, true, false);
         }
         
         info->bestScoreThisIteration = score;  // Set the best score for this iteration
@@ -1257,6 +1386,13 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
     (void)best_score;
     if (!search_silent_mode) {
         printf("DEBUG: Best move: %u, Total time: %ld ms\n", best_move, get_elapsed_time(info));
+        // Print TT statistics
+        double hit_rate = tt_probes > 0 ? (100.0 * tt_hits / tt_probes) : 0;
+        double cutoff_rate = tt_hits > 0 ? (100.0 * tt_cutoffs / tt_hits) : 0;
+        printf("info string TT stats: probes=%llu hits=%llu (%.1f%%) cutoffs=%llu (%.1f%% of hits)\n",
+               (unsigned long long)tt_probes, (unsigned long long)tt_hits, hit_rate,
+               (unsigned long long)tt_cutoffs, cutoff_rate);
+        fflush(stdout);
     }
     return best_move;
 }
@@ -1265,7 +1401,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
 int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximizingPlayer, 
                       SearchInfo* info, int ply) {
     (void)maximizingPlayer;
-    return negamax(board, depth, alpha, beta, info, ply, true);
+    return negamax(board, depth, alpha, beta, info, ply, true, false);
 }
 
 int quiescence_search(Board* board, int alpha, int beta, bool maximizingPlayer, 
