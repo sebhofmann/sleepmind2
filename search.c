@@ -32,31 +32,41 @@ void set_search_silent(bool silent) {
 }
 
 // =============================================================================
-// Constants
+// Initialize SearchParams with default values
 // =============================================================================
 
-// Late Move Reduction parameters (tuned for NNUE)
-static const int LMR_FULL_DEPTH_MOVES = 4;  // Start LMR earlier with reliable eval
-static const int LMR_REDUCTION_LIMIT = 3;   // Lower minimum depth for LMR
+void search_params_init(SearchParams* params) {
+    // Feature enable flags (tuned via tournament testing)
+    params->use_lmr = true;
+    params->use_null_move = true;
+    params->use_futility = true;
+    params->use_rfp = true;
+    params->use_delta_pruning = false;  // Disabled - tested to be better without
+    params->use_aspiration = true;
 
-// Null Move Pruning parameters
-static const int NULL_MOVE_REDUCTION = 3;   // Standard R=3 with NNUE
-static const int NULL_MOVE_MIN_DEPTH = 3;   // Can be more aggressive
+    // Late Move Reduction parameters (tuned via tournament testing)
+    params->lmr_full_depth_moves = 3;   // More aggressive LMR
+    params->lmr_reduction_limit = 2;    // Start LMR earlier
 
-// Futility pruning margins (enabled with NNUE)
-static const int FUTILITY_MARGIN = 150;           // Depth 1
-static const int EXTENDED_FUTILITY_MARGIN = 300;  // Depth 2
-static const int FUTILITY_MARGIN_DEPTH3 = 450;    // Depth 3
+    // Null Move Pruning parameters
+    params->null_move_reduction = 3;    // Standard R=3 with NNUE
+    params->null_move_min_depth = 3;    // Can be more aggressive
 
-// Reverse Futility Pruning (Static Null Move Pruning) margins
-static const int RFP_MARGIN = 120;  // Per depth margin
-static const int RFP_MAX_DEPTH = 6; // Maximum depth for RFP
+    // Futility pruning margins (enabled with NNUE)
+    params->futility_margin = 150;      // Depth 1
+    params->futility_margin_d2 = 300;   // Depth 2
+    params->futility_margin_d3 = 450;   // Depth 3
 
-// Delta pruning margin for quiescence
-static const int DELTA_MARGIN = 200;  // Tighter with reliable eval
+    // Reverse Futility Pruning (tuned via tournament testing)
+    params->rfp_margin = 80;            // More aggressive pruning
+    params->rfp_max_depth = 8;          // Apply RFP at higher depths
 
-// Aspiration window
-static const int ASPIRATION_WINDOW = 50;
+    // Delta pruning margin for quiescence
+    params->delta_margin = 200;         // Tighter with reliable eval
+
+    // Aspiration window (tuned via tournament testing)
+    params->aspiration_window = 100;    // Wider window reduces re-searches
+}
 
 // =============================================================================
 // Piece values for move ordering
@@ -695,7 +705,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     }
     
     // Delta pruning: if we're so far behind that even capturing a queen won't help
-    if (stand_pat + 900 + DELTA_MARGIN < alpha) {
+    if (info->params.use_delta_pruning && stand_pat + 900 + info->params.delta_margin < alpha) {
         return alpha;
     }
     
@@ -733,12 +743,12 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         Move m = scored[i].move;
         
         // Delta pruning: skip captures that can't possibly raise alpha
-        if (!MOVE_IS_PROMOTION(m)) {
+        if (info->params.use_delta_pruning && !MOVE_IS_PROMOTION(m)) {
             bool isBlack = !board->whiteToMove;
             PieceTypeToken victim = getPieceTypeAtSquare(board, MOVE_TO(m), &isBlack);
             int gain = get_piece_value(victim);
             
-            if (stand_pat + gain + DELTA_MARGIN < alpha) {
+            if (stand_pat + gain + info->params.delta_margin < alpha) {
                 continue;
             }
         }
@@ -881,8 +891,8 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     // ==========================================================================
     // Null Move Pruning
     // ==========================================================================
-    if (do_null && !in_check && !is_pv && depth >= NULL_MOVE_MIN_DEPTH && 
-        can_do_null_move(board)) {
+    if (info->params.use_null_move && do_null && !in_check && !is_pv && 
+        depth >= info->params.null_move_min_depth && can_do_null_move(board)) {
         
         // Make null move - update zobrist key for consistent TT usage
         board->whiteToMove = !board->whiteToMove;
@@ -895,7 +905,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         board->enPassantSquare = SQ_NONE;
         
         // Search with reduced depth - mark as null move search to skip TT store for this node
-        int null_score = -negamax(board, depth - 1 - NULL_MOVE_REDUCTION, -beta, -beta + 1, 
+        int null_score = -negamax(board, depth - 1 - info->params.null_move_reduction, -beta, -beta + 1, 
                                   info, ply + 1, false, true);
         
         // Unmake null move - restore zobrist key
@@ -910,7 +920,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         
         if (null_score >= beta) {
             // Always do verification search for safety (eval not yet reliable)
-            int verify = negamax(board, depth - NULL_MOVE_REDUCTION - 1, beta - 1, beta, 
+            int verify = negamax(board, depth - info->params.null_move_reduction - 1, beta - 1, beta, 
                                 info, ply, false, false);
             if (verify >= beta) {
                 return beta;
@@ -922,9 +932,9 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     // Reverse Futility Pruning (Static Null Move Pruning)
     // If static eval is way above beta, we can assume a beta cutoff
     // ==========================================================================
-    if (!is_pv && !in_check && depth <= RFP_MAX_DEPTH &&
+    if (info->params.use_rfp && !is_pv && !in_check && depth <= info->params.rfp_max_depth &&
         abs(beta) < MATE_SCORE - 100) {
-        int rfp_margin = RFP_MARGIN * depth;
+        int rfp_margin = info->params.rfp_margin * depth;
         if (static_eval - rfp_margin >= beta) {
             return static_eval - rfp_margin;
         }
@@ -935,14 +945,14 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     // ==========================================================================
     bool futility_pruning = false;
     int futility_margin = 0;
-    if (!is_pv && !in_check && depth <= 3 &&
+    if (info->params.use_futility && !is_pv && !in_check && depth <= 3 &&
         abs(alpha) < MATE_SCORE - 100 && abs(beta) < MATE_SCORE - 100) {
         if (depth == 1) {
-            futility_margin = FUTILITY_MARGIN;
+            futility_margin = info->params.futility_margin;
         } else if (depth == 2) {
-            futility_margin = EXTENDED_FUTILITY_MARGIN;
+            futility_margin = info->params.futility_margin_d2;
         } else {
-            futility_margin = FUTILITY_MARGIN_DEPTH3;
+            futility_margin = info->params.futility_margin_d3;
         }
         if (static_eval + futility_margin <= alpha) {
             futility_pruning = true;
@@ -1020,8 +1030,9 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             // Late Move Reductions (tuned for NNUE)
             int reduction = 0;
             
-            if (!in_check && !is_tactical && depth >= LMR_REDUCTION_LIMIT && 
-                moves_searched >= LMR_FULL_DEPTH_MOVES) {
+            if (info->params.use_lmr && !in_check && !is_tactical && 
+                depth >= info->params.lmr_reduction_limit && 
+                moves_searched >= info->params.lmr_full_depth_moves) {
                 // Log-based reduction formula: more aggressive with reliable eval
                 // Base: ln(depth) * ln(moves_searched) / 2
                 reduction = 1;
@@ -1261,9 +1272,9 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         int score;
         
         // Use aspiration windows after depth 4
-        if (depth >= 5) {
-            alpha = prev_score - ASPIRATION_WINDOW;
-            beta = prev_score + ASPIRATION_WINDOW;
+        if (info->params.use_aspiration && depth >= 5) {
+            alpha = prev_score - info->params.aspiration_window;
+            beta = prev_score + info->params.aspiration_window;
             
             while (true) {
                 score = negamax(board, depth, alpha, beta, info, 0, true, false);

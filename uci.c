@@ -179,6 +179,10 @@ void uci_loop() {
         return;
     }
     NNUEAccumulator nnue_accumulator = {0};  // Accumulator is small (~4KB), can stay on stack
+    
+    // Search parameters - initialized with defaults
+    SearchParams search_params;
+    search_params_init(&search_params);
 
     printf("DEBUG: Starting uci_loop initialization\n"); fflush(stdout);
     
@@ -204,11 +208,112 @@ void uci_loop() {
         if (strcmp(line, "uci") == 0) {
             printf("id name %s\n", ENGINE_NAME);
             printf("id author %s\n", ENGINE_AUTHOR);
+            // Feature enable/disable options
+            printf("option name Use_LMR type check default true\n");
+            printf("option name Use_NullMove type check default true\n");
+            printf("option name Use_Futility type check default true\n");
+            printf("option name Use_RFP type check default true\n");
+            printf("option name Use_DeltaPruning type check default false\n");
+            printf("option name Use_Aspiration type check default true\n");
+            // Search parameter options
+            printf("option name LMR_FullDepthMoves type spin default 3 min 1 max 10\n");
+            printf("option name LMR_ReductionLimit type spin default 2 min 1 max 6\n");
+            printf("option name NullMove_Reduction type spin default 3 min 1 max 5\n");
+            printf("option name NullMove_MinDepth type spin default 3 min 1 max 6\n");
+            printf("option name Futility_Margin type spin default 150 min 50 max 400\n");
+            printf("option name Futility_MarginD2 type spin default 300 min 100 max 600\n");
+            printf("option name Futility_MarginD3 type spin default 450 min 150 max 800\n");
+            printf("option name RFP_Margin type spin default 80 min 50 max 300\n");
+            printf("option name RFP_MaxDepth type spin default 8 min 2 max 10\n");
+            printf("option name Delta_Margin type spin default 200 min 50 max 500\n");
+            printf("option name Aspiration_Window type spin default 100 min 10 max 200\n");
             printf("uciok\n");
             fflush(stdout);
         } else if (strcmp(line, "isready") == 0) {
             printf("readyok\n");
             fflush(stdout);
+        } else if (strncmp(line, "setoption", 9) == 0) {
+            // Parse: setoption name <name> value <value>
+            char* name_start = strstr(line, "name ");
+            char* value_start = strstr(line, "value ");
+            if (name_start && value_start) {
+                name_start += 5; // Skip "name "
+                value_start += 6; // Skip "value "
+                
+                // Extract option name (everything between "name " and " value")
+                char option_name[64] = {0};
+                int name_len = value_start - 6 - name_start - 1;
+                if (name_len > 0 && name_len < 63) {
+                    strncpy(option_name, name_start, name_len);
+                    option_name[name_len] = '\0';
+                    // Trim trailing spaces
+                    while (name_len > 0 && option_name[name_len - 1] == ' ') {
+                        option_name[--name_len] = '\0';
+                    }
+                }
+                
+                int value = atoi(value_start);
+                bool bool_value = (strcmp(value_start, "true") == 0 || strcmp(value_start, "1") == 0);
+                
+                // Match option names and set values in search_params
+                // Feature enable/disable flags
+                if (strcmp(option_name, "Use_LMR") == 0) {
+                    search_params.use_lmr = bool_value;
+                    printf("info string Set Use_LMR to %s\n", bool_value ? "true" : "false");
+                } else if (strcmp(option_name, "Use_NullMove") == 0) {
+                    search_params.use_null_move = bool_value;
+                    printf("info string Set Use_NullMove to %s\n", bool_value ? "true" : "false");
+                } else if (strcmp(option_name, "Use_Futility") == 0) {
+                    search_params.use_futility = bool_value;
+                    printf("info string Set Use_Futility to %s\n", bool_value ? "true" : "false");
+                } else if (strcmp(option_name, "Use_RFP") == 0) {
+                    search_params.use_rfp = bool_value;
+                    printf("info string Set Use_RFP to %s\n", bool_value ? "true" : "false");
+                } else if (strcmp(option_name, "Use_DeltaPruning") == 0) {
+                    search_params.use_delta_pruning = bool_value;
+                    printf("info string Set Use_DeltaPruning to %s\n", bool_value ? "true" : "false");
+                } else if (strcmp(option_name, "Use_Aspiration") == 0) {
+                    search_params.use_aspiration = bool_value;
+                    printf("info string Set Use_Aspiration to %s\n", bool_value ? "true" : "false");
+                // Numeric parameters
+                } else if (strcmp(option_name, "LMR_FullDepthMoves") == 0) {
+                    search_params.lmr_full_depth_moves = value;
+                    printf("info string Set LMR_FullDepthMoves to %d\n", value);
+                } else if (strcmp(option_name, "LMR_ReductionLimit") == 0) {
+                    search_params.lmr_reduction_limit = value;
+                    printf("info string Set LMR_ReductionLimit to %d\n", value);
+                } else if (strcmp(option_name, "NullMove_Reduction") == 0) {
+                    search_params.null_move_reduction = value;
+                    printf("info string Set NullMove_Reduction to %d\n", value);
+                } else if (strcmp(option_name, "NullMove_MinDepth") == 0) {
+                    search_params.null_move_min_depth = value;
+                    printf("info string Set NullMove_MinDepth to %d\n", value);
+                } else if (strcmp(option_name, "Futility_Margin") == 0) {
+                    search_params.futility_margin = value;
+                    printf("info string Set Futility_Margin to %d\n", value);
+                } else if (strcmp(option_name, "Futility_MarginD2") == 0) {
+                    search_params.futility_margin_d2 = value;
+                    printf("info string Set Futility_MarginD2 to %d\n", value);
+                } else if (strcmp(option_name, "Futility_MarginD3") == 0) {
+                    search_params.futility_margin_d3 = value;
+                    printf("info string Set Futility_MarginD3 to %d\n", value);
+                } else if (strcmp(option_name, "RFP_Margin") == 0) {
+                    search_params.rfp_margin = value;
+                    printf("info string Set RFP_Margin to %d\n", value);
+                } else if (strcmp(option_name, "RFP_MaxDepth") == 0) {
+                    search_params.rfp_max_depth = value;
+                    printf("info string Set RFP_MaxDepth to %d\n", value);
+                } else if (strcmp(option_name, "Delta_Margin") == 0) {
+                    search_params.delta_margin = value;
+                    printf("info string Set Delta_Margin to %d\n", value);
+                } else if (strcmp(option_name, "Aspiration_Window") == 0) {
+                    search_params.aspiration_window = value;
+                    printf("info string Set Aspiration_Window to %d\n", value);
+                } else {
+                    printf("info string Unknown option: %s\n", option_name);
+                }
+                fflush(stdout);
+            }
         } else if (strcmp(line, "ucinewgame") == 0) {
             current_ply = 0;
             // Reset board to startpos
@@ -429,6 +534,7 @@ void uci_loop() {
             search_info.bestScoreThisIteration = 0;
             search_info.seldepth = 0;
             search_info.depthLimit = depth_limit;  // Set depth limit from UCI
+            search_info.params = search_params;    // Copy search parameters
             clear_search_history(&search_info);  // Initialize killer moves, history, etc.
 
 
