@@ -261,6 +261,7 @@ static bool play_game(int game_num, NNUENetwork* nnue_network) {
         if (!is_random_move) {
             SearchInfo search_info;
             search_info.startTime = clock();
+            search_params_init(&search_info.params);  // Initialize search parameters
             
             if (config.search_time_ms > 0) {
                 search_info.softTimeLimit = config.search_time_ms;
