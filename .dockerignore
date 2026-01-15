@@ -1,0 +1,12 @@
+.DS_Store
+.vscode
+main.dSYM
+training/target
+training_data
+training
+checkpoints
+.idea
+training/.idea
+archive
+variants
+.git

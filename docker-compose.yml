@@ -1,0 +1,8 @@
+services:
+    "325831894418":
+        build: .
+        volumes:
+            - ./config.yml:/config.yaml
+        stdin_open: true
+        tty: true
+        

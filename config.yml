@@ -3,9 +3,9 @@ url: "https://lichess.org/"        # Lichess base URL.
 
 engine:                            # Engine settings.
   dir: "/usr/local/bin/"                # Directory containing the engine. This can be an absolute path or one relative to lichess-bot/.
-  name: "/usr/local/bin/sleepmind"              # Binary name of the engine to use.
-  interpreter: "bash"
-  working_dir: ""                  # Directory where the chess engine will read and write files. If blank or missing, the current directory is used.
+  name: "sleepmind"              # Binary name of the engine to use.
+  #interpreter: "bash"
+  working_dir: "/usr/local/bin/"                  # Directory where the chess engine will read and write files. If blank or missing, the current directory is used.
                                    # NOTE: If working_dir is set, the engine will look for files and directories relative to this directory, not where lichess-bot was launched. Absolute paths are unaffected.
   protocol: "uci"                  # "uci", "xboard" or "homemade"
   ponder: false                     # Think on opponent's time.
