@@ -182,7 +182,7 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l0w", stricter_clipping);
     trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
 
-    // 209902601
+    // 317690799
 
     let schedule = TrainingSchedule {
         net_id,
