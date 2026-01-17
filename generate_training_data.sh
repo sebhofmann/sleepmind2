@@ -13,9 +13,9 @@ OUTPUT_FILE="$TRAINING_DIR/training_combined.txt"
 TEMP_PREFIX="$TRAINING_DIR/training_temp"
 
 # Parameter (können überschrieben werden)
-NUM_GAMES=${NUM_GAMES:-50000}          # Gesamtanzahl Spiele
+NUM_GAMES=${NUM_GAMES:-1000000}          # Gesamtanzahl Spiele
 CONCURRENCY=${CONCURRENCY:-32}          # Anzahl paralleler Instanzen
-DEPTH=${DEPTH:-6}                       # Suchtiefe
+DEPTH=${DEPTH:-8}                       # Suchtiefe
 RANDOM_MOVES=${RANDOM_MOVES:-10}         # Zufallszüge am Anfang
 RANDOM_PROB=${RANDOM_PROB:-100}         # Wahrscheinlichkeit für Zufallszüge (%)
 MAX_MOVES=${MAX_MOVES:-200}  # Maximale Züge pro Spiel
@@ -70,6 +70,42 @@ echo ""
 # Array für PIDs der Hintergrundprozesse
 declare -a PIDS
 
+# Funktion zum Kombinieren der Daten
+combine_data() {
+    echo ""
+    echo -e "${YELLOW}Kombiniere Trainingsdaten...${NC}"
+    
+    # Zähle temporäre Dateien
+    TEMP_COUNT=$(ls -1 "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '.log$' | wc -l || echo "0")
+    
+    if [ "$TEMP_COUNT" -eq 0 ]; then
+        echo -e "${RED}Keine Trainingsdaten zum Kombinieren gefunden.${NC}"
+        return 1
+    fi
+    
+    echo "Gefundene Trainingsdateien: $TEMP_COUNT"
+    
+    # Kombiniere alle Trainingsdaten
+    cat "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '^$' | grep '|' >> "$OUTPUT_FILE"
+    
+    # Zähle Zeilen
+    NEW_LINES=$(cat "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '^$' | grep '|' | wc -l)
+    TOTAL_LINES=$(wc -l < "$OUTPUT_FILE" 2>/dev/null || echo "0")
+    
+    echo ""
+    echo -e "${GREEN}=== Ergebnis ===${NC}"
+    echo "  Neue Positionen:     $NEW_LINES"
+    echo "  Gesamt in Datei:     $TOTAL_LINES"
+    echo "  Output-Datei:        $OUTPUT_FILE"
+    
+    # Lösche temporäre Dateien
+    echo ""
+    echo "Lösche temporäre Dateien..."
+    rm -f "${TEMP_PREFIX}"_*
+    
+    return 0
+}
+
 # Cleanup-Funktion für Ctrl+C
 cleanup() {
     echo ""
@@ -79,9 +115,16 @@ cleanup() {
             kill -TERM "$pid" 2>/dev/null || true
         fi
     done
-    wait
-    echo -e "${RED}Abgebrochen.${NC}"
-    exit 1
+    # Kurz warten damit Prozesse ihre Daten schreiben können
+    sleep 2
+    wait 2>/dev/null
+    
+    echo -e "${YELLOW}Abgebrochen - kombiniere bisherige Daten...${NC}"
+    combine_data
+    
+    echo ""
+    echo -e "${GREEN}Fertig (vorzeitig beendet)!${NC}"
+    exit 0
 }
 
 trap cleanup SIGINT SIGTERM
@@ -172,42 +215,17 @@ if [ $FAILED -gt 0 ]; then
     echo -e "${YELLOW}Warnung: $FAILED Instanz(en) mit Fehlern${NC}"
 fi
 
-# Zähle temporäre Dateien
-TEMP_FILES=$(ls -1 "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '.log$' | head -20)
-TEMP_COUNT=$(echo "$TEMP_FILES" | grep -c . || echo "0")
-echo "Gefundene Trainingsdateien: $TEMP_COUNT"
-
-if [ "$TEMP_COUNT" -eq 0 ]; then
-    echo -e "${RED}Fehler: Keine Trainingsdaten generiert!${NC}"
-    echo "Prüfe die Log-Dateien: ${TEMP_PREFIX}_*.log"
-    exit 1
-fi
-
-# Kombiniere alle Trainingsdaten
-echo -e "${YELLOW}Kombiniere Trainingsdaten...${NC}"
-cat "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '^$' | grep '|' >> "$OUTPUT_FILE"
-
-# Zähle Zeilen
-NEW_LINES=$(cat "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '^$' | grep '|' | wc -l)
-TOTAL_LINES=$(wc -l < "$OUTPUT_FILE")
-
+# Kombiniere die Daten
 END_TIME=$(date +%s)
 TOTAL_TIME=$((END_TIME - START_TIME))
 
-echo ""
-echo -e "${GREEN}=== Ergebnis ===${NC}"
-echo "  Neue Positionen:     $NEW_LINES"
-echo "  Gesamt in Datei:     $TOTAL_LINES"
-echo "  Laufzeit:            ${TOTAL_TIME}s"
-if [ $TOTAL_TIME -gt 0 ]; then
-    echo "  Durchschnitt:        $((NEW_LINES / TOTAL_TIME)) pos/sec"
-fi
-echo "  Output-Datei:        $OUTPUT_FILE"
+combine_data
 
-# Lösche temporäre Dateien
-echo ""
-echo "Lösche temporäre Dateien..."
-rm -f "${TEMP_PREFIX}"_*
+if [ $TOTAL_TIME -gt 0 ]; then
+    # NEW_LINES wurde in combine_data gesetzt
+    NEW_LINES=$(cat "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '^$' | grep '|' | wc -l 2>/dev/null || echo "0")
+    echo "  Laufzeit:            ${TOTAL_TIME}s"
+fi
 
 echo ""
 echo -e "${GREEN}Fertig!${NC}"
