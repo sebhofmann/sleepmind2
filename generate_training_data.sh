@@ -13,15 +13,15 @@ OUTPUT_FILE="$TRAINING_DIR/training_combined.txt"
 TEMP_PREFIX="$TRAINING_DIR/training_temp"
 
 # Parameter (können überschrieben werden)
-NUM_GAMES=${NUM_GAMES:-1000000}          # Gesamtanzahl Spiele
+NUM_GAMES=${NUM_GAMES:-10000000}          # Gesamtanzahl Spiele
 CONCURRENCY=${CONCURRENCY:-32}          # Anzahl paralleler Instanzen
-DEPTH=${DEPTH:-8}                       # Suchtiefe
-RANDOM_MOVES=${RANDOM_MOVES:-10}         # Zufallszüge am Anfang
+DEPTH=${DEPTH:-6}                       # Suchtiefe
+RANDOM_MOVES=${RANDOM_MOVES:-12}         # Zufallszüge am Anfang
 RANDOM_PROB=${RANDOM_PROB:-100}         # Wahrscheinlichkeit für Zufallszüge (%)
 MAX_MOVES=${MAX_MOVES:-200}  # Maximale Züge pro Spiel
 DRAW_THRESHOLD=${DRAW_THRESHOLD:-100} # 50-Züge-Regel
-EVAL_THRESHOLD=${EVAL_THRESHOLD:-1}  # Max Bewertung in Bauern nach Zufallszügen (0=aus)
-ADJUDICATE=${ADJUDICATE:-10} # Spiel beenden bei +/- N Bauern (0=aus)
+EVAL_THRESHOLD=${EVAL_THRESHOLD:-2}  # Max Bewertung in Bauern nach Zufallszügen (0=aus)
+ADJUDICATE=${ADJUDICATE:-6} # Spiel beenden bei +/- N Bauern (0=aus)
 FILTER_TACTICS=${FILTER_TACTICS:-1}   # Taktische Positionen filtern (0=aus)
 VERBOSE=${VERBOSE:-1}  # Verbosity Level
 
