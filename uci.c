@@ -442,6 +442,7 @@ void uci_loop() {
             long wtime = 0, btime = 0, winc = 0, binc = 0;
             int movestogo = 0;
             int depth_limit = 0;
+            uint64_t node_limit = 0;  // Knotenlimit (go nodes X)
             long movetime = 0;  // Feste Zeit pro Zug (go movetime X)
             bool infinite = false;
 
@@ -454,6 +455,7 @@ void uci_loop() {
                 else if(strcmp(token, "binc") == 0 && (token = strtok_r(NULL, " ", &rest))) binc = atol(token);
                 else if(strcmp(token, "movestogo") == 0 && (token = strtok_r(NULL, " ", &rest))) movestogo = atoi(token);
                 else if(strcmp(token, "depth") == 0 && (token = strtok_r(NULL, " ", &rest))) depth_limit = atoi(token);
+                else if(strcmp(token, "nodes") == 0 && (token = strtok_r(NULL, " ", &rest))) node_limit = strtoull(token, NULL, 10);
                 else if(strcmp(token, "movetime") == 0 && (token = strtok_r(NULL, " ", &rest))) movetime = atol(token);
                 else if(strcmp(token, "infinite") == 0) infinite = true;
             }
@@ -463,8 +465,8 @@ void uci_loop() {
 
             long soft_limit, hard_limit;
 
-            if (infinite || depth_limit > 0) {
-                // Unendliche Suche oder Tiefenbegrenzung
+            if (infinite || depth_limit > 0 || node_limit > 0) {
+                // Unendliche Suche, Tiefenbegrenzung oder Knotenbegrenzung
                 soft_limit = 0;
                 hard_limit = 0;
             } else if (movetime > 0) {
@@ -534,6 +536,7 @@ void uci_loop() {
             search_info.bestScoreThisIteration = 0;
             search_info.seldepth = 0;
             search_info.depthLimit = depth_limit;  // Set depth limit from UCI
+            search_info.nodeLimit = node_limit;     // Set node limit from UCI
             search_info.params = search_params;    // Copy search parameters
             clear_search_history(&search_info);  // Initialize killer moves, history, etc.
 

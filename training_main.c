@@ -32,6 +32,7 @@ typedef struct {
     int num_games;              // Number of games to play
     int search_depth;           // Search depth for moves
     int search_time_ms;         // Search time in milliseconds (0 = use depth)
+    uint64_t search_nodes;      // Search node limit (0 = use depth or time)
     int verbose;                // Verbosity level
     int eval_threshold;         // Max eval (in pawns) after random moves, 0 = disabled
     int adjudicate_threshold;   // Adjudicate game as won/lost if eval exceeds this (in pawns), 0 = disabled
@@ -47,6 +48,7 @@ static TrainingConfig config = {
     .num_games = 100,
     .search_depth = 8,
     .search_time_ms = 0,
+    .search_nodes = 0,          // 0 = use depth or time
     .verbose = 1,
     .eval_threshold = 1,        // Default: discard games with eval > +/-100cp after random moves
     .adjudicate_threshold = 10, // Default: adjudicate at +/-1000cp
@@ -263,14 +265,22 @@ static bool play_game(int game_num, NNUENetwork* nnue_network) {
             search_info.startTime = clock();
             search_params_init(&search_info.params);  // Initialize search parameters
             
-            if (config.search_time_ms > 0) {
+            if (config.search_nodes > 0) {
+                // Node-based search: no time or depth limit
+                search_info.softTimeLimit = 0;
+                search_info.hardTimeLimit = 0;
+                search_info.depthLimit = 0;
+                search_info.nodeLimit = config.search_nodes;
+            } else if (config.search_time_ms > 0) {
                 search_info.softTimeLimit = config.search_time_ms;
                 search_info.hardTimeLimit = config.search_time_ms;
                 search_info.depthLimit = 0;
+                search_info.nodeLimit = 0;
             } else {
                 search_info.softTimeLimit = 0;
                 search_info.hardTimeLimit = 0;
                 search_info.depthLimit = config.search_depth;
+                search_info.nodeLimit = 0;
             }
             
             search_info.stopSearch = false;
@@ -419,6 +429,7 @@ static void print_usage(const char* program_name) {
     printf("  -p, --random-prob N     Probability (0-100) for random moves (default: 100)\n");
     printf("  -d, --depth N           Search depth (default: 8)\n");
     printf("  -t, --time MS           Search time in milliseconds (overrides depth)\n");
+    printf("  -N, --nodes N           Search node limit (overrides depth and time)\n");
     printf("  --draw-threshold N      Moves without progress for draw (default: 100)\n");
     printf("  --max-moves N           Maximum moves per game (default: 500)\n");
     printf("  -e, --eval-threshold N  Max eval in pawns after random moves, discard if exceeded (0=off)\n");
@@ -428,6 +439,7 @@ static void print_usage(const char* program_name) {
     printf("  -h, --help              Show this help message\n");
     printf("\nExample:\n");
     printf("  %s -o data.txt -n 1000 -r 8 -d 6 -e 4 -a 10 -f 1\n", program_name);
+    printf("  %s -o data.txt -n 1000 -r 8 -N 10000 -e 4 -a 10 -f 1  # Node-based search\n", program_name);
 }
 
 static void parse_arguments(int argc, char* argv[]) {
@@ -438,6 +450,7 @@ static void parse_arguments(int argc, char* argv[]) {
         {"random-prob",    required_argument, 0, 'p'},
         {"depth",          required_argument, 0, 'd'},
         {"time",           required_argument, 0, 't'},
+        {"nodes",          required_argument, 0, 'N'},
         {"draw-threshold", required_argument, 0, 'D'},
         {"max-moves",      required_argument, 0, 'M'},
         {"eval-threshold", required_argument, 0, 'e'},
@@ -449,7 +462,7 @@ static void parse_arguments(int argc, char* argv[]) {
     };
     
     int c;
-    while ((c = getopt_long(argc, argv, "o:n:r:p:d:t:e:a:f:v:h", long_options, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "o:n:r:p:d:t:N:e:a:f:v:h", long_options, NULL)) != -1) {
         switch (c) {
             case 'o':
                 strncpy(config.output_file, optarg, sizeof(config.output_file) - 1);
@@ -470,6 +483,9 @@ static void parse_arguments(int argc, char* argv[]) {
                 break;
             case 't':
                 config.search_time_ms = atoi(optarg);
+                break;
+            case 'N':
+                config.search_nodes = strtoull(optarg, NULL, 10);
                 break;
             case 'D':
                 config.draw_threshold = atoi(optarg);
@@ -543,9 +559,12 @@ int main(int argc, char* argv[]) {
     printf("Number of games:   %d\n", config.num_games);
     printf("Random moves:      %d\n", config.random_moves);
     printf("Random probability: %d%%\n", config.random_probability);
-    printf("Search depth:      %d\n", config.search_depth);
-    if (config.search_time_ms > 0) {
+    if (config.search_nodes > 0) {
+        printf("Search nodes:      %llu\n", (unsigned long long)config.search_nodes);
+    } else if (config.search_time_ms > 0) {
         printf("Search time:       %d ms\n", config.search_time_ms);
+    } else {
+        printf("Search depth:      %d\n", config.search_depth);
     }
     printf("Draw threshold:    %d moves\n", config.draw_threshold);
     printf("Max moves/game:    %d\n", config.max_game_moves);

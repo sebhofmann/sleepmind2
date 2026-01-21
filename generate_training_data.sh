@@ -16,12 +16,13 @@ TEMP_PREFIX="$TRAINING_DIR/training_temp"
 NUM_GAMES=${NUM_GAMES:-10000000}          # Gesamtanzahl Spiele
 CONCURRENCY=${CONCURRENCY:-32}          # Anzahl paralleler Instanzen
 DEPTH=${DEPTH:-6}                       # Suchtiefe
+NODES=${NODES:-10000}                       # Knotenlimit (0=benutze Tiefe)
 RANDOM_MOVES=${RANDOM_MOVES:-12}         # Zufallszüge am Anfang
 RANDOM_PROB=${RANDOM_PROB:-100}         # Wahrscheinlichkeit für Zufallszüge (%)
-MAX_MOVES=${MAX_MOVES:-200}  # Maximale Züge pro Spiel
-DRAW_THRESHOLD=${DRAW_THRESHOLD:-100} # 50-Züge-Regel
-EVAL_THRESHOLD=${EVAL_THRESHOLD:-2}  # Max Bewertung in Bauern nach Zufallszügen (0=aus)
-ADJUDICATE=${ADJUDICATE:-6} # Spiel beenden bei +/- N Bauern (0=aus)
+MAX_MOVES=${MAX_MOVES:-250}  # Maximale Züge pro Spiel
+DRAW_THRESHOLD=${DRAW_THRESHOLD:-50} # 50-Züge-Regel
+EVAL_THRESHOLD=${EVAL_THRESHOLD:-3}  # Max Bewertung in Bauern nach Zufallszügen (0=aus)
+ADJUDICATE=${ADJUDICATE:-10} # Spiel beenden bei +/- N Bauern (0=aus)
 FILTER_TACTICS=${FILTER_TACTICS:-1}   # Taktische Positionen filtern (0=aus)
 VERBOSE=${VERBOSE:-1}  # Verbosity Level
 
@@ -57,7 +58,11 @@ echo "  Training-Programm: $TRAINING_PATH"
 echo "  Gesamtspiele:      $NUM_GAMES"
 echo "  Parallelität:      $CONCURRENCY Instanzen"
 echo "  Spiele/Instanz:    $GAMES_PER_INSTANCE (+$REMAINING_GAMES Rest)"
+if [ "$NODES" -gt 0 ]; then
+echo "  Suchknoten:        $NODES"
+else
 echo "  Suchtiefe:         $DEPTH"
+fi
 echo "  Zufallszüge:       $RANDOM_MOVES (${RANDOM_PROB}%)"
 echo "  Max Züge/Spiel:    $MAX_MOVES"
 echo "  Draw-Threshold:    $DRAW_THRESHOLD"
@@ -146,19 +151,36 @@ for i in $(seq 1 $CONCURRENCY); do
     echo -e "${BLUE}  Instanz $i: $INSTANCE_GAMES Spiele -> ${OUTPUT_TEMP}.*${NC}"
     
     # Starte Training im Hintergrund
-    "$TRAINING_PATH" \
-        -o "$OUTPUT_TEMP" \
-        -n "$INSTANCE_GAMES" \
-        -d "$DEPTH" \
-        -r "$RANDOM_MOVES" \
-        -p "$RANDOM_PROB" \
-        -e "$EVAL_THRESHOLD" \
-        -a "$ADJUDICATE" \
-        -f "$FILTER_TACTICS" \
-        --max-moves "$MAX_MOVES" \
-        --draw-threshold "$DRAW_THRESHOLD" \
-        -v "$VERBOSE" \
-        > "${OUTPUT_TEMP}.log" 2>&1 &
+    # Wenn NODES > 0, benutze Knotenlimit statt Tiefe
+    if [ "$NODES" -gt 0 ]; then
+        "$TRAINING_PATH" \
+            -o "$OUTPUT_TEMP" \
+            -n "$INSTANCE_GAMES" \
+            -N "$NODES" \
+            -r "$RANDOM_MOVES" \
+            -p "$RANDOM_PROB" \
+            -e "$EVAL_THRESHOLD" \
+            -a "$ADJUDICATE" \
+            -f "$FILTER_TACTICS" \
+            --max-moves "$MAX_MOVES" \
+            --draw-threshold "$DRAW_THRESHOLD" \
+            -v "$VERBOSE" \
+            > "${OUTPUT_TEMP}.log" 2>&1 &
+    else
+        "$TRAINING_PATH" \
+            -o "$OUTPUT_TEMP" \
+            -n "$INSTANCE_GAMES" \
+            -d "$DEPTH" \
+            -r "$RANDOM_MOVES" \
+            -p "$RANDOM_PROB" \
+            -e "$EVAL_THRESHOLD" \
+            -a "$ADJUDICATE" \
+            -f "$FILTER_TACTICS" \
+            --max-moves "$MAX_MOVES" \
+            --draw-threshold "$DRAW_THRESHOLD" \
+            -v "$VERBOSE" \
+            > "${OUTPUT_TEMP}.log" 2>&1 &
+    fi
     
     PIDS+=($!)
 done

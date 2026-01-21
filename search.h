@@ -83,6 +83,7 @@ typedef struct {
     long lastIterationTime;  // Zeit der letzten Iteration für Vorhersage
     int seldepth;            // Selective depth (max depth reached)
     int depthLimit;          // Maximum search depth (0 = no limit)
+    uint64_t nodeLimit;      // Maximum nodes to search (0 = no limit)
     
     // Tunable search parameters
     SearchParams params;

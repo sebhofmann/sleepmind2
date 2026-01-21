@@ -498,6 +498,15 @@ static bool check_time(SearchInfo* info) {
     return false;
 }
 
+// Check node limit
+static bool check_nodes(SearchInfo* info) {
+    if (info->nodeLimit > 0 && info->nodesSearched >= info->nodeLimit) {
+        info->stopSearch = true;
+        return true;
+    }
+    return false;
+}
+
 // Hilfsfunktion: Verstrichene Zeit in ms
 static long get_elapsed_time(SearchInfo* info) {
     return (long)((clock() - info->startTime) * 1000.0 / CLOCKS_PER_SEC);
@@ -553,8 +562,8 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         info->seldepth = ply;
     }
     
-    // Check time periodically
-    if ((info->nodesSearched & 2047) == 0 && check_time(info)) {
+    // Check time and node limit periodically
+    if ((info->nodesSearched & 2047) == 0 && (check_time(info) || check_nodes(info))) {
         return 0;
     }
     if (info->stopSearch) return 0;
@@ -817,8 +826,8 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     bool is_pv = (beta - alpha) > 1;  // Are we in a PV node?
     int original_alpha = alpha;
     
-    // Check time periodically
-    if (ply > 0 && (info->nodesSearched & 2047) == 0 && check_time(info)) {
+    // Check time and node limit periodically
+    if (ply > 0 && (info->nodesSearched & 2047) == 0 && (check_time(info) || check_nodes(info))) {
         return 0;
     }
     if (info->stopSearch) return 0;
@@ -1298,8 +1307,6 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
             score = negamax(board, depth, alpha, beta, info, 0, true, false);
         }
         
-        info->bestScoreThisIteration = score;  // Set the best score for this iteration
-        
         long iteration_end = get_elapsed_time(info);
         info->lastIterationTime = iteration_end - iteration_start;
         int nodes_this_iteration = info->nodesSearched - nodes_before;
@@ -1310,13 +1317,18 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         }
         
         if (info->stopSearch) {
-            printf("info string Search stopped at depth %d (hard limit reached)\n", depth);
-            fflush(stdout);
-            // DO NOT update best_move from incomplete iteration!
+            if (!search_silent_mode) {
+                printf("info string Search stopped at depth %d (hard limit reached)\n", depth);
+                fflush(stdout);
+            }
+            // DO NOT update best_move or best_score from incomplete iteration!
             // The bestMoveThisIteration might be from a partial search and unreliable.
-            // Keep the best_move from the last completed iteration.
+            // Keep the best_move and bestScoreThisIteration from the last completed iteration.
             break;
         }
+        
+        // Only update bestScoreThisIteration after a COMPLETED iteration
+        info->bestScoreThisIteration = score;
         
         // Update best move from completed iteration
         if (info->bestMoveThisIteration != 0) {
