@@ -118,6 +118,7 @@ Move parse_uci_move(Board* board, const char* move_str) {
 }
 
 // Perft: count leaf nodes to given depth. Uses global move_list and existing apply/undo.
+// Now checks legality after applying each move (pseudo-legal move generation)
 static unsigned long long perft(Board* board, int depth) {
     if (depth == 0) return 1ULL;
 
@@ -125,23 +126,30 @@ static unsigned long long perft(Board* board, int depth) {
     local_moves.count = 0;
     generateMoves(board, &local_moves);
 
-    if (depth == 1) {
-        return (unsigned long long)(local_moves.count);
-    }
-
-
     unsigned long long nodes = 0ULL;
     for (int i = 0; i < local_moves.count; ++i) {
         Move m = local_moves.moves[i];
         MoveUndoInfo undo_info;
         applyMove(board, m, &undo_info, NULL, NULL);  // perft doesn't need NNUE
-        nodes += perft(board, depth - 1);
+        
+        // Skip illegal moves (king left in check) - move generator now returns pseudo-legal moves
+        if (isKingAttacked(board, !board->whiteToMove)) {
+            undoMove(board, m, &undo_info, NULL, NULL);
+            continue;
+        }
+        
+        if (depth == 1) {
+            nodes++;
+        } else {
+            nodes += perft(board, depth - 1);
+        }
         undoMove(board, m, &undo_info, NULL, NULL);  // perft doesn't need NNUE
     }
     return nodes;
 }
 
 // Perft divide: print per-move counts and return total
+// Now checks legality after applying each move (pseudo-legal move generation)
 static unsigned long long perft_divide(Board* board, int depth) {
     MoveList local_moves;
     local_moves.count = 0;
@@ -152,7 +160,19 @@ static unsigned long long perft_divide(Board* board, int depth) {
         Move m = local_moves.moves[i];
         MoveUndoInfo undo_info;
         applyMove(board, m, &undo_info, NULL, NULL);  // perft doesn't need NNUE
-        unsigned long long cnt = perft(board, depth - 1);
+        
+        // Skip illegal moves (king left in check) - move generator now returns pseudo-legal moves
+        if (isKingAttacked(board, !board->whiteToMove)) {
+            undoMove(board, m, &undo_info, NULL, NULL);
+            continue;
+        }
+        
+        unsigned long long cnt;
+        if (depth == 1) {
+            cnt = 1;
+        } else {
+            cnt = perft(board, depth - 1);
+        }
         undoMove(board, m, &undo_info, NULL, NULL);  // perft doesn't need NNUE
 
         char move_str[6];

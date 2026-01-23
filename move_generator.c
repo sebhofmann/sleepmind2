@@ -861,40 +861,18 @@ void generateCaptureAndPromotionMoves(const Board* board, MoveList* list) {
 }
 
 
+// Generate all pseudo-legal moves (no legality check - king may be left in check)
+// Legality check is deferred to search/perft for better performance
 void generateMoves(const Board* board, MoveList* list) {
-    MoveList pseudoLegalMoves;
-    pseudoLegalMoves.count = 0;
-    list->count = 0; // Initialize final list count
-
+    list->count = 0;
     bool isWhite = board->whiteToMove;
 
-    // Generate all pseudo-legal moves into pseudoLegalMoves
-    generatePawnMoves(board, &pseudoLegalMoves, isWhite);
-    generatePieceMoves(board, &pseudoLegalMoves, isWhite, isWhite ? board->whiteKnights : board->blackKnights, KNIGHT_ATTACKS);
-    generatePieceMoves(board, &pseudoLegalMoves, isWhite, isWhite ? board->whiteKings : board->blackKings, KING_ATTACKS);
-    generateSlidingPieceMoves(board, &pseudoLegalMoves, isWhite, isWhite ? board->whiteBishops : board->blackBishops, BISHOP_T);
-    generateSlidingPieceMoves(board, &pseudoLegalMoves, isWhite, isWhite ? board->whiteRooks : board->blackRooks, ROOK_T);
-    generateSlidingPieceMoves(board, &pseudoLegalMoves, isWhite, isWhite ? board->whiteQueens : board->blackQueens, QUEEN_T);
-    generateCastlingMoves(board, &pseudoLegalMoves, isWhite);
-
-    list->count = 0; // Reset the original list to store only legal moves
-
-    // Cast away const to allow applyMove/undoMove on the board itself
-    // This avoids copying the entire Board struct (8KB) for every pseudo-legal move.
-    Board* mutableBoard = (Board*)board;
-
-    for (int i = 0; i < pseudoLegalMoves.count; i++) {
-        Move currentMove = pseudoLegalMoves.moves[i];
-        
-        MoveUndoInfo undo_info;
-        applyMove(mutableBoard, currentMove, &undo_info, NULL, NULL); 
-            
-        // Check if the king of the side that just moved is in check.
-        // applyMove flips the side to move, so we check !mutableBoard->whiteToMove.
-        if (!isKingAttacked(mutableBoard, !mutableBoard->whiteToMove)) { 
-            addMove(list, currentMove); 
-        }
-        
-        undoMove(mutableBoard, currentMove, &undo_info, NULL, NULL);
-    }
+    // Generate all pseudo-legal moves directly into the output list
+    generatePawnMoves(board, list, isWhite);
+    generatePieceMoves(board, list, isWhite, isWhite ? board->whiteKnights : board->blackKnights, KNIGHT_ATTACKS);
+    generatePieceMoves(board, list, isWhite, isWhite ? board->whiteKings : board->blackKings, KING_ATTACKS);
+    generateSlidingPieceMoves(board, list, isWhite, isWhite ? board->whiteBishops : board->blackBishops, BISHOP_T);
+    generateSlidingPieceMoves(board, list, isWhite, isWhite ? board->whiteRooks : board->blackRooks, ROOK_T);
+    generateSlidingPieceMoves(board, list, isWhite, isWhite ? board->whiteQueens : board->blackQueens, QUEEN_T);
+    generateCastlingMoves(board, list, isWhite);
 }

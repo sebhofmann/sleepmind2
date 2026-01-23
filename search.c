@@ -622,14 +622,9 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     
     // If in check, we must search all moves (not just captures)
     if (in_check) {
-        // Generate all legal moves when in check
+        // Generate all pseudo-legal moves when in check
         MoveList all_moves;
         generateMoves(board, &all_moves);
-        
-        // If no legal moves: checkmate
-        if (all_moves.count == 0) {
-            return -MATE_SCORE + ply;
-        }
         
         ScoredMove scored[256];
         score_captures(board, &all_moves, scored);
@@ -655,6 +650,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         }
         
         Move best_move = 0;
+        int moves_searched = 0;
         
         for (int i = 0; i < all_moves.count; i++) {
             Move m = scored[i].move;
@@ -665,11 +661,20 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
             
             MoveUndoInfo undo;
             applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+            
+            // Skip illegal moves (king left in check) - move generator now returns pseudo-legal moves
+            if (isKingAttacked(board, !board->whiteToMove)) {
+                undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+                continue;
+            }
+            
             #ifdef DEBUG_NNUE_EVAL
             eval_set_last_move(m, MOVE_FROM(m), MOVE_TO(m));
             #endif
             int score = -quiescence(board, -beta, -alpha, info, ply + 1);
             undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+            
+            moves_searched++;
             
             #ifdef DEBUG_ZOBRIST_VERIFY
             if (board->zobristKey != saved_zobrist) {
@@ -693,6 +698,11 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
                 alpha = score;
                 best_move = m;
             }
+        }
+        
+        // No legal moves found: checkmate (we're in check and can't escape)
+        if (moves_searched == 0) {
+            return -MATE_SCORE + ply;
         }
         
         // TT Store at end
@@ -972,17 +982,9 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         }
     }
     
-    // Generate moves
+    // Generate moves (pseudo-legal - legality checked after applyMove)
     MoveList moves;
     generateMoves(board, &moves);
-    
-    // No legal moves: checkmate or stalemate
-    if (moves.count == 0) {
-        if (in_check) {
-            return -MATE_SCORE + ply;
-        }
-        return 0;
-    }
     
     // Score and sort moves
     ScoredMove scored[256];
@@ -1022,6 +1024,12 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         
         MoveUndoInfo undo;
         applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+        
+        // Skip illegal moves (king left in check) - move generator now returns pseudo-legal moves
+        if (isKingAttacked(board, !board->whiteToMove)) {
+            undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+            continue;
+        }
         
         // Track last move for debug
         #ifdef DEBUG_NNUE_EVAL
@@ -1199,7 +1207,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                 update_killers(info, m, ply);
                 update_history(info, board, m, depth);
                 
-                // Apply malus to all previously searched quiet moves
+                // Apply malus to all previously considered quiet moves
                 for (int j = 0; j < i; j++) {
                     Move prev = scored[j].move;
                     if (!MOVE_IS_CAPTURE(prev) && !MOVE_IS_PROMOTION(prev)) {
@@ -1209,6 +1217,15 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             }
             break;
         }
+    }
+    
+    // No legal moves found: checkmate or stalemate
+    // (moves_searched == 0 means all pseudo-legal moves were illegal)
+    if (moves_searched == 0) {
+        if (in_check) {
+            return -MATE_SCORE + ply;
+        }
+        return 0;  // Stalemate
     }
     
     // TT Store - skip for null move search positions (they can never be reached legally)
