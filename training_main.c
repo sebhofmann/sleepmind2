@@ -175,8 +175,19 @@ static int count_position_repetitions(uint64_t hash) {
 static GameResult check_game_result(Board* board, int half_move_clock, MoveList* moves) {
     generateMoves(board, moves);
     
+    // Count legal moves (pseudo-legal generator requires legality check)
+    int legal_move_count = 0;
+    for (int i = 0; i < moves->count; i++) {
+        MoveUndoInfo undo;
+        applyMove(board, moves->moves[i], &undo, NULL, NULL);
+        if (!isKingAttacked(board, !board->whiteToMove)) {
+            legal_move_count++;
+        }
+        undoMove(board, moves->moves[i], &undo, NULL, NULL);
+    }
+    
     // Check for checkmate or stalemate
-    if (moves->count == 0) {
+    if (legal_move_count == 0) {
         if (isKingAttacked(board, board->whiteToMove)) {
             // Checkmate
             return board->whiteToMove ? GAME_BLACK_WINS : GAME_WHITE_WINS;
@@ -247,14 +258,28 @@ static bool play_game(int game_num, NNUENetwork* nnue_network) {
         if (ply < config.random_moves) {
             int roll = rand() % 100;
             if (roll < config.random_probability) {
-                int idx = rand() % moves.count;
-                best_move = moves.moves[idx];
-                is_random_move = true;
+                // Build list of legal moves (pseudo-legal generator requires check)
+                Move legal_moves[256];
+                int legal_count = 0;
+                for (int i = 0; i < moves.count; i++) {
+                    MoveUndoInfo test_undo;
+                    applyMove(&board, moves.moves[i], &test_undo, NULL, NULL);
+                    if (!isKingAttacked(&board, !board.whiteToMove)) {
+                        legal_moves[legal_count++] = moves.moves[i];
+                    }
+                    undoMove(&board, moves.moves[i], &test_undo, NULL, NULL);
+                }
                 
-                if (config.verbose >= 2) {
-                    char move_str[6];
-                    moveToString(best_move, move_str);
-                    printf("  Ply %d: random move %s\n", ply, move_str);
+                if (legal_count > 0) {
+                    int idx = rand() % legal_count;
+                    best_move = legal_moves[idx];
+                    is_random_move = true;
+                    
+                    if (config.verbose >= 2) {
+                        char move_str[6];
+                        moveToString(best_move, move_str);
+                        printf("  Ply %d: random move %s\n", ply, move_str);
+                    }
                 }
             }
         }
