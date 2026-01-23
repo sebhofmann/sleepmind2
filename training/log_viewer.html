@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Training Log Viewer</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #e0e0e0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #00d9ff;
+            text-shadow: 0 0 10px rgba(0, 217, 255, 0.3);
+        }
+        .upload-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            text-align: center;
+            border: 2px dashed rgba(0, 217, 255, 0.3);
+            transition: all 0.3s ease;
+        }
+        .upload-section:hover {
+            border-color: rgba(0, 217, 255, 0.6);
+            background: rgba(255, 255, 255, 0.08);
+        }
+        .upload-section input[type="file"] {
+            display: none;
+        }
+        .upload-label {
+            display: inline-block;
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #00d9ff, #0099cc);
+            color: #1a1a2e;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: transform 0.2s ease;
+        }
+        .upload-label:hover {
+            transform: scale(1.05);
+        }
+        .chart-container {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+        }
+        .stat-card h3 {
+            color: #00d9ff;
+            font-size: 0.9em;
+            margin-bottom: 5px;
+        }
+        .stat-card .value {
+            font-size: 1.5em;
+            font-weight: bold;
+        }
+        .filename {
+            color: #888;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧠 Training Log Viewer</h1>
+        
+        <div class="upload-section">
+            <input type="file" id="fileInput" accept=".txt,.log,.csv">
+            <label for="fileInput" class="upload-label">📂 Log-Datei auswählen</label>
+            <p class="filename" id="filename">Keine Datei ausgewählt</p>
+        </div>
+
+        <div class="stats" id="stats" style="display: none;">
+            <div class="stat-card">
+                <h3>Epochen</h3>
+                <div class="value" id="epochCount">-</div>
+            </div>
+            <div class="stat-card">
+                <h3>Datenpunkte</h3>
+                <div class="value" id="dataPoints">-</div>
+            </div>
+            <div class="stat-card">
+                <h3>Start Loss</h3>
+                <div class="value" id="startLoss">-</div>
+            </div>
+            <div class="stat-card">
+                <h3>End Loss</h3>
+                <div class="value" id="endLoss">-</div>
+            </div>
+            <div class="stat-card">
+                <h3>Min Loss</h3>
+                <div class="value" id="minLoss">-</div>
+            </div>
+            <div class="stat-card">
+                <h3>Verbesserung</h3>
+                <div class="value" id="improvement">-</div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="lossChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            document.getElementById('filename').textContent = file.name;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const content = e.target.result;
+                parseAndDisplay(content);
+            };
+            reader.readAsText(file);
+        });
+
+        function parseAndDisplay(content) {
+            const lines = content.trim().split('\n');
+            const data = [];
+
+            for (const line of lines) {
+                const parts = line.split(',');
+                if (parts.length >= 3) {
+                    const epoch = parseInt(parts[0]);
+                    const batch = parseInt(parts[1]);
+                    const loss = parseFloat(parts[2]);
+                    
+                    if (!isNaN(epoch) && !isNaN(batch) && !isNaN(loss)) {
+                        data.push({ epoch, batch, loss });
+                    }
+                }
+            }
+
+            if (data.length === 0) {
+                alert('Keine gültigen Daten gefunden!');
+                return;
+            }
+
+            // Calculate stats
+            const losses = data.map(d => d.loss);
+            const epochs = [...new Set(data.map(d => d.epoch))];
+            const startLoss = losses[0];
+            const endLoss = losses[losses.length - 1];
+            const minLoss = Math.min(...losses);
+            const improvement = ((startLoss - endLoss) / startLoss * 100).toFixed(1);
+
+            // Update stats display
+            document.getElementById('stats').style.display = 'grid';
+            document.getElementById('epochCount').textContent = epochs.length;
+            document.getElementById('dataPoints').textContent = data.length;
+            document.getElementById('startLoss').textContent = startLoss.toFixed(6);
+            document.getElementById('endLoss').textContent = endLoss.toFixed(6);
+            document.getElementById('minLoss').textContent = minLoss.toFixed(6);
+            document.getElementById('improvement').textContent = improvement + '%';
+
+            // Create labels (epoch.batch format)
+            const labels = data.map(d => `${d.epoch}.${d.batch}`);
+
+            // Destroy existing chart if any
+            if (chart) {
+                chart.destroy();
+            }
+
+            // Create new chart
+            const ctx = document.getElementById('lossChart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Loss',
+                        data: losses,
+                        borderColor: '#00d9ff',
+                        backgroundColor: 'rgba(0, 217, 255, 0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 2,
+                        pointHoverRadius: 6,
+                        pointBackgroundColor: '#00d9ff',
+                        pointHoverBackgroundColor: '#ffffff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    aspectRatio: 2,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#e0e0e0',
+                                font: { size: 14 }
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: 'rgba(26, 26, 46, 0.9)',
+                            titleColor: '#00d9ff',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#00d9ff',
+                            borderWidth: 1,
+                            callbacks: {
+                                title: function(items) {
+                                    const d = data[items[0].dataIndex];
+                                    return `Epoch ${d.epoch}, Batch ${d.batch}`;
+                                },
+                                label: function(item) {
+                                    return `Loss: ${item.raw.toFixed(8)}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Epoch.Batch',
+                                color: '#e0e0e0'
+                            },
+                            ticks: {
+                                color: '#888',
+                                maxTicksLimit: 20
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.05)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Loss',
+                                color: '#e0e0e0'
+                            },
+                            ticks: {
+                                color: '#888'
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            }
+                        }
+                    },
+                    interaction: {
+                        intersect: false,
+                        mode: 'index'
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+</html>
