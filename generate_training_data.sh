@@ -16,7 +16,7 @@ TEMP_PREFIX="$TRAINING_DIR/training_temp"
 NUM_GAMES=${NUM_GAMES:-10000000}          # Gesamtanzahl Spiele
 CONCURRENCY=${CONCURRENCY:-32}          # Anzahl paralleler Instanzen
 DEPTH=${DEPTH:-6}                       # Suchtiefe
-NODES=${NODES:-10000}                       # Knotenlimit (0=benutze Tiefe)
+NODES=${NODES:-50000}                       # Knotenlimit (0=benutze Tiefe)
 RANDOM_MOVES=${RANDOM_MOVES:-12}         # Zufallszüge am Anfang
 RANDOM_PROB=${RANDOM_PROB:-100}         # Wahrscheinlichkeit für Zufallszüge (%)
 MAX_MOVES=${MAX_MOVES:-250}  # Maximale Züge pro Spiel
