@@ -59,33 +59,25 @@ static inline int get_lsb_index(Bitboard bb) {
 }
 
 // Helper: Get a pointer to the bitboard of the piece at a given square for modification
+// Now uses O(1) piece array lookup instead of scanning bitboards
 static Bitboard* getMutablePieceBitboardAtSquare(Board* board, Square sq, bool isWhiteMoving) {
-    Bitboard s = 1ULL << sq;
-    if (isWhiteMoving) { // If white is moving, the piece at 'sq' must be white
-        if (board->whitePawns & s) return &board->whitePawns;
-        if (board->whiteKnights & s) return &board->whiteKnights;
-        if (board->whiteBishops & s) return &board->whiteBishops;
-        if (board->whiteRooks & s) return &board->whiteRooks;
-        if (board->whiteQueens & s) return &board->whiteQueens;
-        if (board->whiteKings & s) return &board->whiteKings;
-    } else { // If black is moving, the piece at 'sq' must be black
-        if (board->blackPawns & s) return &board->blackPawns;
-        if (board->blackKnights & s) return &board->blackKnights;
-        if (board->blackBishops & s) return &board->blackBishops;
-        if (board->blackRooks & s) return &board->blackRooks;
-        if (board->blackQueens & s) return &board->blackQueens;
-        if (board->blackKings & s) return &board->blackKings;
-    }
-    return NULL; 
+    uint8_t p = board->piece[sq];
+    if (p == NO_PIECE) return NULL;
+    int color = PIECE_COLOR_OF(p);
+    // Verify color matches expectation
+    if ((color == WHITE) != isWhiteMoving) return NULL;
+    int type = PIECE_TYPE_OF(p);
+    return &board->byTypeBB[color][type];
 }
 
-// Helper: Remove any piece from a square on all bitboards
+// Helper: Remove any piece from a square - now O(1) using piece array
 static void clearSquareOnAllBitboards(Board* board, Square sq) {
-    Bitboard s = ~(1ULL << sq); // Mask to clear the bit at sq
-    board->whitePawns &= s; board->whiteKnights &= s; board->whiteBishops &= s;
-    board->whiteRooks &= s; board->whiteQueens &= s; board->whiteKings &= s;
-    board->blackPawns &= s; board->blackKnights &= s; board->blackBishops &= s;
-    board->blackRooks &= s; board->blackQueens &= s; board->blackKings &= s;
+    uint8_t p = board->piece[sq];
+    if (p == NO_PIECE) return;
+    int color = PIECE_COLOR_OF(p);
+    int type = PIECE_TYPE_OF(p);
+    board->byTypeBB[color][type] &= ~(1ULL << sq);
+    board->piece[sq] = NO_PIECE;
 }
 
 // Generate a specific occupancy permutation from an index and a mask
@@ -459,11 +451,9 @@ Bitboard getQueenAttacks(Square square, Bitboard occupancy) {
 }
 
 static Bitboard getOccupiedByColor(const Board* board, bool isWhite) {
-    if (isWhite) {
-        return board->whitePawns | board->whiteKnights | board->whiteBishops | board->whiteRooks | board->whiteQueens | board->whiteKings;
-    } else {
-        return board->blackPawns | board->blackKnights | board->blackBishops | board->blackRooks | board->blackQueens | board->blackKings;
-    }
+    int c = isWhite ? WHITE : BLACK;
+    return board->byTypeBB[c][PAWN] | board->byTypeBB[c][KNIGHT] | board->byTypeBB[c][BISHOP] | 
+           board->byTypeBB[c][ROOK] | board->byTypeBB[c][QUEEN] | board->byTypeBB[c][KING];
 }
 
 static void generatePawnMoves(const Board* board, MoveList* list, bool isWhite) {

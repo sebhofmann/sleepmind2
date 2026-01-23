@@ -122,17 +122,17 @@ static Bitboard get_all_attackers(const Board* board, int square, Bitboard occup
     Bitboard white_pawn_attackers = 0ULL;
     if (square >= 9 && (square % 8) > 0) white_pawn_attackers |= (1ULL << (square - 9));
     if (square >= 7 && (square % 8) < 7) white_pawn_attackers |= (1ULL << (square - 7));
-    attackers |= white_pawn_attackers & board->whitePawns;
+    attackers |= white_pawn_attackers & board->byTypeBB[WHITE][PAWN];
     
     // Black pawns attack diagonally downward
     Bitboard black_pawn_attackers = 0ULL;
     if (square <= 54 && (square % 8) < 7) black_pawn_attackers |= (1ULL << (square + 9));
     if (square <= 56 && (square % 8) > 0) black_pawn_attackers |= (1ULL << (square + 7));
-    attackers |= black_pawn_attackers & board->blackPawns;
+    attackers |= black_pawn_attackers & board->byTypeBB[BLACK][PAWN];
     
     // Knight attacks (symmetric)
     static const int knight_offsets[8] = {-17, -15, -10, -6, 6, 10, 15, 17};
-    Bitboard knights = board->whiteKnights | board->blackKnights;
+    Bitboard knights = board->byTypeBB[WHITE][KNIGHT] | board->byTypeBB[BLACK][KNIGHT];
     for (int i = 0; i < 8; i++) {
         int from = square + knight_offsets[i];
         if (from >= 0 && from < 64) {
@@ -146,7 +146,7 @@ static Bitboard get_all_attackers(const Board* board, int square, Bitboard occup
     
     // King attacks (symmetric)
     static const int king_offsets[8] = {-9, -8, -7, -1, 1, 7, 8, 9};
-    Bitboard kings = board->whiteKings | board->blackKings;
+    Bitboard kings = board->byTypeBB[WHITE][KING] | board->byTypeBB[BLACK][KING];
     for (int i = 0; i < 8; i++) {
         int from = square + king_offsets[i];
         if (from >= 0 && from < 64) {
@@ -158,14 +158,17 @@ static Bitboard get_all_attackers(const Board* board, int square, Bitboard occup
         }
     }
     
-    // Sliding pieces
+    // Sliding pieces - use indexed bitboards
+    Bitboard rooks_queens = board->byTypeBB[WHITE][ROOK] | board->byTypeBB[BLACK][ROOK] |
+                            board->byTypeBB[WHITE][QUEEN] | board->byTypeBB[BLACK][QUEEN];
+    Bitboard bishops_queens = board->byTypeBB[WHITE][BISHOP] | board->byTypeBB[BLACK][BISHOP] |
+                              board->byTypeBB[WHITE][QUEEN] | board->byTypeBB[BLACK][QUEEN];
+    
     Bitboard rook_attacks = getRookAttacks(square, occupied);
-    attackers |= rook_attacks & (board->whiteRooks | board->blackRooks | 
-                                  board->whiteQueens | board->blackQueens);
+    attackers |= rook_attacks & rooks_queens;
     
     Bitboard bishop_attacks = getBishopAttacks(square, occupied);
-    attackers |= bishop_attacks & (board->whiteBishops | board->blackBishops | 
-                                    board->whiteQueens | board->blackQueens);
+    attackers |= bishop_attacks & bishops_queens;
     
     return attackers;
 }
@@ -173,39 +176,40 @@ static Bitboard get_all_attackers(const Board* board, int square, Bitboard occup
 // Get the least valuable attacker from a set of attackers
 static int get_smallest_attacker(const Board* board, Bitboard attackers, bool white, int* piece_square) {
     Bitboard our_pieces;
+    int c = white ? WHITE : BLACK;
     
     // Check in order: Pawns, Knights, Bishops, Rooks, Queens, King
-    our_pieces = attackers & (white ? board->whitePawns : board->blackPawns);
+    our_pieces = attackers & board->byTypeBB[c][PAWN];
     if (our_pieces) {
         *piece_square = BIT_SCAN_FORWARD(our_pieces);
         return SEE_VALUES[1]; // PAWN
     }
     
-    our_pieces = attackers & (white ? board->whiteKnights : board->blackKnights);
+    our_pieces = attackers & board->byTypeBB[c][KNIGHT];
     if (our_pieces) {
         *piece_square = BIT_SCAN_FORWARD(our_pieces);
         return SEE_VALUES[2]; // KNIGHT
     }
     
-    our_pieces = attackers & (white ? board->whiteBishops : board->blackBishops);
+    our_pieces = attackers & board->byTypeBB[c][BISHOP];
     if (our_pieces) {
         *piece_square = BIT_SCAN_FORWARD(our_pieces);
         return SEE_VALUES[3]; // BISHOP
     }
     
-    our_pieces = attackers & (white ? board->whiteRooks : board->blackRooks);
+    our_pieces = attackers & board->byTypeBB[c][ROOK];
     if (our_pieces) {
         *piece_square = BIT_SCAN_FORWARD(our_pieces);
         return SEE_VALUES[4]; // ROOK
     }
     
-    our_pieces = attackers & (white ? board->whiteQueens : board->blackQueens);
+    our_pieces = attackers & board->byTypeBB[c][QUEEN];
     if (our_pieces) {
         *piece_square = BIT_SCAN_FORWARD(our_pieces);
         return SEE_VALUES[5]; // QUEEN
     }
     
-    our_pieces = attackers & (white ? board->whiteKings : board->blackKings);
+    our_pieces = attackers & board->byTypeBB[c][KING];
     if (our_pieces) {
         *piece_square = BIT_SCAN_FORWARD(our_pieces);
         return SEE_VALUES[6]; // KING

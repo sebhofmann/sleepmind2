@@ -5,19 +5,8 @@
 Board parseFEN(const char* fen) {
     Board board = {};
     
-    // Initialize the board with empty bitboards
-    board.whitePawns = 0;
-    board.whiteKnights = 0;
-    board.whiteBishops = 0;
-    board.whiteRooks = 0;
-    board.whiteQueens = 0;
-    board.whiteKings = 0;
-    board.blackPawns = 0;
-    board.blackKnights = 0;
-    board.blackBishops = 0;
-    board.blackRooks = 0;
-    board.blackQueens = 0;
-    board.blackKings = 0;
+    // Initialize all bitboards and piece array to empty
+    clear_piece_array(&board);
     board.historyIndex = 0;
     memset(board.history, 0, sizeof(board.history));
 
@@ -26,7 +15,7 @@ Board parseFEN(const char* fen) {
     int fenIndex = 0;
     char currentChar;
 
-    // 1. Piece placement
+    // 1. Piece placement - use put_piece for branchless updates
     while ((currentChar = fen[fenIndex]) != ' ' && currentChar != '\0') {
         if (currentChar == '/') {
             rank--;
@@ -41,22 +30,28 @@ Board parseFEN(const char* fen) {
             continue;
         }
 
-        Bitboard squareBit = 1ULL << (rank * 8 + file);
+        int sq = rank * 8 + file;
+        uint8_t piece = NO_PIECE;
 
         switch (currentChar) {
-            case 'P': board.whitePawns |= squareBit; break;
-            case 'N': board.whiteKnights |= squareBit; break;
-            case 'B': board.whiteBishops |= squareBit; break;
-            case 'R': board.whiteRooks |= squareBit; break;
-            case 'Q': board.whiteQueens |= squareBit; break;
-            case 'K': board.whiteKings |= squareBit; break;
-            case 'p': board.blackPawns |= squareBit; break;
-            case 'n': board.blackKnights |= squareBit; break;
-            case 'b': board.blackBishops |= squareBit; break;
-            case 'r': board.blackRooks |= squareBit; break;
-            case 'q': board.blackQueens |= squareBit; break;
-            case 'k': board.blackKings |= squareBit; break;
+            case 'P': piece = W_PAWN; break;
+            case 'N': piece = W_KNIGHT; break;
+            case 'B': piece = W_BISHOP; break;
+            case 'R': piece = W_ROOK; break;
+            case 'Q': piece = W_QUEEN; break;
+            case 'K': piece = W_KING; break;
+            case 'p': piece = B_PAWN; break;
+            case 'n': piece = B_KNIGHT; break;
+            case 'b': piece = B_BISHOP; break;
+            case 'r': piece = B_ROOK; break;
+            case 'q': piece = B_QUEEN; break;
+            case 'k': piece = B_KING; break;
         }
+        
+        if (piece != NO_PIECE) {
+            put_piece(&board, piece, sq);
+        }
+        
         file++;
         fenIndex++;
     }
