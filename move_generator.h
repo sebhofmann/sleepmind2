@@ -14,6 +14,9 @@ bool findAndInitMagicNumbers();
 // Generate all pseudo-legal moves for the current player
 void generateMoves(const Board* board, MoveList* moveList);
 
+// Generate all legal moves for the current player (slower, but guaranteed legal)
+void generateLegalMoves(Board* board, MoveList* moveList);
+
 // Generate only pseudo-legal capture moves for the current player
 void generateCaptureMoves(const Board* board, MoveList* moveList);
 

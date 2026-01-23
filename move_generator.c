@@ -876,3 +876,37 @@ void generateMoves(const Board* board, MoveList* list) {
     generateSlidingPieceMoves(board, list, isWhite, isWhite ? board->whiteQueens : board->blackQueens, QUEEN_T);
     generateCastlingMoves(board, list, isWhite);
 }
+
+// Generate all legal moves (filters out moves that leave king in check)
+// Use this when you need guaranteed legal moves (e.g., training data generation)
+void generateLegalMoves(Board* board, MoveList* list) {
+    MoveList pseudoLegalMoves;
+    pseudoLegalMoves.count = 0;
+    list->count = 0;
+
+    bool isWhite = board->whiteToMove;
+
+    // Generate all pseudo-legal moves
+    generatePawnMoves(board, &pseudoLegalMoves, isWhite);
+    generatePieceMoves(board, &pseudoLegalMoves, isWhite, isWhite ? board->whiteKnights : board->blackKnights, KNIGHT_ATTACKS);
+    generatePieceMoves(board, &pseudoLegalMoves, isWhite, isWhite ? board->whiteKings : board->blackKings, KING_ATTACKS);
+    generateSlidingPieceMoves(board, &pseudoLegalMoves, isWhite, isWhite ? board->whiteBishops : board->blackBishops, BISHOP_T);
+    generateSlidingPieceMoves(board, &pseudoLegalMoves, isWhite, isWhite ? board->whiteRooks : board->blackRooks, ROOK_T);
+    generateSlidingPieceMoves(board, &pseudoLegalMoves, isWhite, isWhite ? board->whiteQueens : board->blackQueens, QUEEN_T);
+    generateCastlingMoves(board, &pseudoLegalMoves, isWhite);
+
+    // Filter for legality
+    for (int i = 0; i < pseudoLegalMoves.count; i++) {
+        Move currentMove = pseudoLegalMoves.moves[i];
+        
+        MoveUndoInfo undo_info;
+        applyMove(board, currentMove, &undo_info, NULL, NULL); 
+            
+        // Check if the king of the side that just moved is in check
+        if (!isKingAttacked(board, !board->whiteToMove)) { 
+            addMove(list, currentMove); 
+        }
+        
+        undoMove(board, currentMove, &undo_info, NULL, NULL);
+    }
+}
