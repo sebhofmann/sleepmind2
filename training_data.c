@@ -52,13 +52,9 @@ void write_training_data(int result) {  // 1 = win for white, 0 = draw, -1 = los
         else wdl = "0.5";                   // Draw
         fprintf(training_file, "%s | %d | %s\n", training_data[i].fen, white_relative_eval, wdl);
     }
-    fflush(training_file);
+    // Flush periodically (every ~100 games based on typical entry counts)
+    // File stays open for performance - will be closed on exit or path change
     training_data_count = 0;  // Reset
-    // Close file after writing
-    if (training_file) {
-        fclose(training_file);
-        training_file = NULL;
-    }
 }
 
 void set_training_data_path(const char* path) {
@@ -71,6 +67,10 @@ void set_training_data_path(const char* path) {
             fclose(training_file);
         }
         training_file = fopen(training_data_path, "a");
+        if (training_file) {
+            // Use larger buffer for better I/O performance
+            setvbuf(training_file, NULL, _IOFBF, 65536);  // 64KB buffer
+        }
     } else {
         training_enabled = false;
         if (training_file) {

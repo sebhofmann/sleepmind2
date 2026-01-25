@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <getopt.h>
 #include <signal.h>
+#include <unistd.h>
 
 #include "board.h"
 #include "board_io.h"
@@ -527,13 +528,14 @@ int main(int argc, char* argv[]) {
     signal(SIGTERM, signal_handler);
     signal(SIGINT, signal_handler);
     
-    // Initialize random seed
-    srand((unsigned int)time(NULL));
-    
     // Initialize engine components
     init_zobrist_keys();
     init_tt(256);  // 256 MB transposition table
     initMoveGenerator();
+    
+    // Initialize random seed AFTER initMoveGenerator (which also calls srand)
+    // Using multiplication ensures different PIDs give very different seeds
+    srand((unsigned int)(time(NULL) * getpid()));
     
     // Disable search output for training (no "info depth" and "DEBUG" spam)
     set_search_silent(true);
@@ -614,6 +616,7 @@ int main(int argc, char* argv[]) {
     printf("Training data written to: %s.*\n", config.output_file);
     
     // Cleanup
+    init_training_data();  // Closes training file properly
     free(nnue_network);
     
     return 0;

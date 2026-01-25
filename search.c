@@ -502,14 +502,8 @@ static bool check_time(SearchInfo* info) {
     return false;
 }
 
-// Check node limit
-static bool check_nodes(SearchInfo* info) {
-    if (info->nodeLimit > 0 && info->nodesSearched >= info->nodeLimit) {
-        info->stopSearch = true;
-        return true;
-    }
-    return false;
-}
+// Note: Node limit is now a SOFT limit, checked only between iterations
+// in iterative_deepening_search() to allow each iteration to complete fully.
 
 // Hilfsfunktion: Verstrichene Zeit in ms
 static long get_elapsed_time(SearchInfo* info) {
@@ -566,8 +560,8 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         info->seldepth = ply;
     }
     
-    // Check time and node limit periodically
-    if ((info->nodesSearched & 2047) == 0 && (check_time(info) || check_nodes(info))) {
+    // Check time limit periodically (node limit is soft - checked between iterations)
+    if ((info->nodesSearched & 2047) == 0 && check_time(info)) {
         return 0;
     }
     if (info->stopSearch) return 0;
@@ -840,8 +834,8 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     bool is_pv = (beta - alpha) > 1;  // Are we in a PV node?
     int original_alpha = alpha;
     
-    // Check time and node limit periodically
-    if (ply > 0 && (info->nodesSearched & 2047) == 0 && (check_time(info) || check_nodes(info))) {
+    // Check time limit periodically (node limit is soft - checked between iterations)
+    if (ply > 0 && (info->nodesSearched & 2047) == 0 && check_time(info)) {
         return 0;
     }
     if (info->stopSearch) return 0;
@@ -1384,6 +1378,16 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         if (abs(score) > MATE_SCORE - 100) {
             if (!search_silent_mode) {
                 printf("info string Mate found, stopping search\n");
+                fflush(stdout);
+            }
+            break;
+        }
+        
+        // Soft node limit - check between iterations (allows current iteration to complete)
+        if (info->nodeLimit > 0 && info->nodesSearched >= info->nodeLimit) {
+            if (!search_silent_mode) {
+                printf("info string Soft node limit reached after depth %d (%llu nodes)\n", 
+                       depth, (unsigned long long)info->nodesSearched);
                 fflush(stdout);
             }
             break;
