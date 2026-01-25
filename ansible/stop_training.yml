@@ -1,0 +1,107 @@
+---
+# Playbook zum Beenden des Trainings und Sichern der Daten
+# Verwendung: ansible-playbook -i inventory.yml stop_training.yml
+
+- name: SleepMind - Stop Training and Collect Data
+  hosts: training_nodes
+  become: yes
+    
+  tasks:
+    - name: Get current timestamp
+      set_fact:
+        timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+      
+    - name: Check if training is running
+      shell: pgrep -x training || true
+      register: training_running
+      changed_when: false
+
+    - name: Show running processes
+      debug:
+        msg: "{{ training_running.stdout_lines | length }} Training-Prozesse laufen"
+
+    - name: Send SIGTERM to training processes (graceful shutdown)
+      shell: killall -q training || true
+      when: training_running.stdout != ""
+      ignore_errors: yes
+
+    - name: Wait for graceful shutdown (max 60s)
+      shell: |
+        for i in {1..60}; do
+          if ! pgrep -x training > /dev/null; then
+            echo "Processes stopped after ${i}s"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "Timeout - forcing kill"
+        killall -9 training || true
+      when: training_running.stdout != ""
+      register: shutdown_result
+
+    - name: Show shutdown result
+      debug:
+        var: shutdown_result.stdout
+      when: shutdown_result is defined and shutdown_result.stdout is defined
+
+    - name: Wait for data to be written
+      pause:
+        seconds: 5
+
+    - name: Combine temp files if they exist
+      shell: |
+        cd {{ output_dir }}
+        if ls training_temp_*.* 1> /dev/null 2>&1; then
+          cat training_temp_*.* 2>/dev/null | grep -v '^$' | grep '|' >> training_combined.txt
+          rm -f training_temp_*.*
+          echo "Temp files combined"
+        else
+          echo "No temp files found"
+        fi
+      register: combine_result
+
+    - name: Show combine result
+      debug:
+        var: combine_result.stdout
+
+    - name: Check if training data exists
+      stat:
+        path: "{{ output_dir }}/training_combined.txt"
+      register: training_file
+
+    - name: Count lines in training data
+      shell: wc -l < {{ output_dir }}/training_combined.txt
+      register: line_count
+      when: training_file.stat.exists
+
+    - name: Show training data stats
+      debug:
+        msg: "{{ inventory_hostname }}: {{ line_count.stdout | default('0') }} Positionen ({{ training_file.stat.size | default(0) | human_readable }})"
+      when: training_file.stat.exists
+
+    - name: Create local collection directory
+      local_action:
+        module: file
+        path: "{{ local_collect_dir }}/{{ inventory_hostname }}"
+        state: directory
+      become: no
+
+    - name: Fetch training data to control node (with timestamp)
+      fetch:
+        src: "{{ output_dir }}/training_combined.txt"
+        dest: "{{ local_collect_dir }}/{{ inventory_hostname }}/training_{{ timestamp }}.txt"
+        flat: yes
+      when: training_file.stat.exists
+      timeout: 9999999
+
+    - name: Fetch training log
+      fetch:
+        src: "{{ output_dir }}/training.log"
+        dest: "{{ local_collect_dir }}/{{ inventory_hostname }}/training_{{ timestamp }}.log"
+        flat: yes
+      ignore_errors: yes
+
+    - name: Show collection complete
+      debug:
+        msg: "Daten gesichert nach {{ local_collect_dir }}/{{ inventory_hostname }}/training_{{ timestamp }}.txt"
+      when: training_file.stat.exists

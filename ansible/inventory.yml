@@ -1,0 +1,36 @@
+---
+# Beispiel Inventory mit 3 Maschinen
+# Kopieren und anpassen: cp inventory.example.yml inventory.yml
+
+all:
+  children:
+    training_nodes:
+      hosts:
+        training1:
+          ansible_host: 192.xxxxx
+          training_concurrency: 16
+      vars:
+        ansible_user: hi
+        ansible_python_interpreter: /usr/bin/python3
+        
+        # Pfade
+        work_dir: "/opt/sleepmind_ansible"
+        output_dir: "/opt/sleepmind_ansible/training_data"
+        local_collect_dir: "./collected_data"
+        
+        # Git
+        repo_url: "https://github.com/sebhofmann/sleepmind2.git"
+        repo_branch: "main"
+        
+        # Training Parameter
+        training_num_games: 1000000
+        training_depth: 6
+        training_nodes: 5000
+        training_random_moves: 12
+        training_random_prob: 100
+        training_max_moves: 250
+        training_draw_threshold: 50
+        training_eval_threshold: 3
+        training_adjudicate: 10
+        training_filter_tactics: 1
+        training_verbose: 1

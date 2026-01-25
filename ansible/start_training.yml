@@ -1,0 +1,106 @@
+---
+# Playbook zum Starten der Trainingsdaten-Generierung
+# Verwendung: ansible-playbook -i inventory.yml start_training.yml
+
+- name: SleepMind - Start Training Data Generation
+  hosts: training_nodes
+  become: yes
+    
+  tasks:
+    - name: Check required variables
+      fail:
+        msg: "repo_url must be defined in inventory.yml"
+      when: repo_url is not defined
+
+    - name: Install required packages
+      apt:
+        name:
+          - build-essential
+          - gcc
+          - make
+          - git
+        state: present
+        update_cache: yes
+
+    - name: Create work directory
+      file:
+        path: "{{ work_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Clone/Update repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ work_dir }}"
+        version: "{{ repo_branch }}"
+        force: yes
+        accept_hostkey: yes
+      environment:
+        GIT_TERMINAL_PROMPT: "0"
+
+    - name: Compile training binary
+      make:
+        chdir: "{{ work_dir }}"
+        target: training
+
+    - name: Compile main engine (for NNUE weights)
+      make:
+        chdir: "{{ work_dir }}"
+        target: all
+
+    - name: Ensure training_data directory exists
+      file:
+        path: "{{ output_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Check if training is already running
+      shell: pgrep -x training || true
+      register: training_running
+      changed_when: false
+
+    - name: Stop existing training processes
+      shell: killall -q training || true
+      when: training_running.stdout != ""
+      ignore_errors: yes
+
+    - name: Wait for processes to stop
+      pause:
+        seconds: 3
+      when: training_running.stdout != ""
+
+    - name: Remove old temp files
+      shell: rm -f {{ output_dir }}/training_temp_*
+      changed_when: false
+
+    - name: Start training data generation in background
+      shell: |
+        cd {{ work_dir }}
+        nohup bash -c 'NUM_GAMES={{ training_num_games }} \
+        CONCURRENCY={{ training_concurrency }} \
+        DEPTH={{ training_depth }} \
+        NODES={{ training_nodes }} \
+        RANDOM_MOVES={{ training_random_moves }} \
+        RANDOM_PROB={{ training_random_prob }} \
+        MAX_MOVES={{ training_max_moves }} \
+        DRAW_THRESHOLD={{ training_draw_threshold }} \
+        EVAL_THRESHOLD={{ training_eval_threshold }} \
+        ADJUDICATE={{ training_adjudicate }} \
+        FILTER_TACTICS={{ training_filter_tactics }} \
+        VERBOSE={{ training_verbose }} \
+        ./generate_training_data.sh' > {{ output_dir }}/training.log 2>&1 &
+      async: 10
+      poll: 0
+
+    - name: Wait for training to start
+      pause:
+        seconds: 5
+
+    - name: Check training processes started
+      shell: pgrep -x training | wc -l
+      register: training_count
+      changed_when: false
+
+    - name: Show training status
+      debug:
+        msg: "Training gestartet: {{ training_count.stdout }} Prozesse laufen auf {{ inventory_hostname }}"
