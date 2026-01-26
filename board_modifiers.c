@@ -618,24 +618,25 @@ void clearCaptureSquareOnAllBitboards(Board* board, Square sq) {
 // on move flags. All branches happen here once, then execution is branch-free.
 // =============================================================================
 
-void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net) {
+// Internal dispatch helper - color is compile-time known
+static inline void applyMove_dispatch(Board* board, Move move, MoveUndoInfo* undoInfo,
+                                       NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net, int us) {
     Square from = MOVE_FROM(move);
-    int us = board->whiteToMove ? WHITE : BLACK;
     int withNNUE = (nnue_acc != NULL && nnue_net != NULL) ? 1 : 0;
-    
+
     // O(1) piece lookup
     uint8_t movingPiece = board->piece[from];
     int movingType = PIECE_TYPE_OF(movingPiece);
-    
+
     // Extract move flags (computed once)
     int isCapture = MOVE_IS_CAPTURE(move);
     int isEnPassant = MOVE_IS_EN_PASSANT(move);
     int isCastling = MOVE_IS_CASTLING(move);
     int isPromo = MOVE_PROMOTION(move) != 0;
-    
+
     // Dispatch based on piece type
     ApplyMoveFn fn;
-    
+
     if (movingType == PAWN) {
         // Pawn: determine subtype index
         int subType;
@@ -662,30 +663,42 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
         // Regular pieces (Knight, Bishop, Rook, Queen): index is movingType - 1
         fn = regularDispatch[us][movingType - 1][isCapture][withNNUE];
     }
-    
+
     // Call the specialized branch-free function
     fn(board, move, undoInfo, nnue_acc, nnue_net);
+}
+
+void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net) {
+    int us = board->whiteToMove ? WHITE : BLACK;
+    applyMove_dispatch(board, move, undoInfo, nnue_acc, nnue_net, us);
+}
+
+// Color-specialized versions - skip the whiteToMove check
+void applyMove_white(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net) {
+    applyMove_dispatch(board, move, undoInfo, nnue_acc, nnue_net, WHITE);
+}
+
+void applyMove_black(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net) {
+    applyMove_dispatch(board, move, undoInfo, nnue_acc, nnue_net, BLACK);
 }
 
 // =============================================================================
 // BRANCHLESS undoMove - Dispatches to specialized variant
 // =============================================================================
 
-void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net) {
+// Internal dispatch helper - color is compile-time known
+static inline void undoMove_dispatch(Board* board, Move move, const MoveUndoInfo* undoInfo,
+                                      NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net, int us) {
     Square to = MOVE_TO(move);
-    
-    // Note: we need to determine the original moving side BEFORE reverting
-    // Since board->whiteToMove is currently the opponent's turn, the original mover is !whiteToMove
-    int us = board->whiteToMove ? BLACK : WHITE;
     int withNNUE = (nnue_acc != NULL && nnue_net != NULL) ? 1 : 0;
-    
+
     // For undo, we need to look at what's currently on 'to' square (or deduce piece type)
     // For promotions, the piece on 'to' is the promoted piece, but we moved a pawn
     int isPromo = MOVE_PROMOTION(move) != 0;
     int isCapture = MOVE_IS_CAPTURE(move);
     int isEnPassant = MOVE_IS_EN_PASSANT(move);
     int isCastling = MOVE_IS_CASTLING(move);
-    
+
     // Determine original piece type
     int movingType;
     if (isPromo) {
@@ -694,10 +707,10 @@ void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumul
         uint8_t currentPiece = board->piece[to];
         movingType = PIECE_TYPE_OF(currentPiece);
     }
-    
+
     // Dispatch based on piece type
     UndoMoveFn fn;
-    
+
     if (movingType == PAWN) {
         int subType;
         if (isEnPassant) {
@@ -721,7 +734,24 @@ void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumul
     } else {
         fn = undoRegularDispatch[us][movingType - 1][isCapture][withNNUE];
     }
-    
+
     // Call the specialized branch-free function
     fn(board, move, undoInfo, nnue_acc, nnue_net);
+}
+
+void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net) {
+    // Note: we need to determine the original moving side BEFORE reverting
+    // Since board->whiteToMove is currently the opponent's turn, the original mover is !whiteToMove
+    int us = board->whiteToMove ? BLACK : WHITE;
+    undoMove_dispatch(board, move, undoInfo, nnue_acc, nnue_net, us);
+}
+
+// Color-specialized versions - skip the whiteToMove check
+// Note: 'us' is the color that MADE the move (before it was applied)
+void undoMove_white(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net) {
+    undoMove_dispatch(board, move, undoInfo, nnue_acc, nnue_net, WHITE);
+}
+
+void undoMove_black(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net) {
+    undoMove_dispatch(board, move, undoInfo, nnue_acc, nnue_net, BLACK);
 }

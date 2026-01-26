@@ -335,9 +335,9 @@ static int compare_moves(const void* a, const void* b) {
 // Move scoring for ordering
 // =============================================================================
 
-static void score_moves(Board* board, MoveList* moves, ScoredMove* scored, 
-                       Move tt_move, SearchInfo* info, int ply) {
-    int side = board->whiteToMove ? 0 : 1;
+// Color-specialized score_moves - side is compile-time known
+static void score_moves_impl(Board* board, MoveList* moves, ScoredMove* scored,
+                              Move tt_move, SearchInfo* info, int ply, int side) {
     
     for (int i = 0; i < moves->count; i++) {
         Move m = moves->moves[i];
@@ -406,6 +406,25 @@ static void score_moves(Board* board, MoveList* moves, ScoredMove* scored,
     qsort(scored, moves->count, sizeof(ScoredMove), compare_moves);
 }
 
+// Generic wrapper with runtime color check (kept for compatibility/debugging)
+__attribute__((unused))
+static void score_moves(Board* board, MoveList* moves, ScoredMove* scored,
+                        Move tt_move, SearchInfo* info, int ply) {
+    int side = board->whiteToMove ? 0 : 1;
+    score_moves_impl(board, moves, scored, tt_move, info, ply, side);
+}
+
+// Color-specialized wrappers
+static inline void score_moves_white(Board* board, MoveList* moves, ScoredMove* scored,
+                                      Move tt_move, SearchInfo* info, int ply) {
+    score_moves_impl(board, moves, scored, tt_move, info, ply, WHITE);
+}
+
+static inline void score_moves_black(Board* board, MoveList* moves, ScoredMove* scored,
+                                      Move tt_move, SearchInfo* info, int ply) {
+    score_moves_impl(board, moves, scored, tt_move, info, ply, BLACK);
+}
+
 // Score moves for quiescence (simpler, only captures matter)
 static void score_captures(Board* board, MoveList* moves, ScoredMove* scored) {
     for (int i = 0; i < moves->count; i++) {
@@ -455,14 +474,14 @@ static void update_killers(SearchInfo* info, Move m, int ply) {
 }
 
 // Update history heuristic with gravity (bonus for good moves, malus for bad)
-static void update_history(SearchInfo* info, Board* board, Move m, int depth) {
-    int side = board->whiteToMove ? 0 : 1;
+// Color-specialized version - side is compile-time known
+static inline void update_history_impl(SearchInfo* info, Move m, int depth, int side) {
     int from = MOVE_FROM(m);
     int to = MOVE_TO(m);
-    
+
     // Bonus proportional to depth^2
     int bonus = depth * depth;
-    
+
     // Gravity formula to prevent runaway values
     int current = info->history[side][from][to];
     int max_history = 16384;
@@ -470,15 +489,27 @@ static void update_history(SearchInfo* info, Board* board, Move m, int depth) {
 }
 
 // Penalize quiet moves that didn't cause a cutoff
-static void update_history_malus(SearchInfo* info, Board* board, Move m, int depth) {
-    int side = board->whiteToMove ? 0 : 1;
+static inline void update_history_malus_impl(SearchInfo* info, Move m, int depth, int side) {
     int from = MOVE_FROM(m);
     int to = MOVE_TO(m);
-    
+
     int malus = depth * depth;
     int current = info->history[side][from][to];
     int max_history = 16384;
     info->history[side][from][to] -= malus - (current * abs(malus) / max_history);
+}
+
+// Generic wrappers with runtime color check (kept for compatibility/debugging)
+__attribute__((unused))
+static void update_history(SearchInfo* info, Board* board, Move m, int depth) {
+    int side = board->whiteToMove ? 0 : 1;
+    update_history_impl(info, m, depth, side);
+}
+
+__attribute__((unused))
+static void update_history_malus(SearchInfo* info, Board* board, Move m, int depth) {
+    int side = board->whiteToMove ? 0 : 1;
+    update_history_malus_impl(info, m, depth, side);
 }
 
 // Clear search heuristics
@@ -535,15 +566,27 @@ static bool is_draw(Board* board, int ply) {
 }
 
 // Simple check if we can do null move (not in check, have pieces besides pawns)
+// Generic version with runtime color check (kept for compatibility/debugging)
+__attribute__((unused))
 static bool can_do_null_move(Board* board) {
     if (board->whiteToMove) {
-        // Check if white has non-pawn material
-        return (board->whiteKnights | board->whiteBishops | 
-                board->whiteRooks | board->whiteQueens) != 0;
+        return (board->byTypeBB[WHITE][KNIGHT] | board->byTypeBB[WHITE][BISHOP] |
+                board->byTypeBB[WHITE][ROOK] | board->byTypeBB[WHITE][QUEEN]) != 0;
     } else {
-        return (board->blackKnights | board->blackBishops | 
-                board->blackRooks | board->blackQueens) != 0;
+        return (board->byTypeBB[BLACK][KNIGHT] | board->byTypeBB[BLACK][BISHOP] |
+                board->byTypeBB[BLACK][ROOK] | board->byTypeBB[BLACK][QUEEN]) != 0;
     }
+}
+
+// Branchless color-specialized versions
+static inline bool can_do_null_move_white(Board* board) {
+    return (board->byTypeBB[WHITE][KNIGHT] | board->byTypeBB[WHITE][BISHOP] |
+            board->byTypeBB[WHITE][ROOK] | board->byTypeBB[WHITE][QUEEN]) != 0;
+}
+
+static inline bool can_do_null_move_black(Board* board) {
+    return (board->byTypeBB[BLACK][KNIGHT] | board->byTypeBB[BLACK][BISHOP] |
+            board->byTypeBB[BLACK][ROOK] | board->byTypeBB[BLACK][QUEEN]) != 0;
 }
 
 // =============================================================================
@@ -553,699 +596,539 @@ static bool can_do_null_move(Board* board) {
 // Depth used for QS entries in TT (negative to distinguish from main search)
 #define QS_TT_DEPTH 0
 
+// Forward declarations for color-specialized functions
+static int quiescence_WHITE(Board* board, int alpha, int beta, SearchInfo* info, int ply);
+static int quiescence_BLACK(Board* board, int alpha, int beta, SearchInfo* info, int ply);
+static int negamax_WHITE(Board* board, int depth, int alpha, int beta, SearchInfo* info,
+                          int ply, bool do_null, bool is_null_move_search);
+static int negamax_BLACK(Board* board, int depth, int alpha, int beta, SearchInfo* info,
+                          int ply, bool do_null, bool is_null_move_search);
+
+// =============================================================================
+// QUIESCENCE SEARCH TEMPLATE - Generates color-specialized variants
+// =============================================================================
+#define QUIESCENCE_TEMPLATE(US, THEM, APPLY_MOVE_FN, UNDO_MOVE_FN, QUIESCENCE_OTHER) \
+static int quiescence_##US(Board* board, int alpha, int beta, SearchInfo* info, int ply) { \
+    info->nodesSearched++; \
+    \
+    if (ply > info->seldepth) { \
+        info->seldepth = ply; \
+    } \
+    \
+    if ((info->nodesSearched & 2047) == 0 && check_time(info)) { \
+        return 0; \
+    } \
+    if (info->stopSearch) return 0; \
+    \
+    if (ply >= MAX_PLY) { \
+        int eval = evaluate(board, info->nnue_acc, info->nnue_net); \
+        return (US == WHITE) ? eval : -eval; \
+    } \
+    \
+    int original_alpha = alpha; \
+    \
+    Move tt_move = 0; \
+    tt_probes++; \
+    TTEntry* tt_entry = tt_probe(board->zobristKey); \
+    if (tt_entry != NULL) { \
+        tt_hits++; \
+        tt_move = tt_entry->bestMove; \
+        \
+        if (tt_entry->depth >= QS_TT_DEPTH) { \
+            int tt_score = tt_entry->score; \
+            uint8_t tt_flag = TT_GET_FLAG(tt_entry); \
+            \
+            if (tt_score > MATE_SCORE - 100) { \
+                tt_score -= ply; \
+            } else if (tt_score < -MATE_SCORE + 100) { \
+                tt_score += ply; \
+            } \
+            \
+            if (tt_flag == TT_EXACT) { \
+                tt_cutoffs++; \
+                return tt_score; \
+            } \
+            if (tt_flag == TT_LOWERBOUND && tt_score >= beta) { \
+                tt_cutoffs++; \
+                return tt_score; \
+            } \
+            if (tt_flag == TT_UPPERBOUND && tt_score <= alpha) { \
+                tt_cutoffs++; \
+                return tt_score; \
+            } \
+        } \
+    } \
+    \
+    bool in_check = isKingAttacked(board, (US == WHITE)); \
+    \
+    if (in_check) { \
+        MoveList all_moves; \
+        generateMoves(board, &all_moves); \
+        \
+        ScoredMove scored[256]; \
+        score_captures(board, &all_moves, scored); \
+        \
+        if (tt_move != 0) { \
+            for (int i = 0; i < all_moves.count; i++) { \
+                if (scored[i].move == tt_move) { \
+                    scored[i].score += 10000000; \
+                    break; \
+                } \
+            } \
+            for (int i = 1; i < all_moves.count; i++) { \
+                ScoredMove key = scored[i]; \
+                int j = i - 1; \
+                while (j >= 0 && scored[j].score < key.score) { \
+                    scored[j + 1] = scored[j]; \
+                    j--; \
+                } \
+                scored[j + 1] = key; \
+            } \
+        } \
+        \
+        Move best_move = 0; \
+        int moves_searched = 0; \
+        \
+        for (int i = 0; i < all_moves.count; i++) { \
+            Move m = scored[i].move; \
+            \
+            MoveUndoInfo undo; \
+            APPLY_MOVE_FN(board, m, &undo, info->nnue_acc, info->nnue_net); \
+            \
+            if (isKingAttacked(board, (US == WHITE))) { \
+                UNDO_MOVE_FN(board, m, &undo, info->nnue_acc, info->nnue_net); \
+                continue; \
+            } \
+            \
+            int score = -QUIESCENCE_OTHER(board, -beta, -alpha, info, ply + 1); \
+            UNDO_MOVE_FN(board, m, &undo, info->nnue_acc, info->nnue_net); \
+            \
+            moves_searched++; \
+            \
+            if (info->stopSearch) return 0; \
+            \
+            if (score >= beta) { \
+                tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m); \
+                return beta; \
+            } \
+            if (score > alpha) { \
+                alpha = score; \
+                best_move = m; \
+            } \
+        } \
+        \
+        if (moves_searched == 0) { \
+            return -MATE_SCORE + ply; \
+        } \
+        \
+        if (!info->stopSearch) { \
+            uint8_t tt_flag = (alpha <= original_alpha) ? TT_UPPERBOUND : TT_EXACT; \
+            tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move); \
+        } \
+        \
+        return alpha; \
+    } \
+    \
+    int stand_pat = evaluate(board, info->nnue_acc, info->nnue_net); \
+    if (US == BLACK) { \
+        stand_pat = -stand_pat; \
+    } \
+    \
+    if (stand_pat >= beta) { \
+        return beta; \
+    } \
+    if (stand_pat > alpha) { \
+        alpha = stand_pat; \
+    } \
+    \
+    if (info->params.use_delta_pruning && stand_pat + 900 + info->params.delta_margin < alpha) { \
+        return alpha; \
+    } \
+    \
+    MoveList capture_moves; \
+    generateCaptureAndPromotionMoves(board, &capture_moves); \
+    \
+    ScoredMove scored[256]; \
+    score_captures(board, &capture_moves, scored); \
+    \
+    if (tt_move != 0) { \
+        for (int i = 0; i < capture_moves.count; i++) { \
+            if (scored[i].move == tt_move) { \
+                scored[i].score += 10000000; \
+                break; \
+            } \
+        } \
+        for (int i = 1; i < capture_moves.count; i++) { \
+            ScoredMove key = scored[i]; \
+            int j = i - 1; \
+            while (j >= 0 && scored[j].score < key.score) { \
+                scored[j + 1] = scored[j]; \
+                j--; \
+            } \
+            scored[j + 1] = key; \
+        } \
+    } \
+    \
+    Move best_move = 0; \
+    \
+    for (int i = 0; i < capture_moves.count; i++) { \
+        Move m = scored[i].move; \
+        \
+        if (info->params.use_delta_pruning && !MOVE_IS_PROMOTION(m)) { \
+            bool isBlack = (US == WHITE); \
+            PieceTypeToken victim = getPieceTypeAtSquare(board, MOVE_TO(m), &isBlack); \
+            int gain = get_piece_value(victim); \
+            \
+            if (stand_pat + gain + info->params.delta_margin < alpha) { \
+                continue; \
+            } \
+        } \
+        \
+        MoveUndoInfo undo; \
+        APPLY_MOVE_FN(board, m, &undo, info->nnue_acc, info->nnue_net); \
+        \
+        if (isKingAttacked(board, (US == WHITE))) { \
+            UNDO_MOVE_FN(board, m, &undo, info->nnue_acc, info->nnue_net); \
+            continue; \
+        } \
+        \
+        int score = -QUIESCENCE_OTHER(board, -beta, -alpha, info, ply + 1); \
+        UNDO_MOVE_FN(board, m, &undo, info->nnue_acc, info->nnue_net); \
+        \
+        if (info->stopSearch) return 0; \
+        \
+        if (score >= beta) { \
+            tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m); \
+            return beta; \
+        } \
+        if (score > alpha) { \
+            alpha = score; \
+            best_move = m; \
+        } \
+    } \
+    \
+    if (!info->stopSearch) { \
+        uint8_t tt_flag = (alpha <= original_alpha) ? TT_UPPERBOUND : TT_EXACT; \
+        tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move); \
+    } \
+    \
+    return alpha; \
+}
+
+// Generate color-specialized quiescence functions
+QUIESCENCE_TEMPLATE(WHITE, BLACK, applyMove_white, undoMove_white, quiescence_BLACK)
+QUIESCENCE_TEMPLATE(BLACK, WHITE, applyMove_black, undoMove_black, quiescence_WHITE)
+
+// =============================================================================
+// NEGAMAX TEMPLATE - Generates color-specialized variants
+// =============================================================================
+#define NEGAMAX_TEMPLATE(US, THEM, APPLY_MOVE_FN, UNDO_MOVE_FN, QUIESCENCE_FN, NEGAMAX_OTHER, NEGAMAX_SELF, CAN_NULL_FN, SCORE_MOVES_FN) \
+static int negamax_##US(Board* board, int depth, int alpha, int beta, SearchInfo* info, \
+                         int ply, bool do_null, bool is_null_move_search) { \
+    info->nodesSearched++; \
+    info->pv_length[ply] = 0; \
+    \
+    bool is_pv = (beta - alpha) > 1; \
+    int original_alpha = alpha; \
+    \
+    if (ply > 0 && (info->nodesSearched & 2047) == 0 && check_time(info)) { \
+        return 0; \
+    } \
+    if (info->stopSearch) return 0; \
+    \
+    if (ply > 0 && is_draw(board, ply)) { \
+        return 0; \
+    } \
+    \
+    if (ply >= MAX_PLY) { \
+        int eval = evaluate(board, info->nnue_acc, info->nnue_net); \
+        return (US == WHITE) ? eval : -eval; \
+    } \
+    \
+    bool in_check = isKingAttacked(board, (US == WHITE)); \
+    \
+    if (in_check) { \
+        depth++; \
+    } \
+    \
+    Move tt_move = 0; \
+    tt_probes++; \
+    TTEntry* tt_entry = tt_probe(board->zobristKey); \
+    if (tt_entry != NULL) { \
+        tt_hits++; \
+        tt_move = tt_entry->bestMove; \
+        \
+        if (!is_pv && tt_entry->depth >= depth && ply > 0) { \
+            int tt_score = tt_entry->score; \
+            uint8_t tt_flag = TT_GET_FLAG(tt_entry); \
+            \
+            if (tt_score > MATE_SCORE - 100) { \
+                tt_score -= ply; \
+            } else if (tt_score < -MATE_SCORE + 100) { \
+                tt_score += ply; \
+            } \
+            \
+            if (tt_flag == TT_EXACT) { \
+                tt_cutoffs++; \
+                return tt_score; \
+            } \
+            if (tt_flag == TT_LOWERBOUND && tt_score >= beta) { \
+                tt_cutoffs++; \
+                return tt_score; \
+            } \
+            if (tt_flag == TT_UPPERBOUND && tt_score <= alpha) { \
+                tt_cutoffs++; \
+                return tt_score; \
+            } \
+        } \
+    } \
+    \
+    if (depth <= 0) { \
+        return QUIESCENCE_FN(board, alpha, beta, info, ply); \
+    } \
+    \
+    int static_eval = evaluate(board, info->nnue_acc, info->nnue_net); \
+    if (US == BLACK) { \
+        static_eval = -static_eval; \
+    } \
+    \
+    /* Null Move Pruning */ \
+    if (info->params.use_null_move && do_null && !in_check && !is_pv && \
+        depth >= info->params.null_move_min_depth && CAN_NULL_FN(board)) { \
+        \
+        board->whiteToMove = !board->whiteToMove; \
+        board->zobristKey ^= zobrist_side_to_move_key; \
+        \
+        int old_ep = board->enPassantSquare; \
+        if (old_ep != SQ_NONE) { \
+            board->zobristKey ^= zobrist_enpassant_keys[old_ep]; \
+        } \
+        board->enPassantSquare = SQ_NONE; \
+        \
+        int null_score = -NEGAMAX_OTHER(board, depth - 1 - info->params.null_move_reduction, -beta, -beta + 1, \
+                                         info, ply + 1, false, true); \
+        \
+        board->enPassantSquare = old_ep; \
+        if (old_ep != SQ_NONE) { \
+            board->zobristKey ^= zobrist_enpassant_keys[old_ep]; \
+        } \
+        board->whiteToMove = !board->whiteToMove; \
+        board->zobristKey ^= zobrist_side_to_move_key; \
+        \
+        if (info->stopSearch) return 0; \
+        \
+        if (null_score >= beta) { \
+            int verify = NEGAMAX_SELF(board, depth - info->params.null_move_reduction - 1, beta - 1, beta, \
+                                      info, ply, false, false); \
+            if (verify >= beta) { \
+                return beta; \
+            } \
+        } \
+    } \
+    \
+    /* Reverse Futility Pruning */ \
+    if (info->params.use_rfp && !is_pv && !in_check && depth <= info->params.rfp_max_depth && \
+        abs(beta) < MATE_SCORE - 100) { \
+        int rfp_margin = info->params.rfp_margin * depth; \
+        if (static_eval - rfp_margin >= beta) { \
+            return static_eval - rfp_margin; \
+        } \
+    } \
+    \
+    /* Futility Pruning */ \
+    bool futility_pruning = false; \
+    int futility_margin = 0; \
+    if (info->params.use_futility && !is_pv && !in_check && depth <= 3 && \
+        abs(alpha) < MATE_SCORE - 100 && abs(beta) < MATE_SCORE - 100) { \
+        if (depth == 1) { \
+            futility_margin = info->params.futility_margin; \
+        } else if (depth == 2) { \
+            futility_margin = info->params.futility_margin_d2; \
+        } else { \
+            futility_margin = info->params.futility_margin_d3; \
+        } \
+        if (static_eval + futility_margin <= alpha) { \
+            futility_pruning = true; \
+        } \
+    } \
+    \
+    MoveList moves; \
+    generateMoves(board, &moves); \
+    \
+    ScoredMove scored[256]; \
+    SCORE_MOVES_FN(board, &moves, scored, tt_move, info, ply); \
+    \
+    Move best_move = 0; \
+    int moves_searched = 0; \
+    \
+    for (int i = 0; i < moves.count; i++) { \
+        Move m = scored[i].move; \
+        bool is_capture = MOVE_IS_CAPTURE(m); \
+        bool is_promotion = MOVE_IS_PROMOTION(m); \
+        bool is_tactical = is_capture || is_promotion; \
+        \
+        if (futility_pruning && moves_searched > 0 && !is_tactical) { \
+            continue; \
+        } \
+        \
+        MoveUndoInfo undo; \
+        APPLY_MOVE_FN(board, m, &undo, info->nnue_acc, info->nnue_net); \
+        \
+        if (isKingAttacked(board, (US == WHITE))) { \
+            UNDO_MOVE_FN(board, m, &undo, info->nnue_acc, info->nnue_net); \
+            continue; \
+        } \
+        \
+        tt_prefetch(board->zobristKey); \
+        \
+        int score; \
+        \
+        if (moves_searched == 0) { \
+            score = -NEGAMAX_OTHER(board, depth - 1, -beta, -alpha, info, ply + 1, true, false); \
+        } else { \
+            int reduction = 0; \
+            \
+            if (info->params.use_lmr && !in_check && !is_tactical && \
+                depth >= info->params.lmr_reduction_limit && \
+                moves_searched >= info->params.lmr_full_depth_moves) { \
+                reduction = 1; \
+                \
+                if (depth >= 6) reduction++; \
+                if (depth >= 10) reduction++; \
+                \
+                if (moves_searched >= 8) reduction++; \
+                if (moves_searched >= 16) reduction++; \
+                if (moves_searched >= 32) reduction++; \
+                \
+                if (is_pv) { \
+                    reduction--; \
+                } \
+                \
+                if (ply < MAX_PLY && (m == info->killers[ply][0] || m == info->killers[ply][1])) { \
+                    reduction--; \
+                } \
+                \
+                /* History-based reduction - side is compile-time constant */ \
+                int from = MOVE_FROM(m); \
+                int to = MOVE_TO(m); \
+                if (info->history[US][from][to] < 0) { \
+                    reduction++; \
+                } else if (info->history[US][from][to] > 5000) { \
+                    reduction--; \
+                } \
+                \
+                if (reduction < 0) reduction = 0; \
+                if (depth - 1 - reduction < 1) { \
+                    reduction = depth - 2; \
+                } \
+                if (reduction < 0) reduction = 0; \
+            } \
+            \
+            score = -NEGAMAX_OTHER(board, depth - 1 - reduction, -alpha - 1, -alpha, \
+                                   info, ply + 1, true, false); \
+            \
+            if (reduction > 0 && score > alpha) { \
+                score = -NEGAMAX_OTHER(board, depth - 1, -alpha - 1, -alpha, info, ply + 1, true, false); \
+            } \
+            \
+            if (score > alpha && score < beta) { \
+                score = -NEGAMAX_OTHER(board, depth - 1, -beta, -alpha, info, ply + 1, true, false); \
+            } \
+        } \
+        \
+        UNDO_MOVE_FN(board, m, &undo, info->nnue_acc, info->nnue_net); \
+        \
+        moves_searched++; \
+        \
+        if (info->stopSearch) return 0; \
+        \
+        if (score > alpha) { \
+            alpha = score; \
+            best_move = m; \
+            \
+            info->pv_table[ply][0] = m; \
+            for (int j = 0; j < info->pv_length[ply + 1]; j++) { \
+                info->pv_table[ply][j + 1] = info->pv_table[ply + 1][j]; \
+            } \
+            info->pv_length[ply] = info->pv_length[ply + 1] + 1; \
+            \
+            if (ply == 0) { \
+                info->bestMoveThisIteration = m; \
+                info->bestScoreThisIteration = score; \
+            } \
+        } \
+        \
+        if (alpha >= beta) { \
+            if (!is_capture) { \
+                update_killers(info, m, ply); \
+                update_history_impl(info, m, depth, US); \
+                \
+                for (int j = 0; j < i; j++) { \
+                    Move prev = scored[j].move; \
+                    if (!MOVE_IS_CAPTURE(prev) && !MOVE_IS_PROMOTION(prev)) { \
+                        update_history_malus_impl(info, prev, depth, US); \
+                    } \
+                } \
+            } \
+            break; \
+        } \
+    } \
+    \
+    if (moves_searched == 0) { \
+        if (in_check) { \
+            return -MATE_SCORE + ply; \
+        } \
+        return 0; \
+    } \
+    \
+    if (!info->stopSearch && !is_null_move_search) { \
+        uint8_t tt_flag; \
+        if (alpha <= original_alpha) { \
+            tt_flag = TT_UPPERBOUND; \
+        } else if (alpha >= beta) { \
+            tt_flag = TT_LOWERBOUND; \
+        } else { \
+            tt_flag = TT_EXACT; \
+        } \
+        \
+        int store_score = alpha; \
+        if (store_score > MATE_SCORE - 100) { \
+            store_score += ply; \
+        } else if (store_score < -MATE_SCORE + 100) { \
+            store_score -= ply; \
+        } \
+        \
+        tt_store(board->zobristKey, depth, store_score, tt_flag, best_move); \
+    } \
+    \
+    return alpha; \
+}
+
+// Generate color-specialized negamax functions
+NEGAMAX_TEMPLATE(WHITE, BLACK, applyMove_white, undoMove_white, quiescence_WHITE, negamax_BLACK, negamax_WHITE, can_do_null_move_white, score_moves_white)
+NEGAMAX_TEMPLATE(BLACK, WHITE, applyMove_black, undoMove_black, quiescence_BLACK, negamax_WHITE, negamax_BLACK, can_do_null_move_black, score_moves_black)
+
+// Generic quiescence wrapper - dispatches to color-specialized version
 static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int ply) {
-    info->nodesSearched++;
-    
-    // Update selective depth
-    if (ply > info->seldepth) {
-        info->seldepth = ply;
+    if (board->whiteToMove) {
+        return quiescence_WHITE(board, alpha, beta, info, ply);
+    } else {
+        return quiescence_BLACK(board, alpha, beta, info, ply);
     }
-    
-    // Check time limit periodically (node limit is soft - checked between iterations)
-    if ((info->nodesSearched & 2047) == 0 && check_time(info)) {
-        return 0;
-    }
-    if (info->stopSearch) return 0;
-    
-    // Max ply check
-    if (ply >= MAX_PLY) {
-        int eval = evaluate(board, info->nnue_acc, info->nnue_net);
-        return board->whiteToMove ? eval : -eval;
-    }
-    
-    int original_alpha = alpha;
-    
-    // ==========================================================================
-    // TT Probe in Quiescence Search
-    // ==========================================================================
-    Move tt_move = 0;
-    tt_probes++;
-    TTEntry* tt_entry = tt_probe(board->zobristKey);
-    if (tt_entry != NULL) {
-        tt_hits++;
-        tt_move = tt_entry->bestMove;
-        
-        // Use TT cutoff if depth is sufficient (QS entries have depth 0)
-        if (tt_entry->depth >= QS_TT_DEPTH) {
-            int tt_score = tt_entry->score;
-            uint8_t tt_flag = TT_GET_FLAG(tt_entry);
-            
-            // Adjust mate scores
-            if (tt_score > MATE_SCORE - 100) {
-                tt_score -= ply;
-            } else if (tt_score < -MATE_SCORE + 100) {
-                tt_score += ply;
-            }
-            
-            if (tt_flag == TT_EXACT) {
-                tt_cutoffs++;
-                return tt_score;
-            }
-            if (tt_flag == TT_LOWERBOUND && tt_score >= beta) {
-                tt_cutoffs++;
-                return tt_score;
-            }
-            if (tt_flag == TT_UPPERBOUND && tt_score <= alpha) {
-                tt_cutoffs++;
-                return tt_score;
-            }
-        }
-    }
-    
-    // Check if we're in check
-    bool in_check = isKingAttacked(board, board->whiteToMove);
-    
-    // If in check, we must search all moves (not just captures)
-    if (in_check) {
-        // Generate all pseudo-legal moves when in check
-        MoveList all_moves;
-        generateMoves(board, &all_moves);
-        
-        ScoredMove scored[256];
-        score_captures(board, &all_moves, scored);
-        
-        // Boost TT move if available
-        if (tt_move != 0) {
-            for (int i = 0; i < all_moves.count; i++) {
-                if (scored[i].move == tt_move) {
-                    scored[i].score += 10000000;
-                    break;
-                }
-            }
-            // Re-sort
-            for (int i = 1; i < all_moves.count; i++) {
-                ScoredMove key = scored[i];
-                int j = i - 1;
-                while (j >= 0 && scored[j].score < key.score) {
-                    scored[j + 1] = scored[j];
-                    j--;
-                }
-                scored[j + 1] = key;
-            }
-        }
-        
-        Move best_move = 0;
-        int moves_searched = 0;
-        
-        for (int i = 0; i < all_moves.count; i++) {
-            Move m = scored[i].move;
-            
-            #ifdef DEBUG_ZOBRIST_VERIFY
-            uint64_t saved_zobrist = board->zobristKey;
-            #endif
-            
-            MoveUndoInfo undo;
-            applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
-            
-            // Skip illegal moves (king left in check) - move generator now returns pseudo-legal moves
-            if (isKingAttacked(board, !board->whiteToMove)) {
-                undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
-                continue;
-            }
-            
-            #ifdef DEBUG_NNUE_EVAL
-            eval_set_last_move(m, MOVE_FROM(m), MOVE_TO(m));
-            #endif
-            int score = -quiescence(board, -beta, -alpha, info, ply + 1);
-            undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
-            
-            moves_searched++;
-            
-            #ifdef DEBUG_ZOBRIST_VERIFY
-            if (board->zobristKey != saved_zobrist) {
-                char move_str[6];
-                moveToString(m, move_str);
-                printf("info string ZOBRIST MISMATCH (qsearch check) move=%s ply=%d\n", move_str, ply);
-                printf("info string   before=0x%llx after=0x%llx\n",
-                       (unsigned long long)saved_zobrist, (unsigned long long)board->zobristKey);
-                fflush(stdout);
-            }
-            #endif
-            
-            if (info->stopSearch) return 0;
-            
-            if (score >= beta) {
-                // TT Store for beta cutoff
-                tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m);
-                return beta;
-            }
-            if (score > alpha) {
-                alpha = score;
-                best_move = m;
-            }
-        }
-        
-        // No legal moves found: checkmate (we're in check and can't escape)
-        if (moves_searched == 0) {
-            return -MATE_SCORE + ply;
-        }
-        
-        // TT Store at end
-        if (!info->stopSearch) {
-            uint8_t tt_flag = (alpha <= original_alpha) ? TT_UPPERBOUND : TT_EXACT;
-            tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move);
-        }
-        
-        return alpha;
-    }
-    
-    // Not in check: use stand pat
-    int stand_pat = evaluate(board, info->nnue_acc, info->nnue_net);
-    if (!board->whiteToMove) {
-        stand_pat = -stand_pat;
-    }
-    
-    if (stand_pat >= beta) {
-        return beta;
-    }
-    if (stand_pat > alpha) {
-        alpha = stand_pat;
-    }
-    
-    // Delta pruning: if we're so far behind that even capturing a queen won't help
-    if (info->params.use_delta_pruning && stand_pat + 900 + info->params.delta_margin < alpha) {
-        return alpha;
-    }
-    
-    // Generate only captures and promotions (much faster than generateMoves!)
-    MoveList capture_moves;
-    generateCaptureAndPromotionMoves(board, &capture_moves);
-    
-    // Score and sort captures, with TT move bonus
-    ScoredMove scored[256];
-    score_captures(board, &capture_moves, scored);
-    
-    // Boost TT move score if it's in our capture list
-    if (tt_move != 0) {
-        for (int i = 0; i < capture_moves.count; i++) {
-            if (scored[i].move == tt_move) {
-                scored[i].score += 10000000;  // Ensure TT move is searched first
-                break;
-            }
-        }
-        // Re-sort after boosting TT move
-        for (int i = 1; i < capture_moves.count; i++) {
-            ScoredMove key = scored[i];
-            int j = i - 1;
-            while (j >= 0 && scored[j].score < key.score) {
-                scored[j + 1] = scored[j];
-                j--;
-            }
-            scored[j + 1] = key;
-        }
-    }
-    
-    Move best_move = 0;
-    
-    for (int i = 0; i < capture_moves.count; i++) {
-        Move m = scored[i].move;
-        
-        // Delta pruning: skip captures that can't possibly raise alpha
-        if (info->params.use_delta_pruning && !MOVE_IS_PROMOTION(m)) {
-            bool isBlack = !board->whiteToMove;
-            PieceTypeToken victim = getPieceTypeAtSquare(board, MOVE_TO(m), &isBlack);
-            int gain = get_piece_value(victim);
-            
-            if (stand_pat + gain + info->params.delta_margin < alpha) {
-                continue;
-            }
-        }
-        
-        #ifdef DEBUG_ZOBRIST_VERIFY
-        uint64_t saved_zobrist = board->zobristKey;
-        #endif
-        
-        MoveUndoInfo undo;
-        applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
-        
-        // Skip illegal moves (king left in check) - needed because generateCaptureAndPromotionMoves is pseudo-legal
-        if (isKingAttacked(board, !board->whiteToMove)) {
-            undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
-            continue;
-        }
-        
-        #ifdef DEBUG_NNUE_EVAL
-        eval_set_last_move(m, MOVE_FROM(m), MOVE_TO(m));
-        #endif
-        int score = -quiescence(board, -beta, -alpha, info, ply + 1);
-        undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
-        
-        #ifdef DEBUG_ZOBRIST_VERIFY
-        if (board->zobristKey != saved_zobrist) {
-            char move_str[6];
-            moveToString(m, move_str);
-            printf("info string ZOBRIST MISMATCH (qsearch) move=%s ply=%d\n", move_str, ply);
-            printf("info string   before=0x%llx after=0x%llx\n",
-                   (unsigned long long)saved_zobrist, (unsigned long long)board->zobristKey);
-            fflush(stdout);
-        }
-        #endif
-        
-        if (info->stopSearch) return 0;
-        
-        if (score >= beta) {
-            // TT Store for beta cutoff
-            tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m);
-            return beta;
-        }
-        if (score > alpha) {
-            alpha = score;
-            best_move = m;
-        }
-    }
-    
-    // TT Store at end of QS
-    if (!info->stopSearch) {
-        uint8_t tt_flag = (alpha <= original_alpha) ? TT_UPPERBOUND : TT_EXACT;
-        tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move);
-    }
-    
-    return alpha;
 }
 
 // =============================================================================
 // Negamax with Alpha-Beta Pruning
+// Generic wrapper - dispatches to color-specialized version
 // =============================================================================
 
-static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* info, 
+static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* info,
                    int ply, bool do_null, bool is_null_move_search) {
-    info->nodesSearched++;
-    info->pv_length[ply] = 0;
-    
-    bool is_pv = (beta - alpha) > 1;  // Are we in a PV node?
-    int original_alpha = alpha;
-    
-    // Check time limit periodically (node limit is soft - checked between iterations)
-    if (ply > 0 && (info->nodesSearched & 2047) == 0 && check_time(info)) {
-        return 0;
+    if (board->whiteToMove) {
+        return negamax_WHITE(board, depth, alpha, beta, info, ply, do_null, is_null_move_search);
+    } else {
+        return negamax_BLACK(board, depth, alpha, beta, info, ply, do_null, is_null_move_search);
     }
-    if (info->stopSearch) return 0;
-    
-    // Draw detection
-    if (ply > 0 && is_draw(board, ply)) {
-        return 0;
-    }
-    
-    // Max ply check
-    if (ply >= MAX_PLY) {
-        int eval = evaluate(board, info->nnue_acc, info->nnue_net);
-        return board->whiteToMove ? eval : -eval;  // Convert from White perspective to side-to-move
-    }
-    
-    // Check if in check (needed for various extensions/reductions)
-    bool in_check = isKingAttacked(board, board->whiteToMove);
-    
-    // Check extension
-    if (in_check) {
-        depth++;
-    }
-    
-    // TT Probe
-    Move tt_move = 0;
-    tt_probes++;
-    TTEntry* tt_entry = tt_probe(board->zobristKey);
-    if (tt_entry != NULL) {
-        tt_hits++;
-        tt_move = tt_entry->bestMove;
-        
-        // Only use TT cutoff in non-PV nodes
-        if (!is_pv && tt_entry->depth >= depth && ply > 0) {
-            int tt_score = tt_entry->score;
-            uint8_t tt_flag = TT_GET_FLAG(tt_entry);
-            
-            // Adjust mate scores
-            if (tt_score > MATE_SCORE - 100) {
-                tt_score -= ply;
-            } else if (tt_score < -MATE_SCORE + 100) {
-                tt_score += ply;
-            }
-            
-            if (tt_flag == TT_EXACT) {
-                tt_cutoffs++;
-                return tt_score;
-            }
-            if (tt_flag == TT_LOWERBOUND && tt_score >= beta) {
-                tt_cutoffs++;
-                return tt_score;
-            }
-            if (tt_flag == TT_UPPERBOUND && tt_score <= alpha) {
-                tt_cutoffs++;
-                return tt_score;
-            }
-        }
-    }
-    
-    // Quiescence search at leaf nodes
-    if (depth <= 0) {
-        return quiescence(board, alpha, beta, info, ply);
-    }
-    
-    // Static evaluation for pruning decisions
-    int static_eval = evaluate(board, info->nnue_acc, info->nnue_net);
-    if (!board->whiteToMove) {
-        static_eval = -static_eval;
-    }
-    
-    // ==========================================================================
-    // Null Move Pruning
-    // ==========================================================================
-    if (info->params.use_null_move && do_null && !in_check && !is_pv && 
-        depth >= info->params.null_move_min_depth && can_do_null_move(board)) {
-        
-        // Make null move - update zobrist key for consistent TT usage
-        board->whiteToMove = !board->whiteToMove;
-        board->zobristKey ^= zobrist_side_to_move_key;
-        
-        int old_ep = board->enPassantSquare;
-        if (old_ep != SQ_NONE) {
-            board->zobristKey ^= zobrist_enpassant_keys[old_ep];
-        }
-        board->enPassantSquare = SQ_NONE;
-        
-        // Search with reduced depth - mark as null move search to skip TT store for this node
-        int null_score = -negamax(board, depth - 1 - info->params.null_move_reduction, -beta, -beta + 1, 
-                                  info, ply + 1, false, true);
-        
-        // Unmake null move - restore zobrist key
-        board->enPassantSquare = old_ep;
-        if (old_ep != SQ_NONE) {
-            board->zobristKey ^= zobrist_enpassant_keys[old_ep];
-        }
-        board->whiteToMove = !board->whiteToMove;
-        board->zobristKey ^= zobrist_side_to_move_key;
-        
-        if (info->stopSearch) return 0;
-        
-        if (null_score >= beta) {
-            // Always do verification search for safety (eval not yet reliable)
-            int verify = negamax(board, depth - info->params.null_move_reduction - 1, beta - 1, beta, 
-                                info, ply, false, false);
-            if (verify >= beta) {
-                return beta;
-            }
-        }
-    }
-    
-    // ==========================================================================
-    // Reverse Futility Pruning (Static Null Move Pruning)
-    // If static eval is way above beta, we can assume a beta cutoff
-    // ==========================================================================
-    if (info->params.use_rfp && !is_pv && !in_check && depth <= info->params.rfp_max_depth &&
-        abs(beta) < MATE_SCORE - 100) {
-        int rfp_margin = info->params.rfp_margin * depth;
-        if (static_eval - rfp_margin >= beta) {
-            return static_eval - rfp_margin;
-        }
-    }
-    
-    // ==========================================================================
-    // Futility Pruning (now enabled with NNUE)
-    // ==========================================================================
-    bool futility_pruning = false;
-    int futility_margin = 0;
-    if (info->params.use_futility && !is_pv && !in_check && depth <= 3 &&
-        abs(alpha) < MATE_SCORE - 100 && abs(beta) < MATE_SCORE - 100) {
-        if (depth == 1) {
-            futility_margin = info->params.futility_margin;
-        } else if (depth == 2) {
-            futility_margin = info->params.futility_margin_d2;
-        } else {
-            futility_margin = info->params.futility_margin_d3;
-        }
-        if (static_eval + futility_margin <= alpha) {
-            futility_pruning = true;
-        }
-    }
-    
-    // Generate moves (pseudo-legal - legality checked after applyMove)
-    MoveList moves;
-    generateMoves(board, &moves);
-    
-    // Score and sort moves
-    ScoredMove scored[256];
-    score_moves(board, &moves, scored, tt_move, info, ply);
-    
-    Move best_move = 0;
-    int moves_searched = 0;
-    
-    for (int i = 0; i < moves.count; i++) {
-        Move m = scored[i].move;
-        bool is_capture = MOVE_IS_CAPTURE(m);
-        bool is_promotion = MOVE_IS_PROMOTION(m);
-        bool is_tactical = is_capture || is_promotion;
-        
-        // =======================================================================
-        // Futility Pruning: skip quiet moves that can't improve alpha
-        // =======================================================================
-        if (futility_pruning && moves_searched > 0 && !is_tactical) {
-            continue;
-        }
-        
-        // Prefetch TT entry for likely next position
-        // (This is a simple optimization that can help cache performance)
-        
-        // DEBUG: Save Zobrist key before move for verification
-        #ifdef DEBUG_ZOBRIST_VERIFY
-        uint64_t saved_zobrist = board->zobristKey;
-        #endif
-        
-        // DEBUG: Save accumulator state before move
-        #ifdef DEBUG_NNUE_INCREMENTAL
-        NNUEAccumulator saved_acc;
-        if (info->nnue_acc) {
-            memcpy(&saved_acc, info->nnue_acc, sizeof(NNUEAccumulator));
-        }
-        #endif
-        
-        MoveUndoInfo undo;
-        applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
-        
-        // Skip illegal moves (king left in check) - move generator now returns pseudo-legal moves
-        if (isKingAttacked(board, !board->whiteToMove)) {
-            undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
-            continue;
-        }
-        
-        // Track last move for debug
-        #ifdef DEBUG_NNUE_EVAL
-        eval_set_last_move(m, MOVE_FROM(m), MOVE_TO(m));
-        #endif
-        
-        // Prefetch next position's TT entry
-        tt_prefetch(board->zobristKey);
-        
-        int score;
-        
-        // =======================================================================
-        // Principal Variation Search (PVS) with Late Move Reductions (LMR)
-        // =======================================================================
-        if (moves_searched == 0) {
-            // First move: full window search
-            score = -negamax(board, depth - 1, -beta, -alpha, info, ply + 1, true, false);
-        } else {
-            // Late Move Reductions (tuned for NNUE)
-            int reduction = 0;
-            
-            if (info->params.use_lmr && !in_check && !is_tactical && 
-                depth >= info->params.lmr_reduction_limit && 
-                moves_searched >= info->params.lmr_full_depth_moves) {
-                // Log-based reduction formula: more aggressive with reliable eval
-                // Base: ln(depth) * ln(moves_searched) / 2
-                reduction = 1;
-                
-                // Depth-based increase
-                if (depth >= 6) reduction++;
-                if (depth >= 10) reduction++;
-                
-                // Move count based increase
-                if (moves_searched >= 8) reduction++;
-                if (moves_searched >= 16) reduction++;
-                if (moves_searched >= 32) reduction++;
-                
-                // Reduce less for PV nodes
-                if (is_pv) {
-                    reduction--;
-                }
-                
-                // Reduce less for killer moves
-                if (ply < MAX_PLY && (m == info->killers[ply][0] || m == info->killers[ply][1])) {
-                    reduction--;
-                }
-                
-                // Reduce more for moves with bad history
-                int side = board->whiteToMove ? 0 : 1;
-                int from = MOVE_FROM(m);
-                int to = MOVE_TO(m);
-                if (info->history[side][from][to] < 0) {
-                    reduction++;
-                } else if (info->history[side][from][to] > 5000) {
-                    reduction--;  // Good history = less reduction
-                }
-                
-                // Clamp reduction
-                if (reduction < 0) reduction = 0;
-                if (depth - 1 - reduction < 1) {
-                    reduction = depth - 2;
-                }
-                if (reduction < 0) reduction = 0;
-            }
-            
-            // Null window search with possible reduction
-            score = -negamax(board, depth - 1 - reduction, -alpha - 1, -alpha, 
-                            info, ply + 1, true, false);
-            
-            // Re-search if LMR failed high
-            if (reduction > 0 && score > alpha) {
-                score = -negamax(board, depth - 1, -alpha - 1, -alpha, info, ply + 1, true, false);
-            }
-            
-            // Re-search with full window if null window failed high
-            if (score > alpha && score < beta) {
-                score = -negamax(board, depth - 1, -beta, -alpha, info, ply + 1, true, false);
-            }
-        }
-        
-        undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
-        
-        // DEBUG: Verify Zobrist hash is correctly restored after undo
-        #ifdef DEBUG_ZOBRIST_VERIFY
-        if (board->zobristKey != saved_zobrist) {
-            char move_str[6];
-            moveToString(m, move_str);
-            printf("info string ZOBRIST MISMATCH after undo move=%s ply=%d\n", move_str, ply);
-            printf("info string   before=0x%llx after=0x%llx diff=0x%llx\n", 
-                   (unsigned long long)saved_zobrist, 
-                   (unsigned long long)board->zobristKey,
-                   (unsigned long long)(saved_zobrist ^ board->zobristKey));
-            
-            // Additional info about the move
-            int from_sq = MOVE_FROM(m);
-            int to_sq = MOVE_TO(m);
-            printf("info string   from=%d to=%d cap=%d ep=%d castle=%d promo=%d\n",
-                   from_sq, to_sq, MOVE_IS_CAPTURE(m), MOVE_IS_EN_PASSANT(m), 
-                   MOVE_IS_CASTLING(m), MOVE_IS_PROMOTION(m));
-            
-            // Recalculate and compare
-            uint64_t recalc = calculate_zobrist_key(board);
-            printf("info string   recalculated=0x%llx matches_saved=%d matches_current=%d\n",
-                   (unsigned long long)recalc, 
-                   (recalc == saved_zobrist), 
-                   (recalc == board->zobristKey));
-            fflush(stdout);
-        }
-        #endif
-        
-        // DEBUG: Compare accumulator state after undo
-        #ifdef DEBUG_NNUE_INCREMENTAL
-        if (info->nnue_acc && saved_acc.computed && info->nnue_acc->computed) {
-            bool mismatch = false;
-            int first_mismatch_white = -1, first_mismatch_black = -1;
-            int16_t diff_white = 0, diff_black = 0;
-            for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) {
-                if (info->nnue_acc->white[i] != saved_acc.white[i]) {
-                    if (first_mismatch_white < 0) {
-                        first_mismatch_white = i;
-                        diff_white = info->nnue_acc->white[i] - saved_acc.white[i];
-                    }
-                    mismatch = true;
-                }
-                if (info->nnue_acc->black[i] != saved_acc.black[i]) {
-                    if (first_mismatch_black < 0) {
-                        first_mismatch_black = i;
-                        diff_black = info->nnue_acc->black[i] - saved_acc.black[i];
-                    }
-                    mismatch = true;
-                }
-            }
-            if (mismatch) {
-                char move_str[6];
-                moveToString(m, move_str);
-                int from_sq = MOVE_FROM(m);
-                int to_sq = MOVE_TO(m);
-                bool is_capture = MOVE_IS_CAPTURE(m);
-                bool is_ep = MOVE_IS_EN_PASSANT(m);
-                bool is_castle = MOVE_IS_CASTLING(m);
-                bool is_promo = MOVE_IS_PROMOTION(m);
-                printf("info string NNUE MISMATCH move=%s ply=%d from=%d to=%d cap=%d ep=%d castle=%d promo=%d\n", 
-                       move_str, ply, from_sq, to_sq, is_capture, is_ep, is_castle, is_promo);
-                printf("info string   white_idx=%d diff=%d | black_idx=%d diff=%d\n",
-                       first_mismatch_white, diff_white, first_mismatch_black, diff_black);
-                fflush(stdout);
-            }
-        }
-        #endif
-        
-        moves_searched++;
-        
-        if (info->stopSearch) return 0;
-        
-        if (score > alpha) {
-            alpha = score;
-            best_move = m;
-            
-            // Update PV
-            info->pv_table[ply][0] = m;
-            for (int j = 0; j < info->pv_length[ply + 1]; j++) {
-                info->pv_table[ply][j + 1] = info->pv_table[ply + 1][j];
-            }
-            info->pv_length[ply] = info->pv_length[ply + 1] + 1;
-            
-            if (ply == 0) {
-                info->bestMoveThisIteration = m;
-                info->bestScoreThisIteration = score;  // Track score for training mode
-            }
-        }
-        
-        if (alpha >= beta) {
-            // Beta cutoff - update killers and history for quiet moves
-            if (!is_capture) {
-                update_killers(info, m, ply);
-                update_history(info, board, m, depth);
-                
-                // Apply malus to all previously considered quiet moves
-                for (int j = 0; j < i; j++) {
-                    Move prev = scored[j].move;
-                    if (!MOVE_IS_CAPTURE(prev) && !MOVE_IS_PROMOTION(prev)) {
-                        update_history_malus(info, board, prev, depth);
-                    }
-                }
-            }
-            break;
-        }
-    }
-    
-    // No legal moves found: checkmate or stalemate
-    // (moves_searched == 0 means all pseudo-legal moves were illegal)
-    if (moves_searched == 0) {
-        if (in_check) {
-            return -MATE_SCORE + ply;
-        }
-        return 0;  // Stalemate
-    }
-    
-    // TT Store - skip for null move search positions (they can never be reached legally)
-    if (!info->stopSearch && !is_null_move_search) {
-        uint8_t tt_flag;
-        if (alpha <= original_alpha) {
-            tt_flag = TT_UPPERBOUND;
-        } else if (alpha >= beta) {
-            tt_flag = TT_LOWERBOUND;
-        } else {
-            tt_flag = TT_EXACT;
-        }
-        
-        // Adjust mate scores for storage
-        int store_score = alpha;
-        if (store_score > MATE_SCORE - 100) {
-            store_score += ply;
-        } else if (store_score < -MATE_SCORE + 100) {
-            store_score -= ply;
-        }
-        
-        tt_store(board->zobristKey, depth, store_score, tt_flag, best_move);
-    }
-    
-    return alpha;
 }
 
 // =============================================================================
@@ -1297,20 +1180,25 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         int score;
         
         // Use aspiration windows after depth 4
+        // Use color-specialized negamax for branchless search
         if (info->params.use_aspiration && depth >= 5) {
             alpha = prev_score - info->params.aspiration_window;
             beta = prev_score + info->params.aspiration_window;
-            
+
             while (true) {
-                score = negamax(board, depth, alpha, beta, info, 0, true, false);
-                
+                if (board->whiteToMove) {
+                    score = negamax_WHITE(board, depth, alpha, beta, info, 0, true, false);
+                } else {
+                    score = negamax_BLACK(board, depth, alpha, beta, info, 0, true, false);
+                }
+
                 if (info->stopSearch) break;
-                
+
                 // Failed low - widen alpha
                 if (score <= alpha) {
                     alpha = -INT_MAX + 1;
                 }
-                // Failed high - widen beta  
+                // Failed high - widen beta
                 else if (score >= beta) {
                     beta = INT_MAX - 1;
                 }
@@ -1320,7 +1208,11 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                 }
             }
         } else {
-            score = negamax(board, depth, alpha, beta, info, 0, true, false);
+            if (board->whiteToMove) {
+                score = negamax_WHITE(board, depth, alpha, beta, info, 0, true, false);
+            } else {
+                score = negamax_BLACK(board, depth, alpha, beta, info, 0, true, false);
+            }
         }
         
         long iteration_end = get_elapsed_time(info);

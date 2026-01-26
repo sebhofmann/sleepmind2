@@ -32,7 +32,7 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
 /**
  * @brief Undoes a given move on the board using the recorded undo information.
  *        Updates the NNUE accumulator incrementally if provided.
- * 
+ *
  * @param board Pointer to the Board to be modified.
  * @param move The Move to undo.
  * @param undoInfo Pointer to MoveUndoInfo struct containing data from when the move was applied.
@@ -40,6 +40,20 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
  * @param nnue_net Pointer to NNUENetwork for incremental updates (can be NULL).
  */
 void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net);
+
+/**
+ * @brief Color-specialized applyMove - skips color dispatch for branchless search.
+ *        Use when the moving color is known at compile time.
+ */
+void applyMove_white(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net);
+void applyMove_black(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net);
+
+/**
+ * @brief Color-specialized undoMove - skips color dispatch for branchless search.
+ *        Use when the moving color is known at compile time.
+ */
+void undoMove_white(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net);
+void undoMove_black(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net);
 
 PieceTypeToken getPieceTypeAtSquare(const Board* board, Square sq, bool* pieceIsWhite);
 void addPieceToBoard(Board* board, Square sq, PieceTypeToken pieceType, bool isWhite);
