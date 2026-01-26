@@ -607,7 +607,7 @@ static int negamax_BLACK(Board* board, int depth, int alpha, int beta, SearchInf
 // =============================================================================
 // QUIESCENCE SEARCH TEMPLATE - Generates color-specialized variants
 // =============================================================================
-#define QUIESCENCE_TEMPLATE(US, THEM, APPLY_MOVE_FN, UNDO_MOVE_FN, QUIESCENCE_OTHER) \
+#define QUIESCENCE_TEMPLATE(US, THEM, APPLY_MOVE_FN, UNDO_MOVE_FN, QUIESCENCE_OTHER, GENERATE_MOVES_FN, GENERATE_CAPTURE_PROMO_FN) \
 static int quiescence_##US(Board* board, int alpha, int beta, SearchInfo* info, int ply) { \
     info->nodesSearched++; \
     \
@@ -663,7 +663,7 @@ static int quiescence_##US(Board* board, int alpha, int beta, SearchInfo* info, 
     \
     if (in_check) { \
         MoveList all_moves; \
-        generateMoves(board, &all_moves); \
+        GENERATE_MOVES_FN(board, &all_moves); \
         \
         ScoredMove scored[256]; \
         score_captures(board, &all_moves, scored); \
@@ -746,7 +746,7 @@ static int quiescence_##US(Board* board, int alpha, int beta, SearchInfo* info, 
     } \
     \
     MoveList capture_moves; \
-    generateCaptureAndPromotionMoves(board, &capture_moves); \
+    GENERATE_CAPTURE_PROMO_FN(board, &capture_moves); \
     \
     ScoredMove scored[256]; \
     score_captures(board, &capture_moves, scored); \
@@ -816,13 +816,13 @@ static int quiescence_##US(Board* board, int alpha, int beta, SearchInfo* info, 
 }
 
 // Generate color-specialized quiescence functions
-QUIESCENCE_TEMPLATE(WHITE, BLACK, applyMove_white, undoMove_white, quiescence_BLACK)
-QUIESCENCE_TEMPLATE(BLACK, WHITE, applyMove_black, undoMove_black, quiescence_WHITE)
+QUIESCENCE_TEMPLATE(WHITE, BLACK, applyMove_white, undoMove_white, quiescence_BLACK, generateMoves_white, generateCaptureAndPromotionMoves_white)
+QUIESCENCE_TEMPLATE(BLACK, WHITE, applyMove_black, undoMove_black, quiescence_WHITE, generateMoves_black, generateCaptureAndPromotionMoves_black)
 
 // =============================================================================
 // NEGAMAX TEMPLATE - Generates color-specialized variants
 // =============================================================================
-#define NEGAMAX_TEMPLATE(US, THEM, APPLY_MOVE_FN, UNDO_MOVE_FN, QUIESCENCE_FN, NEGAMAX_OTHER, NEGAMAX_SELF, CAN_NULL_FN, SCORE_MOVES_FN) \
+#define NEGAMAX_TEMPLATE(US, THEM, APPLY_MOVE_FN, UNDO_MOVE_FN, QUIESCENCE_FN, NEGAMAX_OTHER, NEGAMAX_SELF, CAN_NULL_FN, SCORE_MOVES_FN, GENERATE_MOVES_FN) \
 static int negamax_##US(Board* board, int depth, int alpha, int beta, SearchInfo* info, \
                          int ply, bool do_null, bool is_null_move_search) { \
     info->nodesSearched++; \
@@ -953,7 +953,7 @@ static int negamax_##US(Board* board, int depth, int alpha, int beta, SearchInfo
     } \
     \
     MoveList moves; \
-    generateMoves(board, &moves); \
+    GENERATE_MOVES_FN(board, &moves); \
     \
     ScoredMove scored[256]; \
     SCORE_MOVES_FN(board, &moves, scored, tt_move, info, ply); \
@@ -1105,8 +1105,8 @@ static int negamax_##US(Board* board, int depth, int alpha, int beta, SearchInfo
 }
 
 // Generate color-specialized negamax functions
-NEGAMAX_TEMPLATE(WHITE, BLACK, applyMove_white, undoMove_white, quiescence_WHITE, negamax_BLACK, negamax_WHITE, can_do_null_move_white, score_moves_white)
-NEGAMAX_TEMPLATE(BLACK, WHITE, applyMove_black, undoMove_black, quiescence_BLACK, negamax_WHITE, negamax_BLACK, can_do_null_move_black, score_moves_black)
+NEGAMAX_TEMPLATE(WHITE, BLACK, applyMove_white, undoMove_white, quiescence_WHITE, negamax_BLACK, negamax_WHITE, can_do_null_move_white, score_moves_white, generateMoves_white)
+NEGAMAX_TEMPLATE(BLACK, WHITE, applyMove_black, undoMove_black, quiescence_BLACK, negamax_WHITE, negamax_BLACK, can_do_null_move_black, score_moves_black, generateMoves_black)
 
 // Generic quiescence wrapper - dispatches to color-specialized version
 static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int ply) {

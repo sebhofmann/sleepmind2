@@ -23,6 +23,13 @@ void generateCaptureMoves(const Board* board, MoveList* moveList);
 // Generate only pseudo-legal capture and promotion moves for the current player
 void generateCaptureAndPromotionMoves(const Board* board, MoveList* moveList);
 
+// --- Color-specialized move generators for branchless search ---
+// Use these when the moving color is known at compile time
+void generateMoves_white(const Board* board, MoveList* moveList);
+void generateMoves_black(const Board* board, MoveList* moveList);
+void generateCaptureAndPromotionMoves_white(const Board* board, MoveList* moveList);
+void generateCaptureAndPromotionMoves_black(const Board* board, MoveList* moveList);
+
 // Functions to get attacks for sliding pieces (using magic bitboards)
 Bitboard getRookAttacks(Square square, Bitboard occupancy);
 Bitboard getBishopAttacks(Square square, Bitboard occupancy);

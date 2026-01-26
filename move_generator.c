@@ -550,7 +550,7 @@ static void generateSlidingPieceMoves(const Board* board, MoveList* list, bool i
         if (pieceType == ROOK_T) attacks = getRookAttacks(fromSq, allPieces);
         else if (pieceType == BISHOP_T) attacks = getBishopAttacks(fromSq, allPieces);
         else /* QUEEN_T */ attacks = getQueenAttacks(fromSq, allPieces);
-        
+
         Bitboard validMoves = attacks & ~friendlyPieces;
         while (validMoves) {
             Square toSq = BIT_SCAN_FORWARD(validMoves);
@@ -559,6 +559,24 @@ static void generateSlidingPieceMoves(const Board* board, MoveList* list, bool i
         }
     }
 }
+
+// --- Sliding piece move generation helper macro ---
+// Uses pre-calculated occupancy bitboards (friendlyPieces, enemyPieces, allPieces must be in scope)
+#define GENERATE_SLIDING_PIECE_MOVES(FRIENDLY_COLOR, PIECE_TYPE, GET_ATTACKS_FN) \
+    { \
+        Bitboard currentPieces = board->byTypeBB[FRIENDLY_COLOR][PIECE_TYPE]; \
+        while (currentPieces) { \
+            Square fromSq = BIT_SCAN_FORWARD(currentPieces); \
+            CLEAR_BIT(currentPieces, fromSq); \
+            Bitboard attacks = GET_ATTACKS_FN(fromSq, allPieces); \
+            Bitboard validMoves = attacks & ~friendlyPieces; \
+            while (validMoves) { \
+                Square toSq = BIT_SCAN_FORWARD(validMoves); \
+                CLEAR_BIT(validMoves, toSq); \
+                addMove(list, CREATE_MOVE(fromSq, toSq, 0, GET_BIT(enemyPieces, toSq), 0, 0, 0)); \
+            } \
+        } \
+    }
 
 // Helper function to check if squares are attacked
 // Parameter 'byWhite' means "is the attacker white?"
@@ -877,6 +895,181 @@ void generateMoves(const Board* board, MoveList* list) {
     generateSlidingPieceMoves(board, list, isWhite, isWhite ? board->whiteRooks : board->blackRooks, ROOK_T);
     generateSlidingPieceMoves(board, list, isWhite, isWhite ? board->whiteQueens : board->blackQueens, QUEEN_T);
     generateCastlingMoves(board, list, isWhite);
+}
+
+// --- Color-specialized generateMoves for branchless search ---
+void generateMoves_white(const Board* board, MoveList* list) {
+    list->count = 0;
+
+    // Calculate occupancy once for all sliding pieces
+    Bitboard friendlyPieces = board->byTypeBB[WHITE][PAWN] | board->byTypeBB[WHITE][KNIGHT] |
+                              board->byTypeBB[WHITE][BISHOP] | board->byTypeBB[WHITE][ROOK] |
+                              board->byTypeBB[WHITE][QUEEN] | board->byTypeBB[WHITE][KING];
+    Bitboard enemyPieces = board->byTypeBB[BLACK][PAWN] | board->byTypeBB[BLACK][KNIGHT] |
+                           board->byTypeBB[BLACK][BISHOP] | board->byTypeBB[BLACK][ROOK] |
+                           board->byTypeBB[BLACK][QUEEN] | board->byTypeBB[BLACK][KING];
+    Bitboard allPieces = friendlyPieces | enemyPieces;
+
+    generatePawnMoves(board, list, true);
+    generatePieceMoves(board, list, true, board->byTypeBB[WHITE][KNIGHT], KNIGHT_ATTACKS);
+    generatePieceMoves(board, list, true, board->byTypeBB[WHITE][KING], KING_ATTACKS);
+
+    // Sliding pieces - uses pre-calculated occupancy
+    GENERATE_SLIDING_PIECE_MOVES(WHITE, BISHOP, getBishopAttacks)
+    GENERATE_SLIDING_PIECE_MOVES(WHITE, ROOK, getRookAttacks)
+    GENERATE_SLIDING_PIECE_MOVES(WHITE, QUEEN, getQueenAttacks)
+
+    generateCastlingMoves(board, list, true);
+}
+
+void generateMoves_black(const Board* board, MoveList* list) {
+    list->count = 0;
+
+    // Calculate occupancy once for all sliding pieces
+    Bitboard friendlyPieces = board->byTypeBB[BLACK][PAWN] | board->byTypeBB[BLACK][KNIGHT] |
+                              board->byTypeBB[BLACK][BISHOP] | board->byTypeBB[BLACK][ROOK] |
+                              board->byTypeBB[BLACK][QUEEN] | board->byTypeBB[BLACK][KING];
+    Bitboard enemyPieces = board->byTypeBB[WHITE][PAWN] | board->byTypeBB[WHITE][KNIGHT] |
+                           board->byTypeBB[WHITE][BISHOP] | board->byTypeBB[WHITE][ROOK] |
+                           board->byTypeBB[WHITE][QUEEN] | board->byTypeBB[WHITE][KING];
+    Bitboard allPieces = friendlyPieces | enemyPieces;
+
+    generatePawnMoves(board, list, false);
+    generatePieceMoves(board, list, false, board->byTypeBB[BLACK][KNIGHT], KNIGHT_ATTACKS);
+    generatePieceMoves(board, list, false, board->byTypeBB[BLACK][KING], KING_ATTACKS);
+
+    // Sliding pieces - uses pre-calculated occupancy
+    GENERATE_SLIDING_PIECE_MOVES(BLACK, BISHOP, getBishopAttacks)
+    GENERATE_SLIDING_PIECE_MOVES(BLACK, ROOK, getRookAttacks)
+    GENERATE_SLIDING_PIECE_MOVES(BLACK, QUEEN, getQueenAttacks)
+
+    generateCastlingMoves(board, list, false);
+}
+
+// --- Color-specialized generateCaptureAndPromotionMoves for branchless search ---
+// This macro generates capture/promotion moves with color known at compile time
+#define GENERATE_CAPTURE_AND_PROMOTION_MOVES_IMPL(COLOR_IS_WHITE, FRIENDLY_COLOR, ENEMY_COLOR) \
+    list->count = 0; \
+    Bitboard friendlyPieces = board->byTypeBB[FRIENDLY_COLOR][PAWN] | board->byTypeBB[FRIENDLY_COLOR][KNIGHT] | \
+                              board->byTypeBB[FRIENDLY_COLOR][BISHOP] | board->byTypeBB[FRIENDLY_COLOR][ROOK] | \
+                              board->byTypeBB[FRIENDLY_COLOR][QUEEN] | board->byTypeBB[FRIENDLY_COLOR][KING]; \
+    Bitboard enemyPieces = board->byTypeBB[ENEMY_COLOR][PAWN] | board->byTypeBB[ENEMY_COLOR][KNIGHT] | \
+                           board->byTypeBB[ENEMY_COLOR][BISHOP] | board->byTypeBB[ENEMY_COLOR][ROOK] | \
+                           board->byTypeBB[ENEMY_COLOR][QUEEN] | board->byTypeBB[ENEMY_COLOR][KING]; \
+    Bitboard allPieces = friendlyPieces | enemyPieces; \
+    \
+    /* Pawn Moves */ \
+    Bitboard pawns = board->byTypeBB[FRIENDLY_COLOR][PAWN]; \
+    int direction = COLOR_IS_WHITE ? 1 : -1; \
+    int promotionRank = COLOR_IS_WHITE ? 7 : 0; \
+    Bitboard currentPawns = pawns; \
+    while (currentPawns) { \
+        Square fromSq = BIT_SCAN_FORWARD(currentPawns); \
+        CLEAR_BIT(currentPawns, fromSq); \
+        int rank = fromSq / 8; \
+        Square toSq_single_push = fromSq + 8 * direction; \
+        if (rank + direction == promotionRank && toSq_single_push >= 0 && toSq_single_push < 64 && !GET_BIT(allPieces, toSq_single_push)) { \
+            addMove(list, CREATE_MOVE(fromSq, toSq_single_push, PROMOTION_Q, 0, 0, 0, 0)); \
+            addMove(list, CREATE_MOVE(fromSq, toSq_single_push, PROMOTION_R, 0, 0, 0, 0)); \
+            addMove(list, CREATE_MOVE(fromSq, toSq_single_push, PROMOTION_B, 0, 0, 0, 0)); \
+            addMove(list, CREATE_MOVE(fromSq, toSq_single_push, PROMOTION_N, 0, 0, 0, 0)); \
+        } \
+        Bitboard pawnAttacks = PAWN_ATTACKS[COLOR_IS_WHITE ? 0 : 1][fromSq]; \
+        Bitboard validPawnAttackTargets = pawnAttacks & enemyPieces; \
+        while (validPawnAttackTargets) { \
+            Square toSq_capture = BIT_SCAN_FORWARD(validPawnAttackTargets); \
+            CLEAR_BIT(validPawnAttackTargets, toSq_capture); \
+            if (rank + direction == promotionRank) { \
+                addMove(list, CREATE_MOVE(fromSq, toSq_capture, PROMOTION_Q, 1, 0, 0, 0)); \
+                addMove(list, CREATE_MOVE(fromSq, toSq_capture, PROMOTION_R, 1, 0, 0, 0)); \
+                addMove(list, CREATE_MOVE(fromSq, toSq_capture, PROMOTION_B, 1, 0, 0, 0)); \
+                addMove(list, CREATE_MOVE(fromSq, toSq_capture, PROMOTION_N, 1, 0, 0, 0)); \
+            } else { \
+                addMove(list, CREATE_MOVE(fromSq, toSq_capture, 0, 1, 0, 0, 0)); \
+            } \
+        } \
+        if (board->enPassantSquare != SQ_NONE) { \
+            if (GET_BIT(pawnAttacks, board->enPassantSquare)) { \
+                addMove(list, CREATE_MOVE(fromSq, board->enPassantSquare, 0, 1, 0, 1, 0)); \
+            } \
+        } \
+    } \
+    \
+    /* Knight Captures */ \
+    Bitboard knights = board->byTypeBB[FRIENDLY_COLOR][KNIGHT]; \
+    Bitboard currentKnights = knights; \
+    while (currentKnights) { \
+        Square fromSq = BIT_SCAN_FORWARD(currentKnights); \
+        CLEAR_BIT(currentKnights, fromSq); \
+        Bitboard attacks = KNIGHT_ATTACKS[fromSq]; \
+        Bitboard validCapturesOnEnemy = attacks & enemyPieces; \
+        while (validCapturesOnEnemy) { \
+            Square toSq = BIT_SCAN_FORWARD(validCapturesOnEnemy); \
+            CLEAR_BIT(validCapturesOnEnemy, toSq); \
+            addMove(list, CREATE_MOVE(fromSq, toSq, 0, 1, 0, 0, 0)); \
+        } \
+    } \
+    \
+    /* King Captures */ \
+    Bitboard king = board->byTypeBB[FRIENDLY_COLOR][KING]; \
+    if (king) { \
+        Square fromSq = BIT_SCAN_FORWARD(king); \
+        Bitboard attacks = KING_ATTACKS[fromSq]; \
+        Bitboard validCapturesOnEnemy = attacks & enemyPieces; \
+        while (validCapturesOnEnemy) { \
+            Square toSq = BIT_SCAN_FORWARD(validCapturesOnEnemy); \
+            CLEAR_BIT(validCapturesOnEnemy, toSq); \
+            addMove(list, CREATE_MOVE(fromSq, toSq, 0, 1, 0, 0, 0)); \
+        } \
+    } \
+    \
+    /* Sliding Piece Captures - inline without runtime pieceType checks */ \
+    { \
+        Bitboard currentBishops = board->byTypeBB[FRIENDLY_COLOR][BISHOP]; \
+        while (currentBishops) { \
+            Square fromSq = BIT_SCAN_FORWARD(currentBishops); \
+            CLEAR_BIT(currentBishops, fromSq); \
+            Bitboard validCapturesOnEnemy = getBishopAttacks(fromSq, allPieces) & enemyPieces; \
+            while (validCapturesOnEnemy) { \
+                Square toSq = BIT_SCAN_FORWARD(validCapturesOnEnemy); \
+                CLEAR_BIT(validCapturesOnEnemy, toSq); \
+                addMove(list, CREATE_MOVE(fromSq, toSq, 0, 1, 0, 0, 0)); \
+            } \
+        } \
+    } \
+    { \
+        Bitboard currentRooks = board->byTypeBB[FRIENDLY_COLOR][ROOK]; \
+        while (currentRooks) { \
+            Square fromSq = BIT_SCAN_FORWARD(currentRooks); \
+            CLEAR_BIT(currentRooks, fromSq); \
+            Bitboard validCapturesOnEnemy = getRookAttacks(fromSq, allPieces) & enemyPieces; \
+            while (validCapturesOnEnemy) { \
+                Square toSq = BIT_SCAN_FORWARD(validCapturesOnEnemy); \
+                CLEAR_BIT(validCapturesOnEnemy, toSq); \
+                addMove(list, CREATE_MOVE(fromSq, toSq, 0, 1, 0, 0, 0)); \
+            } \
+        } \
+    } \
+    { \
+        Bitboard currentQueens = board->byTypeBB[FRIENDLY_COLOR][QUEEN]; \
+        while (currentQueens) { \
+            Square fromSq = BIT_SCAN_FORWARD(currentQueens); \
+            CLEAR_BIT(currentQueens, fromSq); \
+            Bitboard validCapturesOnEnemy = getQueenAttacks(fromSq, allPieces) & enemyPieces; \
+            while (validCapturesOnEnemy) { \
+                Square toSq = BIT_SCAN_FORWARD(validCapturesOnEnemy); \
+                CLEAR_BIT(validCapturesOnEnemy, toSq); \
+                addMove(list, CREATE_MOVE(fromSq, toSq, 0, 1, 0, 0, 0)); \
+            } \
+        } \
+    }
+
+void generateCaptureAndPromotionMoves_white(const Board* board, MoveList* list) {
+    GENERATE_CAPTURE_AND_PROMOTION_MOVES_IMPL(true, WHITE, BLACK)
+}
+
+void generateCaptureAndPromotionMoves_black(const Board* board, MoveList* list) {
+    GENERATE_CAPTURE_AND_PROMOTION_MOVES_IMPL(false, BLACK, WHITE)
 }
 
 // Generate all legal moves (filters out moves that leave king in check)
