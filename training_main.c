@@ -93,6 +93,8 @@ static void check_status_output(void) {
 void signal_handler(int sig) {
     (void)sig;
     printf("\nReceived signal, finishing current game and shutting down...\n");
+    // Flush training data immediately to prevent data loss
+    flush_training_data();
     should_stop = true;
 }
 

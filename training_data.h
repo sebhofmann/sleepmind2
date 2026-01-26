@@ -25,6 +25,7 @@ extern bool training_enabled;
 void init_training_data();
 void add_training_entry(const Board* board, int eval, int ply);
 void write_training_data(int result);
+void flush_training_data();
 void set_training_data_path(const char* path);
 void enable_training(bool enable);
 

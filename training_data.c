@@ -52,9 +52,16 @@ void write_training_data(int result) {  // 1 = win for white, 0 = draw, -1 = los
         else wdl = "0.5";                   // Draw
         fprintf(training_file, "%s | %d | %s\n", training_data[i].fen, white_relative_eval, wdl);
     }
-    // Flush periodically (every ~100 games based on typical entry counts)
-    // File stays open for performance - will be closed on exit or path change
+    // Flush after each game to ensure data is written to disk
+    // This prevents data loss if the process is terminated
+    fflush(training_file);
     training_data_count = 0;  // Reset
+}
+
+void flush_training_data() {
+    if (training_file) {
+        fflush(training_file);
+    }
 }
 
 void set_training_data_path(const char* path) {
