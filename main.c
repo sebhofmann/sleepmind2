@@ -10,6 +10,8 @@
 
 int main(int argc, char const *argv[])
 {
+   (void)argc;
+   (void)argv;
    init_zobrist_keys(); // Initialize Zobrist hashing keys
    init_tt(256);        // Initialize transposition table with 256MB size
    // initMoveGenerator() is called in uci_loop() - don't call it twice

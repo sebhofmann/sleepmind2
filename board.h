@@ -107,7 +107,13 @@ typedef int Square;
 
 // Define piece types (for move.h compatibility)
 typedef enum {
-    NO_PIECE_TYPE, PAWN_T, KNIGHT_T, BISHOP_T, ROOK_T, QUEEN_T, KING_T
+    NO_PIECE_TYPE = 0,
+    PAWN_T = 1,
+    KNIGHT_T = 2,
+    BISHOP_T = 3,
+    ROOK_T = 4,
+    QUEEN_T = 5,
+    KING_T = 6
 } PieceTypeToken;
 
 // =============================================================================

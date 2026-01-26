@@ -313,6 +313,7 @@ static int see(const Board* board, Move move) {
 }
 
 // Quick SEE check: is the capture likely good (>= threshold)?
+__attribute__((unused))
 static bool see_ge(const Board* board, Move move, int threshold) {
     return see(board, move) >= threshold;
 }

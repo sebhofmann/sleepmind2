@@ -17,8 +17,8 @@
 typedef uint32_t Move;
 
 // Helper macros for Move
-#define MOVE_FROM(m) (m & 0x3F)
-#define MOVE_TO(m) ((m >> 6) & 0x3F)
+#define MOVE_FROM(m) ((int)(m & 0x3F))
+#define MOVE_TO(m) ((int)((m >> 6) & 0x3F))
 #define MOVE_PROMOTION(m) ((m >> 12) & 0x7) // 001 N, 010 B, 011 R, 100 Q
 #define MOVE_IS_CAPTURE(m) ((m >> 15) & 0x1)
 #define MOVE_IS_DOUBLE_PAWN_PUSH(m) ((m >> 16) & 0x1)

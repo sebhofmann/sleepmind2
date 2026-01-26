@@ -147,8 +147,6 @@ static const U64 RANK_MASKS[] = {
 };
 
 // Forward declarations
-static U64 get_knight_attacks_c(int square);
-static U64 get_pawn_attacks_c(U64 pawns, bool is_white_color);
 
 
 static int get_total_material(const Board* board) {
@@ -244,6 +242,7 @@ static int evaluate_pawn_chains_for_color(U64 pawns, bool is_white_color) {
 }
 
 static int evaluate_pawn_structure_for_color(const Board* board, bool is_white_color, double game_phase) {
+    (void)game_phase;
     U64 pawns = is_white_color ? board->whitePawns : board->blackPawns;
     U64 opponent_pawns = is_white_color ? board->blackPawns : board->whitePawns;
     int score = 0;
@@ -299,6 +298,7 @@ static int evaluate_pawn_structure_c(const Board* board, double game_phase) {
     return score;
 }
 
+__attribute__((unused))
 static U64 get_knight_attacks_c(int square) {
     U64 attacks = 0ULL;
     const int knight_moves[] = {17, 15, 10, 6, -17, -15, -10, -6}; // NNE, NNW, ENE, ESE, SSW, SSE, WNW, WSW (relative)
@@ -331,6 +331,7 @@ static int evaluate_center_control_c(const Board* board, double game_phase) {
     return score;
 }
 
+__attribute__((unused))
 static int evaluate_space_c(const Board* board, double game_phase) {
     int sp_weight = (int)(SPACE_WEIGHT_OPENING * (1.0 - game_phase) + SPACE_WEIGHT_ENDGAME * game_phase);
     int score = 0;

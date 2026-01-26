@@ -60,6 +60,7 @@ static inline int get_lsb_index(Bitboard bb) {
 
 // Helper: Get a pointer to the bitboard of the piece at a given square for modification
 // Now uses O(1) piece array lookup instead of scanning bitboards
+__attribute__((unused))
 static Bitboard* getMutablePieceBitboardAtSquare(Board* board, Square sq, bool isWhiteMoving) {
     uint8_t p = board->piece[sq];
     if (p == NO_PIECE) return NULL;
@@ -71,6 +72,7 @@ static Bitboard* getMutablePieceBitboardAtSquare(Board* board, Square sq, bool i
 }
 
 // Helper: Remove any piece from a square - now O(1) using piece array
+__attribute__((unused))
 static void clearSquareOnAllBitboards(Board* board, Square sq) {
     uint8_t p = board->piece[sq];
     if (p == NO_PIECE) return;

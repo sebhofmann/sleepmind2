@@ -15,9 +15,9 @@ static const int PROMO_TO_TYPE[5] = {-1, KNIGHT, BISHOP, ROOK, QUEEN};
 // Helper functions
 // =============================================================================
 
-// Convert PieceTypeToken to NNUE piece type (PAWN_T=1 -> NNUE_PAWN=0)
+// Convert PieceTypeToken to NNUE piece type (PAWN_T=1 -> NNUE_PAWN=0, NO_PIECE_TYPE=0 -> -1)
 static inline int pieceTypeToNNUE(PieceTypeToken pt) {
-    return (pt == NO_PIECE_TYPE) ? -1 : (pt - 1);
+    return pt - 1;
 }
 
 // Legacy compatibility - uses piece array now
@@ -98,7 +98,6 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
     PieceTypeToken movingPieceType = (PieceTypeToken)(movingType + 1);
     
     Bitboard fromTo = (1ULL << from) | (1ULL << to);
-    Bitboard fromBB = 1ULL << from;
     Bitboard toBB = 1ULL << to;
     
     // Accumulate zobrist changes locally

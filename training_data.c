@@ -68,7 +68,7 @@ void set_training_data_path(const char* path) {
     if (path && strlen(path) > 0) {
         // Append PID to filename for unique files in parallel runs
         pid_t pid = getpid();
-        snprintf(training_data_path, sizeof(training_data_path), "%s.%d", path, pid);
+        snprintf(training_data_path, sizeof(training_data_path), "%s.%lld", path, (long long)pid);
         training_enabled = true;
         if (training_file) {
             fclose(training_file);
