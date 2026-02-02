@@ -5,6 +5,7 @@
 - name: SleepMind - Start Training Data Generation
   hosts: training_nodes
   become: yes
+  serial: yes
     
   tasks:
     - name: Check required variables
@@ -69,8 +70,8 @@
         seconds: 3
       when: training_running.stdout != ""
 
-    - name: Remove old temp files
-      shell: rm -f {{ output_dir }}/training_temp_*
+    - name: Remove old temp files and combined training data
+      shell: rm -f {{ output_dir }}/training_temp_* {{ output_dir }}/training_combined.txt
       changed_when: false
 
     - name: Start training data generation in background

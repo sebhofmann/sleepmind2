@@ -9,3 +9,4 @@ checkpoints
 training/.idea
 archive
 variants
+ansible/collected_data

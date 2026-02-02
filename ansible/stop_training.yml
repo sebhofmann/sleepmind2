@@ -25,9 +25,9 @@
       when: training_running.stdout != ""
       ignore_errors: yes
 
-    - name: Wait for graceful shutdown (max 60s)
+    - name: Wait for graceful shutdown (max 500s)
       shell: |
-        for i in {1..60}; do
+        for i in {1..500}; do
           if ! pgrep -x training > /dev/null; then
             echo "Processes stopped after ${i}s"
             exit 0
@@ -87,18 +87,23 @@
       become: no
 
     - name: Fetch training data to control node (with timestamp)
-      fetch:
+      synchronize:
+        mode: pull
         src: "{{ output_dir }}/training_combined.txt"
         dest: "{{ local_collect_dir }}/{{ inventory_hostname }}/training_{{ timestamp }}.txt"
-        flat: yes
+        rsync_opts:
+          - "--info=progress2"
+          - "--compress"
       when: training_file.stat.exists
-      timeout: 9999999
 
     - name: Fetch training log
-      fetch:
+      synchronize:
+        mode: pull
         src: "{{ output_dir }}/training.log"
         dest: "{{ local_collect_dir }}/{{ inventory_hostname }}/training_{{ timestamp }}.log"
-        flat: yes
+        rsync_opts:
+          - "--info=progress2"
+          - "--compress"
       ignore_errors: yes
 
     - name: Show collection complete
