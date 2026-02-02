@@ -6,17 +6,18 @@
 #include <errno.h>
 
 // Input bucket map based on king position (32 elements for half-board with mirroring)
-// Index = rank * 4 + file (file 0-3 only, files 4-7 are mirrored)
-// 5 buckets: back rank corners, back rank center, ranks 2-3, ranks 4-5, ranks 6-8
+// Index = rank * 8 + file (files 4-7 are mirrored from files 0-3)
+// 10 buckets: fine-grained bucketing based on king position from bullet
+// Expanded from [(idx / 8) * 4 + [0, 1, 2, 3, 3, 2, 1, 0][idx % 8]]
 const int NNUE_INPUT_BUCKET_MAP[64] = {
-    0, 0, 1, 1, 1, 1, 0, 0,
-    2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2, 2, 2, 2, 2,
-    3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3,
-    4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, 4,
+    0, 1, 2, 3, 3, 2, 1, 0,  // Rank 1
+    4, 4, 5, 5, 5, 5, 4, 4,  // Rank 2
+    6, 6, 6, 6, 6, 6, 6, 6,  // Rank 3
+    7, 7, 7, 7, 7, 7, 7, 7,  // Rank 4
+    8, 8, 8, 8, 8, 8, 8, 8,  // Rank 5
+    8, 8, 8, 8, 8, 8, 8, 8,  // Rank 6
+    9, 9, 9, 9, 9, 9, 9, 9,  // Rank 7
+    9, 9, 9, 9, 9, 9, 9, 9,  // Rank 8
 };
 
 // Helper: Get LSB index
