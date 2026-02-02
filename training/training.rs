@@ -114,21 +114,21 @@ fn main() {
     println!();
 
     // hyperparams
-    let hl_size = 256;
+    let hl_size = 768;
     let initial_lr = 0.001;
     let final_lr = 0.001 * 0.3f32.powi(5);
-    let wdl_proportion = 0.0;
+    let wdl_proportion = 0.00;
     const NUM_OUTPUT_BUCKETS: usize = 8;
     #[rustfmt::skip]
     const BUCKET_LAYOUT: [usize; 32] = [
-        0, 0, 1, 1,
-        2, 2, 2, 2,
-        2, 2, 2, 2,
-        3, 3, 3, 3,
-        3, 3, 3, 3,
-        4, 4, 4, 4,
-        4, 4, 4, 4,
-        4, 4, 4, 4,
+        0, 1, 2, 3,
+        4, 4, 5, 5,
+        6, 6, 6, 6,
+        7, 7, 7, 7,
+        8, 8, 8, 8,
+        8, 8, 8, 8,
+        9, 9, 9, 9,
+        9, 9, 9, 9,
     ];
 
     const NUM_INPUT_BUCKETS: usize = get_num_buckets(&BUCKET_LAYOUT);
@@ -189,7 +189,7 @@ fn main() {
         eval_scale: 400.0,
         steps: TrainingSteps {
             batch_size: 16_384,
-            batches_per_superbatch: 100,
+            batches_per_superbatch: 6104,
             start_superbatch,
             end_superbatch: superbatches,
         },
@@ -198,7 +198,7 @@ fn main() {
         save_rate,
     };
 
-    let settings = LocalSettings { threads, test_set: None, output_directory: "checkpoints", batch_queue_size: 128 };
+    let settings = LocalSettings { threads, test_set: None, output_directory: "checkpoints", batch_queue_size: 32 };
 
     let dataloader = DirectSequentialDataLoader::new(&[&dataset_path]);
 
