@@ -4,6 +4,7 @@
 #include "board.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdalign.h>
 
 // NNUE Network Architecture
 #define NNUE_INPUT_SIZE      768   // 64 squares * 6 piece types * 2 colors
@@ -25,24 +26,26 @@
 #define NNUE_SCALE           400   // Final output scale
 
 // Accumulator for efficient incremental updates (activation values only)
+// Aligned to 64 bytes for AVX-512 optimal access
 typedef struct {
-    int16_t white[NNUE_HIDDEN_SIZE];
-    int16_t black[NNUE_HIDDEN_SIZE];
+    alignas(64) int16_t white[NNUE_HIDDEN_SIZE];
+    alignas(64) int16_t black[NNUE_HIDDEN_SIZE];
     bool computed;
 } NNUEAccumulator;
 
 // NNUE Network weights (separate from accumulator, can be loaded from file)
+// Aligned to 64 bytes for AVX-512 optimal access
 typedef struct {
     // Feature transformer weights: [INPUT_BUCKETS][INPUT_SIZE][HIDDEN_SIZE]
-    int16_t ft_weights[NNUE_INPUT_BUCKETS][NNUE_INPUT_SIZE][NNUE_HIDDEN_SIZE];
+    alignas(64) int16_t ft_weights[NNUE_INPUT_BUCKETS][NNUE_INPUT_SIZE][NNUE_HIDDEN_SIZE];
     // Feature transformer biases: [HIDDEN_SIZE]
-    int16_t ft_biases[NNUE_HIDDEN_SIZE];
-    
+    alignas(64) int16_t ft_biases[NNUE_HIDDEN_SIZE];
+
     // Output layer weights: [OUTPUT_BUCKETS][2 * HIDDEN_SIZE] (both perspectives concatenated)
-    int16_t output_weights[NNUE_OUTPUT_BUCKETS][2 * NNUE_HIDDEN_SIZE];
+    alignas(64) int16_t output_weights[NNUE_OUTPUT_BUCKETS][2 * NNUE_HIDDEN_SIZE];
     // Output layer biases: [OUTPUT_BUCKETS]
-    int16_t output_biases[NNUE_OUTPUT_BUCKETS];
-    
+    alignas(64) int16_t output_biases[NNUE_OUTPUT_BUCKETS];
+
     bool loaded;
 } NNUENetwork;
 

@@ -5,6 +5,15 @@
 #include <stdio.h>
 #include <errno.h>
 
+// SIMD support - compile-time detection (use -march=native)
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+    #define NNUE_AVX512
+    #include <immintrin.h>
+#elif defined(__AVX2__)
+    #define NNUE_AVX2
+    #include <immintrin.h>
+#endif
+
 // Input bucket map based on king position (32 elements for half-board with mirroring)
 // Index = rank * 8 + file (files 4-7 are mirrored from files 0-3)
 // 10 buckets: fine-grained bucketing based on king position from bullet
@@ -182,6 +191,47 @@ bool nnue_save(const char* filename, const NNUENetwork* net) {
     return true;
 }
 
+// SIMD vector operations - compile-time selected
+static inline void vec_add(int16_t* restrict dst, const int16_t* restrict src, int size) {
+#if defined(NNUE_AVX512)
+    for (int i = 0; i < size; i += 32) {
+        __m512i d = _mm512_load_si512((const __m512i*)(dst + i));
+        __m512i s = _mm512_loadu_si512((const __m512i*)(src + i));
+        _mm512_store_si512((__m512i*)(dst + i), _mm512_add_epi16(d, s));
+    }
+#elif defined(NNUE_AVX2)
+    for (int i = 0; i < size; i += 16) {
+        __m256i d = _mm256_load_si256((const __m256i*)(dst + i));
+        __m256i s = _mm256_loadu_si256((const __m256i*)(src + i));
+        _mm256_store_si256((__m256i*)(dst + i), _mm256_add_epi16(d, s));
+    }
+#else
+    for (int i = 0; i < size; i++) {
+        dst[i] += src[i];
+    }
+#endif
+}
+
+static inline void vec_sub(int16_t* restrict dst, const int16_t* restrict src, int size) {
+#if defined(NNUE_AVX512)
+    for (int i = 0; i < size; i += 32) {
+        __m512i d = _mm512_load_si512((const __m512i*)(dst + i));
+        __m512i s = _mm512_loadu_si512((const __m512i*)(src + i));
+        _mm512_store_si512((__m512i*)(dst + i), _mm512_sub_epi16(d, s));
+    }
+#elif defined(NNUE_AVX2)
+    for (int i = 0; i < size; i += 16) {
+        __m256i d = _mm256_load_si256((const __m256i*)(dst + i));
+        __m256i s = _mm256_loadu_si256((const __m256i*)(src + i));
+        _mm256_store_si256((__m256i*)(dst + i), _mm256_sub_epi16(d, s));
+    }
+#else
+    for (int i = 0; i < size; i++) {
+        dst[i] -= src[i];
+    }
+#endif
+}
+
 // Add all pieces for accumulator computation
 static void add_piece_features(NNUEAccumulator* acc, const NNUENetwork* net,
                                 Bitboard pieces, int piece_type, int piece_color,
@@ -189,44 +239,56 @@ static void add_piece_features(NNUEAccumulator* acc, const NNUENetwork* net,
     while (pieces) {
         int sq = get_lsb(pieces);
         pieces &= pieces - 1;
-        
+
         int white_index = get_feature_index(0, piece_type, piece_color, sq, white_bucket);
         int white_bucket_idx = white_index / NNUE_INPUT_SIZE;
         int white_input_idx = white_index % NNUE_INPUT_SIZE;
-        for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) {
-            acc->white[i] += net->ft_weights[white_bucket_idx][white_input_idx][i];
-        }
-        
+        vec_add(acc->white, net->ft_weights[white_bucket_idx][white_input_idx], NNUE_HIDDEN_SIZE);
+
         int black_index = get_feature_index(1, piece_type, piece_color, sq, black_bucket);
         int black_bucket_idx = black_index / NNUE_INPUT_SIZE;
         int black_input_idx = black_index % NNUE_INPUT_SIZE;
-        for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) {
-            acc->black[i] += net->ft_weights[black_bucket_idx][black_input_idx][i];
-        }
+        vec_add(acc->black, net->ft_weights[black_bucket_idx][black_input_idx], NNUE_HIDDEN_SIZE);
     }
+}
+
+// SIMD memcpy for bias initialization
+static inline void vec_copy(int16_t* restrict dst, const int16_t* restrict src, int size) {
+#if defined(NNUE_AVX512)
+    for (int i = 0; i < size; i += 32) {
+        __m512i v = _mm512_loadu_si512((const __m512i*)(src + i));
+        _mm512_store_si512((__m512i*)(dst + i), v);
+    }
+#elif defined(NNUE_AVX2)
+    for (int i = 0; i < size; i += 16) {
+        __m256i v = _mm256_loadu_si256((const __m256i*)(src + i));
+        _mm256_store_si256((__m256i*)(dst + i), v);
+    }
+#else
+    memcpy(dst, src, size * sizeof(int16_t));
+#endif
 }
 
 // Compute full accumulator from scratch
 void nnue_refresh_accumulator(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
     if (acc == NULL || net == NULL || board == NULL) return;
-    
+
     int white_king_sq = get_lsb(board->whiteKings);
     int black_king_sq = get_lsb(board->blackKings);
-    
+
     if (white_king_sq < 0 || black_king_sq < 0) {
         memset(acc->white, 0, sizeof(acc->white));
         memset(acc->black, 0, sizeof(acc->black));
         acc->computed = false;
         return;
     }
-    
+
     KingBucket white_bucket = get_king_bucket(white_king_sq, 0);
     KingBucket black_bucket = get_king_bucket(black_king_sq, 1);
-    
-    for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) {
-        acc->white[i] = net->ft_biases[i];
-        acc->black[i] = net->ft_biases[i];
-    }
+
+    // Initialize with biases
+    vec_copy(acc->white, net->ft_biases, NNUE_HIDDEN_SIZE);
+    vec_copy(acc->black, net->ft_biases, NNUE_HIDDEN_SIZE);
     
     add_piece_features(acc, net, board->whitePawns, NNUE_PIECE_PAWN, 0, white_bucket, black_bucket);
     add_piece_features(acc, net, board->whiteKnights, NNUE_PIECE_KNIGHT, 0, white_bucket, black_bucket);
@@ -251,85 +313,160 @@ void nnue_reset_accumulator(const Board* board, NNUEAccumulator* acc, const NNUE
     nnue_refresh_accumulator(board, acc, net);
 }
 
+// SCReLU² dot product using Leorik's trick:
+// Instead of (a * a) * w (overflow since 255²=65025 > int16_max)
+// Compute (a * w) * a, then use madd_epi16 for efficiency
+// This works when weights are in reasonable range (typically [-127..127] after quantization)
+static inline int32_t screlu_dot(const int16_t* acc, const int16_t* weights, int size) {
+#if defined(NNUE_AVX512)
+    const __m512i zero = _mm512_setzero_si512();
+    const __m512i qa = _mm512_set1_epi16(NNUE_QA);
+    __m512i sum = _mm512_setzero_si512();
+
+    for (int i = 0; i < size; i += 32) {
+        __m512i a = _mm512_load_si512((const __m512i*)(acc + i));
+        a = _mm512_max_epi16(a, zero);
+        a = _mm512_min_epi16(a, qa);
+
+        __m512i w = _mm512_loadu_si512((const __m512i*)(weights + i));
+
+        // (a * w) * a using madd - same trick as AVX2
+        __m512i aw = _mm512_mullo_epi16(a, w);
+        sum = _mm512_add_epi32(sum, _mm512_madd_epi16(aw, a));
+    }
+
+    return _mm512_reduce_add_epi32(sum);
+
+#elif defined(NNUE_AVX2)
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i qa = _mm256_set1_epi16(NNUE_QA);
+    __m256i sum = _mm256_setzero_si256();
+
+    for (int i = 0; i < size; i += 16) {
+        __m256i a = _mm256_load_si256((const __m256i*)(acc + i));
+        a = _mm256_max_epi16(a, zero);
+        a = _mm256_min_epi16(a, qa);
+
+        __m256i w = _mm256_loadu_si256((const __m256i*)(weights + i));
+
+        // (a * w) * a using madd
+        __m256i aw = _mm256_mullo_epi16(a, w);
+        sum = _mm256_add_epi32(sum, _mm256_madd_epi16(aw, a));
+    }
+
+    // Horizontal sum
+    __m128i sum128 = _mm_add_epi32(_mm256_castsi256_si128(sum), _mm256_extracti128_si256(sum, 1));
+    sum128 = _mm_add_epi32(sum128, _mm_shuffle_epi32(sum128, _MM_SHUFFLE(1, 0, 3, 2)));
+    sum128 = _mm_add_epi32(sum128, _mm_shuffle_epi32(sum128, _MM_SHUFFLE(2, 3, 0, 1)));
+    return _mm_cvtsi128_si32(sum128);
+
+#else
+    int32_t output = 0;
+    for (int i = 0; i < size; i++) {
+        int32_t clamped = acc[i];
+        clamped = clamped < 0 ? 0 : (clamped > NNUE_QA ? NNUE_QA : clamped);
+        output += clamped * clamped * weights[i];
+    }
+    return output;
+#endif
+}
+
 // Evaluate position using NNUE
 int nnue_evaluate(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
     if (acc == NULL || net == NULL) return 0;
-    
+
     if (!acc->computed) {
         nnue_refresh_accumulator(board, acc, net);
     }
-    
+
     int output_bucket = nnue_get_output_bucket(board);
     int16_t* us_acc = board->whiteToMove ? acc->white : acc->black;
     int16_t* them_acc = board->whiteToMove ? acc->black : acc->white;
-    
-    int64_t output = 0;
-    
-    for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) {
-        int32_t clamped = us_acc[i];
-        if (clamped < 0) clamped = 0;
-        if (clamped > NNUE_QA) clamped = NNUE_QA;
-        output += (int64_t)clamped * clamped * net->output_weights[output_bucket][i];
-    }
-    
-    for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) {
-        int32_t clamped = them_acc[i];
-        if (clamped < 0) clamped = 0;
-        if (clamped > NNUE_QA) clamped = NNUE_QA;
-        output += (int64_t)clamped * clamped * net->output_weights[output_bucket][NNUE_HIDDEN_SIZE + i];
-    }
-    
+    const int16_t* us_weights = net->output_weights[output_bucket];
+    const int16_t* them_weights = net->output_weights[output_bucket] + NNUE_HIDDEN_SIZE;
+
+    // SCReLU values are multiplied by QA * QA * QB, but output bias is only QA * QB
+    int32_t output = screlu_dot(us_acc, us_weights, NNUE_HIDDEN_SIZE)
+                   + screlu_dot(them_acc, them_weights, NNUE_HIDDEN_SIZE);
+
     output /= NNUE_QA;
     output += net->output_biases[output_bucket];
-    
-    int eval = (output * NNUE_SCALE) / ((int64_t)NNUE_QA * NNUE_QB);
+
+    int eval = (output * NNUE_SCALE) / (NNUE_QA * NNUE_QB);
     return board->whiteToMove ? eval : -eval;
+}
+
+// Combined sub-add for move updates (dst = dst - src_sub + src_add)
+static inline void vec_sub_add(int16_t* restrict dst, const int16_t* restrict src_sub,
+                                const int16_t* restrict src_add, int size) {
+#if defined(NNUE_AVX512)
+    for (int i = 0; i < size; i += 32) {
+        __m512i d = _mm512_load_si512((const __m512i*)(dst + i));
+        __m512i sub = _mm512_loadu_si512((const __m512i*)(src_sub + i));
+        __m512i add = _mm512_loadu_si512((const __m512i*)(src_add + i));
+        d = _mm512_sub_epi16(d, sub);
+        d = _mm512_add_epi16(d, add);
+        _mm512_store_si512((__m512i*)(dst + i), d);
+    }
+#elif defined(NNUE_AVX2)
+    for (int i = 0; i < size; i += 16) {
+        __m256i d = _mm256_load_si256((const __m256i*)(dst + i));
+        __m256i sub = _mm256_loadu_si256((const __m256i*)(src_sub + i));
+        __m256i add = _mm256_loadu_si256((const __m256i*)(src_add + i));
+        d = _mm256_sub_epi16(d, sub);
+        d = _mm256_add_epi16(d, add);
+        _mm256_store_si256((__m256i*)(dst + i), d);
+    }
+#else
+    for (int i = 0; i < size; i++) {
+        dst[i] = dst[i] - src_sub[i] + src_add[i];
+    }
+#endif
 }
 
 // Helper: Update piece move for both perspectives
 // WICHTIG: white_king_sq und black_king_sq müssen die Positionen VOR dem Zug sein!
 static void nnue_update_piece_move_with_kings(NNUEAccumulator* acc, const NNUENetwork* net,
-                                              int from_sq, int to_sq, int piece_type, int piece_color, 
+                                              int from_sq, int to_sq, int piece_type, int piece_color,
                                               int white_king_sq, int black_king_sq, bool apply) {
     if (acc == NULL || net == NULL) return;
-    
+
     if (white_king_sq < 0 || black_king_sq < 0) {
         return;  // Invalid - caller should refresh
     }
-    
+
     KingBucket white_bucket = get_king_bucket(white_king_sq, 0);
     KingBucket black_bucket = get_king_bucket(black_king_sq, 1);
-    
+
     int white_from_idx = get_feature_index(0, piece_type, piece_color, from_sq, white_bucket);
     int white_to_idx = get_feature_index(0, piece_type, piece_color, to_sq, white_bucket);
     int black_from_idx = get_feature_index(1, piece_type, piece_color, from_sq, black_bucket);
     int black_to_idx = get_feature_index(1, piece_type, piece_color, to_sq, black_bucket);
-    
+
     // Extract bucket and input indices for all four feature updates
     int white_from_bucket = white_from_idx / NNUE_INPUT_SIZE;
     int white_from_input = white_from_idx % NNUE_INPUT_SIZE;
     int white_to_bucket = white_to_idx / NNUE_INPUT_SIZE;
     int white_to_input = white_to_idx % NNUE_INPUT_SIZE;
-    
+
     int black_from_bucket = black_from_idx / NNUE_INPUT_SIZE;
     int black_from_input = black_from_idx % NNUE_INPUT_SIZE;
     int black_to_bucket = black_to_idx / NNUE_INPUT_SIZE;
     int black_to_input = black_to_idx % NNUE_INPUT_SIZE;
-    
+
+    const int16_t* w_from = net->ft_weights[white_from_bucket][white_from_input];
+    const int16_t* w_to = net->ft_weights[white_to_bucket][white_to_input];
+    const int16_t* b_from = net->ft_weights[black_from_bucket][black_from_input];
+    const int16_t* b_to = net->ft_weights[black_to_bucket][black_to_input];
+
     if (apply) {
-        for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) {
-            acc->white[i] -= net->ft_weights[white_from_bucket][white_from_input][i];
-            acc->white[i] += net->ft_weights[white_to_bucket][white_to_input][i];
-            acc->black[i] -= net->ft_weights[black_from_bucket][black_from_input][i];
-            acc->black[i] += net->ft_weights[black_to_bucket][black_to_input][i];
-        }
+        // apply: dst = dst - from + to
+        vec_sub_add(acc->white, w_from, w_to, NNUE_HIDDEN_SIZE);
+        vec_sub_add(acc->black, b_from, b_to, NNUE_HIDDEN_SIZE);
     } else {
-        for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) {
-            acc->white[i] += net->ft_weights[white_from_bucket][white_from_input][i];
-            acc->white[i] -= net->ft_weights[white_to_bucket][white_to_input][i];
-            acc->black[i] += net->ft_weights[black_from_bucket][black_from_input][i];
-            acc->black[i] -= net->ft_weights[black_to_bucket][black_to_input][i];
-        }
+        // undo: dst = dst + from - to (same as dst = dst - to + from)
+        vec_sub_add(acc->white, w_to, w_from, NNUE_HIDDEN_SIZE);
+        vec_sub_add(acc->black, b_to, b_from, NNUE_HIDDEN_SIZE);
     }
 }
 
@@ -368,27 +505,25 @@ void nnue_apply_move(const Board* board, NNUEAccumulator* acc, const NNUENetwork
         if (is_en_passant) {
             capture_sq = is_white ? (to_sq - 8) : (to_sq + 8);
         }
-        
+
         int white_king_sq = get_lsb(board->whiteKings);
         int black_king_sq = get_lsb(board->blackKings);
-        
+
         if (white_king_sq >= 0 && black_king_sq >= 0) {
             KingBucket white_bucket = get_king_bucket(white_king_sq, 0);
             KingBucket black_bucket = get_king_bucket(black_king_sq, 1);
-            
+
             int captured_color = is_white ? 1 : 0;
             int white_cap_idx = get_feature_index(0, captured_piece_type, captured_color, capture_sq, white_bucket);
             int black_cap_idx = get_feature_index(1, captured_piece_type, captured_color, capture_sq, black_bucket);
-            
+
             int white_bucket_idx = white_cap_idx / NNUE_INPUT_SIZE;
             int white_cap_input = white_cap_idx % NNUE_INPUT_SIZE;
             int black_bucket_idx = black_cap_idx / NNUE_INPUT_SIZE;
             int black_cap_input = black_cap_idx % NNUE_INPUT_SIZE;
-            
-            for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) {
-                acc->white[i] -= net->ft_weights[white_bucket_idx][white_cap_input][i];
-                acc->black[i] -= net->ft_weights[black_bucket_idx][black_cap_input][i];
-            }
+
+            vec_sub(acc->white, net->ft_weights[white_bucket_idx][white_cap_input], NNUE_HIDDEN_SIZE);
+            vec_sub(acc->black, net->ft_weights[black_bucket_idx][black_cap_input], NNUE_HIDDEN_SIZE);
         }
     }
     // acc->computed bleibt true (war schon true, sonst hätten wir oben returned)
@@ -411,27 +546,25 @@ void nnue_undo_move(const Board* board, NNUEAccumulator* acc, const NNUENetwork*
         if (is_en_passant) {
             capture_sq = is_white ? (to_sq - 8) : (to_sq + 8);
         }
-        
+
         int white_king_sq = get_lsb(board->whiteKings);
         int black_king_sq = get_lsb(board->blackKings);
-        
+
         if (white_king_sq >= 0 && black_king_sq >= 0) {
             KingBucket white_bucket = get_king_bucket(white_king_sq, 0);
             KingBucket black_bucket = get_king_bucket(black_king_sq, 1);
-            
+
             int captured_color = is_white ? 1 : 0;
             int white_cap_idx = get_feature_index(0, captured_piece_type, captured_color, capture_sq, white_bucket);
             int black_cap_idx = get_feature_index(1, captured_piece_type, captured_color, capture_sq, black_bucket);
-            
+
             int white_bucket_idx = white_cap_idx / NNUE_INPUT_SIZE;
             int white_cap_input = white_cap_idx % NNUE_INPUT_SIZE;
             int black_bucket_idx = black_cap_idx / NNUE_INPUT_SIZE;
             int black_cap_input = black_cap_idx % NNUE_INPUT_SIZE;
-            
-            for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) {
-                acc->white[i] += net->ft_weights[white_bucket_idx][white_cap_input][i];
-                acc->black[i] += net->ft_weights[black_bucket_idx][black_cap_input][i];
-            }
+
+            vec_add(acc->white, net->ft_weights[white_bucket_idx][white_cap_input], NNUE_HIDDEN_SIZE);
+            vec_add(acc->black, net->ft_weights[black_bucket_idx][black_cap_input], NNUE_HIDDEN_SIZE);
         }
     }
     // acc->computed bleibt true (war schon true, sonst hätten wir oben returned)
