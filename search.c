@@ -331,6 +331,15 @@ static int compare_moves(const void* a, const void* b) {
     return ((ScoredMove*)b)->score - ((ScoredMove*)a)->score;
 }
 
+// Check if a move is in the move list (for TT move validation)
+static bool is_move_in_list(Move move, const MoveList* moves) {
+    if (move == 0) return false;
+    for (int i = 0; i < moves->count; i++) {
+        if (moves->moves[i] == move) return true;
+    }
+    return false;
+}
+
 // =============================================================================
 // Move scoring for ordering
 // =============================================================================
@@ -620,10 +629,15 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         // Generate all pseudo-legal moves when in check
         MoveList all_moves;
         generateMoves(board, &all_moves);
-        
+
+        // Validate TT move
+        if (tt_move != 0 && !is_move_in_list(tt_move, &all_moves)) {
+            tt_move = 0;
+        }
+
         ScoredMove scored[256];
         score_captures(board, &all_moves, scored);
-        
+
         // Boost TT move if available
         if (tt_move != 0) {
             for (int i = 0; i < all_moves.count; i++) {
@@ -730,11 +744,16 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     // Generate only captures and promotions (much faster than generateMoves!)
     MoveList capture_moves;
     generateCaptureAndPromotionMoves(board, &capture_moves);
-    
+
+    // Validate TT move - must be in the capture list
+    if (tt_move != 0 && !is_move_in_list(tt_move, &capture_moves)) {
+        tt_move = 0;
+    }
+
     // Score and sort captures, with TT move bonus
     ScoredMove scored[256];
     score_captures(board, &capture_moves, scored);
-    
+
     // Boost TT move score if it's in our capture list
     if (tt_move != 0) {
         for (int i = 0; i < capture_moves.count; i++) {
@@ -980,7 +999,12 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     // Generate moves (pseudo-legal - legality checked after applyMove)
     MoveList moves;
     generateMoves(board, &moves);
-    
+
+    // Validate TT move - must be in the move list (prevents TT collision bugs)
+    if (tt_move != 0 && !is_move_in_list(tt_move, &moves)) {
+        tt_move = 0;
+    }
+
     // Score and sort moves
     ScoredMove scored[256];
     score_moves(board, &moves, scored, tt_move, info, ply);

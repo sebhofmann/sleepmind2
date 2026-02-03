@@ -227,6 +227,7 @@ static bool play_game(int game_num, NNUENetwork* nnue_network) {
     
     // Reset position history and training data for this game
     reset_position_history();
+    clear_tt();
     training_data_count = 0;  // Just reset count, keep path from set_training_data_path
     enable_training(true);    // Make sure training is enabled
     
