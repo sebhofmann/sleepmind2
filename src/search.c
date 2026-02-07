@@ -61,6 +61,10 @@ void search_params_init(SearchParams* params) {
     params->rfp_margin = 80;            // More aggressive pruning
     params->rfp_max_depth = 8;          // Apply RFP at higher depths
 
+    // Razoring (drop into qsearch if position looks hopeless)
+    params->use_razoring = true;
+    params->razor_margin = 300;         // Base margin (scaled by depth)
+
     // Delta pruning margin for quiescence
     params->delta_margin = 200;         // Tighter with reliable eval
 
@@ -976,7 +980,22 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             return static_eval - rfp_margin;
         }
     }
-    
+
+    // ==========================================================================
+    // Razoring: If static eval is far below alpha, drop into qsearch
+    // Very effective at low depths to cut hopeless positions early
+    // ==========================================================================
+    if (info->params.use_razoring && !is_pv && !in_check && depth <= 3 &&
+        abs(alpha) < MATE_SCORE - 100) {
+        int razor_margin = info->params.razor_margin + info->params.razor_margin * (depth - 1);
+        if (static_eval + razor_margin < alpha) {
+            int razor_score = quiescence(board, alpha - 1, alpha, info, ply);
+            if (razor_score < alpha) {
+                return razor_score;
+            }
+        }
+    }
+
     // ==========================================================================
     // Futility Pruning (now enabled with NNUE)
     // ==========================================================================

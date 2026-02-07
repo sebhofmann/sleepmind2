@@ -39,6 +39,10 @@ typedef struct {
     int rfp_margin;            // Per depth margin (default: 120)
     int rfp_max_depth;         // Maximum depth for RFP (default: 6)
 
+    // Razoring parameters
+    bool use_razoring;         // Enable Razoring (default: true)
+    int razor_margin;          // Base margin for razoring (default: 300)
+
     // Delta pruning margin for quiescence
     int delta_margin;          // (default: 200)
 
