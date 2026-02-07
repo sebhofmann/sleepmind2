@@ -101,6 +101,12 @@ PARAMETERS = {
         "default": 100, "min": 10, "max": 200,
         "c": 10, "r": 4
     },
+
+    # Razoring parameters
+    "Razor_Margin": {
+        "default": 300, "min": 100, "max": 600,
+        "c": 25, "r": 8
+    },
 }
 
 
@@ -150,13 +156,15 @@ class OpeningBook:
 # =============================================================================
 
 class SPSATuner:
-    def __init__(self):
+    def __init__(self, tune_only=None):
         # Store params as floats internally for smooth updates
         self.params = {name: float(info["default"]) for name, info in PARAMETERS.items()}
         self.best_params = self.get_int_params()
         self.iteration = 0
         self.history = []
         self.opening_book = OpeningBook(OPENING_BOOK_PATH)
+        # Which parameters to actually tune (None = all)
+        self.tune_only = tune_only
 
         self.load_state()
 
@@ -194,8 +202,11 @@ class SPSATuner:
             json.dump(self.history, f, indent=2)
 
     def get_perturbation(self) -> Dict[str, int]:
-        """Generate ±1 direction for each parameter"""
-        return {name: random.choice([-1, 1]) for name in PARAMETERS}
+        """Generate ±1 direction for each tuned parameter, 0 for fixed ones"""
+        return {
+            name: random.choice([-1, 1]) if self.tune_only is None or name in self.tune_only else 0
+            for name in PARAMETERS
+        }
 
     def create_theta_plus_minus(self, direction: Dict[str, int]) -> tuple:
         """Create θ+ and θ- parameter sets"""
@@ -370,6 +381,9 @@ class SPSATuner:
         print(f"\nUpdating parameters (gradient: {gradient:+.3f}):")
 
         for name in PARAMETERS:
+            if self.tune_only is not None and name not in self.tune_only:
+                continue
+
             r = PARAMETERS[name]["r"]
             d = direction[name]
 
@@ -424,10 +438,27 @@ class SPSATuner:
 
 
 def main():
+    # Parse optional parameter names from command line
+    tune_only = None
+    if len(sys.argv) > 1:
+        tune_only = []
+        for arg in sys.argv[1:]:
+            if arg in PARAMETERS:
+                tune_only.append(arg)
+            else:
+                print(f"Error: Unknown parameter '{arg}'")
+                print(f"Available parameters: {', '.join(PARAMETERS.keys())}")
+                sys.exit(1)
+
     print("=" * 60)
     print("SleepMind SPSA Tuning (Fishtest/OpenBench Style)")
     print("=" * 60)
     print()
+    if tune_only:
+        print(f"Tuning only: {', '.join(tune_only)}")
+        print(f"Other parameters fixed at defaults.")
+    else:
+        print("Tuning all parameters.")
     print(f"Games per iteration: {NUM_GAMES}")
     print(f"Time per move: {TIME_PER_MOVE_MS}ms")
     print(f"Max parallel games: {MAX_PARALLEL_GAMES}")
@@ -437,7 +468,7 @@ def main():
         print(f"Error: Engine not found at {ENGINE_PATH}")
         sys.exit(1)
 
-    tuner = SPSATuner()
+    tuner = SPSATuner(tune_only=tune_only)
 
     try:
         while tuner.iteration < MAX_ITERATIONS:
