@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
+#include <math.h>
 
 // =============================================================================
 // Silent Mode (for training - disables info/debug output)
@@ -27,6 +28,27 @@ static uint64_t tt_probes = 0;
 static uint64_t tt_hits = 0;
 static uint64_t tt_cutoffs = 0;
 
+// =============================================================================
+// LMR Reduction Table (precomputed for speed)
+// =============================================================================
+static int lmr_table[MAX_PLY][64];
+static bool lmr_table_initialized = false;
+
+static void init_lmr_table(void) {
+    if (lmr_table_initialized) return;
+    for (int depth = 0; depth < MAX_PLY; depth++) {
+        for (int moves = 0; moves < 64; moves++) {
+            if (depth == 0 || moves == 0) {
+                lmr_table[depth][moves] = 0;
+            } else {
+                // Stockfish-style formula: ln(depth) * ln(moves) / 2
+                lmr_table[depth][moves] = (int)(log((double)depth) * log((double)moves) / 2.0);
+            }
+        }
+    }
+    lmr_table_initialized = true;
+}
+
 void set_search_silent(bool silent) {
     search_silent_mode = silent;
 }
@@ -36,6 +58,9 @@ void set_search_silent(bool silent) {
 // =============================================================================
 
 void search_params_init(SearchParams* params) {
+    // Initialize LMR table on first call
+    init_lmr_table();
+
     // Feature enable flags (tuned via tournament testing)
     params->use_lmr = true;
     params->use_null_move = true;
@@ -1132,47 +1157,55 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             // First move: full window search
             score = -negamax(board, depth - 1, -beta, -alpha, info, ply + 1, true, false);
         } else {
-            // Late Move Reductions (tuned for NNUE)
+            // Late Move Reductions - logarithmic formula like Stockfish
             int reduction = 0;
-            
-            if (info->params.use_lmr && !in_check && !is_tactical && 
-                depth >= info->params.lmr_reduction_limit && 
+
+            if (info->params.use_lmr && !in_check && !is_tactical &&
+                depth >= info->params.lmr_reduction_limit &&
                 moves_searched >= info->params.lmr_full_depth_moves) {
-                // Log-based reduction formula: more aggressive with reliable eval
-                // Base: ln(depth) * ln(moves_searched) / 2
-                reduction = 1;
-                
-                // Depth-based increase
-                if (depth >= 6) reduction++;
-                if (depth >= 10) reduction++;
-                
-                // Move count based increase
-                if (moves_searched >= 8) reduction++;
-                if (moves_searched >= 16) reduction++;
-                if (moves_searched >= 32) reduction++;
-                
-                // Reduce less for PV nodes
-                if (is_pv) {
-                    reduction--;
+
+                // Lookup from precomputed table (Stockfish-style formula)
+                int lmr_depth = depth < MAX_PLY ? depth : MAX_PLY - 1;
+                int lmr_moves = moves_searched < 64 ? moves_searched : 63;
+                reduction = lmr_table[lmr_depth][lmr_moves];
+
+                // Increase reduction for non-PV nodes
+                if (!is_pv) {
+                    reduction++;
                 }
-                
+
                 // Reduce less for killer moves
                 if (ply < MAX_PLY && (m == info->killers[ply][0] || m == info->killers[ply][1])) {
                     reduction--;
                 }
-                
-                // Reduce more for moves with bad history
-                int side = board->whiteToMove ? 0 : 1;
-                int from = MOVE_FROM(m);
-                int to = MOVE_TO(m);
-                if (info->history[side][from][to] < 0) {
-                    reduction++;
-                } else if (info->history[side][from][to] > 5000) {
-                    reduction--;  // Good history = less reduction
+
+                // Reduce less for counter moves
+                if (ply > 0) {
+                    Move prev = info->prev_moves[ply - 1];
+                    if (prev != 0) {
+                        int prev_from = MOVE_FROM(prev);
+                        int prev_to = MOVE_TO(prev);
+                        if (m == info->counter_moves[prev_from][prev_to]) {
+                            reduction--;
+                        }
+                    }
                 }
-                
-                // Clamp reduction
-                if (reduction < 0) reduction = 0;
+
+                // Adjust based on history score
+                int side = board->whiteToMove ? 0 : 1;
+                int hist = info->history[side][MOVE_FROM(m)][MOVE_TO(m)];
+                if (hist < -2000) {
+                    reduction += 2;
+                } else if (hist < 0) {
+                    reduction++;
+                } else if (hist > 8000) {
+                    reduction -= 2;
+                } else if (hist > 4000) {
+                    reduction--;
+                }
+
+                // Clamp reduction: at least 1, don't reduce below depth 1
+                if (reduction < 1) reduction = 1;
                 if (depth - 1 - reduction < 1) {
                     reduction = depth - 2;
                 }
