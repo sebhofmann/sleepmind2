@@ -80,9 +80,12 @@ typedef struct {
     
     // History heuristic (indexed by [side][from][to])
     int history[2][64][64];
-    
-    // Counter moves (indexed by [piece][to_square])
-    Move counter_moves[12][64];
+
+    // Counter moves (indexed by [prev_from][prev_to] -> best response)
+    Move counter_moves[64][64];
+
+    // Previous move at each ply (for counter move heuristic)
+    Move prev_moves[MAX_PLY];
     
     // NNUE accumulator and network for incremental updates
     NNUEAccumulator* nnue_acc;

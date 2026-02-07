@@ -415,8 +415,21 @@ static void score_moves(Board* board, MoveList* moves, ScoredMove* scored,
                 continue;
             }
         }
-        
-        // 5. History heuristic for quiet moves
+
+        // 5. Counter move (best response to opponent's previous move)
+        if (ply > 0) {
+            Move prev = info->prev_moves[ply - 1];
+            if (prev != 0) {
+                int prev_from = MOVE_FROM(prev);
+                int prev_to = MOVE_TO(prev);
+                if (m == info->counter_moves[prev_from][prev_to]) {
+                    scored[i].score = 5800000;
+                    continue;
+                }
+            }
+        }
+
+        // 6. History heuristic for quiet moves
         scored[i].score = info->history[side][from][to];
     }
     
@@ -503,6 +516,7 @@ void clear_search_history(SearchInfo* info) {
     memset(info->killers, 0, sizeof(info->killers));
     memset(info->history, 0, sizeof(info->history));
     memset(info->counter_moves, 0, sizeof(info->counter_moves));
+    memset(info->prev_moves, 0, sizeof(info->prev_moves));
 }
 
 // Forward declaration
@@ -1090,9 +1104,12 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         
         // Prefetch next position's TT entry
         tt_prefetch(board->zobristKey);
-        
+
+        // Track this move for counter move heuristic
+        info->prev_moves[ply] = m;
+
         int score;
-        
+
         // =======================================================================
         // Principal Variation Search (PVS) with Late Move Reductions (LMR)
         // =======================================================================
@@ -1254,11 +1271,21 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         }
         
         if (alpha >= beta) {
-            // Beta cutoff - update killers and history for quiet moves
+            // Beta cutoff - update killers, history, and counter moves for quiet moves
             if (!is_capture) {
                 update_killers(info, m, ply);
                 update_history(info, board, m, depth);
-                
+
+                // Update counter move: this move is a good response to opponent's previous move
+                if (ply > 0) {
+                    Move prev = info->prev_moves[ply - 1];
+                    if (prev != 0) {
+                        int prev_from = MOVE_FROM(prev);
+                        int prev_to = MOVE_TO(prev);
+                        info->counter_moves[prev_from][prev_to] = m;
+                    }
+                }
+
                 // Apply malus to all previously considered quiet moves
                 for (int j = 0; j < i; j++) {
                     Move prev = scored[j].move;
