@@ -43,6 +43,10 @@ typedef struct {
     bool use_razoring;         // Enable Razoring (default: true)
     int razor_margin;          // Base margin for razoring (default: 300)
 
+    // Late Move Pruning parameters
+    bool use_lmp;              // Enable Late Move Pruning (default: true)
+    int lmp_base;              // Base moves before LMP kicks in (default: 3)
+
     // Delta pruning margin for quiescence
     int delta_margin;          // (default: 200)
 

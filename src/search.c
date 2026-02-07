@@ -65,6 +65,10 @@ void search_params_init(SearchParams* params) {
     params->use_razoring = true;
     params->razor_margin = 300;         // Base margin (scaled by depth)
 
+    // Late Move Pruning (skip late quiet moves at low depths)
+    params->use_lmp = true;
+    params->lmp_base = 3;               // Base: 3 + depth^2 moves before pruning
+
     // Delta pruning margin for quiescence
     params->delta_margin = 200;         // Tighter with reliable eval
 
@@ -1043,7 +1047,17 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         if (futility_pruning && moves_searched > 0 && !is_tactical) {
             continue;
         }
-        
+
+        // =======================================================================
+        // Late Move Pruning: skip late quiet moves at low depths
+        // =======================================================================
+        if (info->params.use_lmp && !is_pv && !in_check && depth <= 4 && !is_tactical) {
+            int lmp_threshold = info->params.lmp_base + depth * depth;
+            if (moves_searched >= lmp_threshold) {
+                continue;
+            }
+        }
+
         // Prefetch TT entry for likely next position
         // (This is a simple optimization that can help cache performance)
         
