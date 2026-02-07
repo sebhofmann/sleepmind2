@@ -33,10 +33,10 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 $(ENGINE_EXEC): $(ENGINE_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 $(TRAINING_EXEC): $(TRAINING_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) -I$(SRC_DIR) -c $< -o $@
