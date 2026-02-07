@@ -43,14 +43,6 @@ typedef struct {
     bool use_razoring;         // Enable Razoring (default: true)
     int razor_margin;          // Base margin for razoring (default: 300)
 
-    // Late Move Pruning parameters
-    bool use_lmp;              // Enable Late Move Pruning (default: true)
-    int lmp_base;              // Base moves before LMP kicks in (default: 3)
-
-    // SEE Pruning parameters
-    bool use_see_pruning;      // Enable SEE pruning for bad captures (default: true)
-    int see_pruning_depth;     // Max depth for SEE pruning (default: 6)
-
     // Delta pruning margin for quiescence
     int delta_margin;          // (default: 200)
 
@@ -90,7 +82,7 @@ typedef struct {
 
     // Previous move at each ply (for counter move heuristic)
     Move prev_moves[MAX_PLY];
-    
+
     // NNUE accumulator and network for incremental updates
     NNUEAccumulator* nnue_acc;
     const NNUENetwork* nnue_net;

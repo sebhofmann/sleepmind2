@@ -90,14 +90,6 @@ void search_params_init(SearchParams* params) {
     params->use_razoring = true;
     params->razor_margin = 300;         // Base margin (scaled by depth)
 
-    // Late Move Pruning (skip late quiet moves at low depths)
-    params->use_lmp = true;
-    params->lmp_base = 3;               // Base: 3 + depth^2 moves before pruning
-
-    // SEE Pruning (skip bad captures at low depths)
-    params->use_see_pruning = true;
-    params->see_pruning_depth = 6;      // Prune bad captures up to this depth
-
     // Delta pruning margin for quiescence
     params->delta_margin = 200;         // Tighter with reliable eval
 
@@ -266,6 +258,13 @@ static int see(const Board* board, Move move) {
     bool attacker_side = attacker_white;
     PieceTypeToken attacker_type = getPieceTypeAtSquare(board, from, &attacker_white);
     int attacker_value = get_piece_value(attacker_type);
+
+    // For promotion captures, the piece on the target square after capture
+    // is the promoted piece, not the pawn
+    int piece_on_target_value = attacker_value;
+    if (MOVE_IS_PROMOTION(move)) {
+        piece_on_target_value = get_promotion_value(MOVE_PROMOTION(move));
+    }
     
     // Get victim value
     bool victim_white = !board->whiteToMove;
@@ -305,7 +304,8 @@ static int see(const Board* board, Move move) {
     attackers &= ~(1ULL << from);
     
     // Current piece on the target square (the one that just captured)
-    int current_piece_value = attacker_value;
+    // For promotions, the piece on the target is the promoted piece, not the pawn
+    int current_piece_value = piece_on_target_value;
     
     // Alternate sides
     bool side_to_move = !attacker_side;
@@ -323,8 +323,9 @@ static int see(const Board* board, Move move) {
         // Calculate gain: capture the current piece, but we might lose our attacker
         gain[depth] = current_piece_value - gain[depth - 1];
         
-        // Prune if even the best case (opponent doesn't recapture) is bad
-        if (-gain[depth - 1] > 0 && -gain[depth] > 0) break;
+        // Prune: if the side to move can only lose from here, stop early
+        // Standard pruning: if max(gain[d-1], -gain[d]) < 0 for the side, break
+        if (gain[depth] < 0 && -gain[depth - 1] < 0) break;
         
         // Update occupied (remove the attacker)
         occupied &= ~(1ULL << piece_square);
@@ -832,10 +833,15 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         
         // Delta pruning: skip captures that can't possibly raise alpha
         if (info->params.use_delta_pruning && !MOVE_IS_PROMOTION(m)) {
-            bool isBlack = !board->whiteToMove;
-            PieceTypeToken victim = getPieceTypeAtSquare(board, MOVE_TO(m), &isBlack);
-            int gain = get_piece_value(victim);
-            
+            int gain;
+            if (MOVE_IS_EN_PASSANT(m)) {
+                gain = 100; // Pawn value
+            } else {
+                bool isBlack = !board->whiteToMove;
+                PieceTypeToken victim = getPieceTypeAtSquare(board, MOVE_TO(m), &isBlack);
+                gain = get_piece_value(victim);
+            }
+
             if (stand_pat + gain + info->params.delta_margin < alpha) {
                 continue;
             }
@@ -975,7 +981,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     if (!board->whiteToMove) {
         static_eval = -static_eval;
     }
-    
+
     // ==========================================================================
     // Null Move Pruning
     // ==========================================================================
@@ -1089,27 +1095,6 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // =======================================================================
         if (futility_pruning && moves_searched > 0 && !is_tactical) {
             continue;
-        }
-
-        // =======================================================================
-        // Late Move Pruning: skip late quiet moves at low depths
-        // =======================================================================
-        if (info->params.use_lmp && !is_pv && !in_check && depth <= 4 && !is_tactical) {
-            int lmp_threshold = info->params.lmp_base + depth * depth;
-            if (moves_searched >= lmp_threshold) {
-                continue;
-            }
-        }
-
-        // =======================================================================
-        // SEE Pruning: skip bad captures at low depths
-        // =======================================================================
-        if (info->params.use_see_pruning && !is_pv && !in_check &&
-            depth <= info->params.see_pruning_depth && is_capture && moves_searched > 0) {
-            int see_threshold = -100 * depth;
-            if (see(board, m) < see_threshold) {
-                continue;
-            }
         }
 
         // Prefetch TT entry for likely next position
