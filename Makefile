@@ -3,7 +3,8 @@ CFLAGS = -g -Wall -Wextra -std=c11 -O3 -march=native # Added optimization flags 
 DEBUG_FLAGS = -g -Wall -Wextra -std=c11 -O0 -march=native -DDEBUG_NNUE_INCREMENTAL
 DEBUG_EVAL_FLAGS = -g -Wall -Wextra -std=c11 -O3 -march=native -DDEBUG_NNUE_EVAL
 
-# Build directory
+# Directories
+SRC_DIR = src
 BUILD_DIR = build
 
 # Common source files (shared between engine and training)
@@ -37,8 +38,8 @@ $(ENGINE_EXEC): $(ENGINE_OBJS)
 $(TRAINING_EXEC): $(TRAINING_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
-$(BUILD_DIR)/%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
+	$(CC) $(CFLAGS) -I$(SRC_DIR) -c $< -o $@
 
 clean:
 	rm -rf $(BUILD_DIR)
