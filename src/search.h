@@ -47,6 +47,10 @@ typedef struct {
     bool use_lmp;              // Enable Late Move Pruning (default: true)
     int lmp_base;              // Base moves before LMP kicks in (default: 3)
 
+    // SEE Pruning parameters
+    bool use_see_pruning;      // Enable SEE pruning for bad captures (default: true)
+    int see_pruning_depth;     // Max depth for SEE pruning (default: 6)
+
     // Delta pruning margin for quiescence
     int delta_margin;          // (default: 200)
 

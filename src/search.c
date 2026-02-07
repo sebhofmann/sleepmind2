@@ -69,6 +69,10 @@ void search_params_init(SearchParams* params) {
     params->use_lmp = true;
     params->lmp_base = 3;               // Base: 3 + depth^2 moves before pruning
 
+    // SEE Pruning (skip bad captures at low depths)
+    params->use_see_pruning = true;
+    params->see_pruning_depth = 6;      // Prune bad captures up to this depth
+
     // Delta pruning margin for quiescence
     params->delta_margin = 200;         // Tighter with reliable eval
 
@@ -1068,6 +1072,17 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         if (info->params.use_lmp && !is_pv && !in_check && depth <= 4 && !is_tactical) {
             int lmp_threshold = info->params.lmp_base + depth * depth;
             if (moves_searched >= lmp_threshold) {
+                continue;
+            }
+        }
+
+        // =======================================================================
+        // SEE Pruning: skip bad captures at low depths
+        // =======================================================================
+        if (info->params.use_see_pruning && !is_pv && !in_check &&
+            depth <= info->params.see_pruning_depth && is_capture && moves_searched > 0) {
+            int see_threshold = -100 * depth;
+            if (see(board, m) < see_threshold) {
                 continue;
             }
         }
