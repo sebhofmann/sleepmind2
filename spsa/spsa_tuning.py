@@ -31,8 +31,8 @@ ENGINE_PATH = "../build/sleepmind"
 OPENING_BOOK_PATH = "/home/paschty/Downloads/klo_eco_a00-e97v/klo_250_eco_a00-e97_variations.pgn"
 
 NUM_GAMES = 128  # Games per iteration (θ+ vs θ-)
-TIME_PER_MOVE_MS = 50
-MAX_ITERATIONS = 500
+TIME_PER_MOVE_MS = 200
+MAX_ITERATIONS = 300
 SAVE_INTERVAL = 5
 MAX_PARALLEL_GAMES = 32
 
@@ -381,9 +381,6 @@ class SPSATuner:
         print(f"\nUpdating parameters (gradient: {gradient:+.3f}):")
 
         for name in PARAMETERS:
-            if self.tune_only is not None and name not in self.tune_only:
-                continue
-
             r = PARAMETERS[name]["r"]
             d = direction[name]
 
