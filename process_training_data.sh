@@ -71,7 +71,7 @@ echo "=== Step 1: Converting .txt files to .dat ==="
 shopt -s globstar nullglob
 
 DAT_FILES=()
-for txt_file in "$INPUT_FOLDER"/**/*.txt "$INPUT_FOLDER"/*.txt; do
+for txt_file in "$INPUT_FOLDER"/**/*.txt; do
     if [ -f "$txt_file" ]; then
         # Create unique name using relative path (replace / and \ with _)
         rel_path="${txt_file#$INPUT_FOLDER/}"
