@@ -385,3 +385,83 @@ void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumul
     // Restore Zobrist key
     board->zobristKey = undoInfo->oldZobristKey;
 }
+
+// =============================================================================
+// Board mirroring for symmetry testing
+// =============================================================================
+
+void mirrorBoard(Board* board) {
+    // Helper function to flip a square vertically (rank 1 <-> rank 8)
+    #define FLIP_SQUARE(sq) ((sq) ^ 56)  // XOR with 56 flips the rank (0-7 becomes 56-63)
+    
+    // Temporary storage for new board state
+    uint8_t new_piece[64] = {0};
+    Bitboard new_byTypeBB[2][6] = {{0}};
+    
+    // Mirror all pieces
+    for (int sq = 0; sq < 64; sq++) {
+        uint8_t p = board->piece[sq];
+        if (p != NO_PIECE) {
+            int flipped_sq = FLIP_SQUARE(sq);
+            // Flip the color: white <-> black
+            int color = PIECE_COLOR_OF(p);
+            int type = PIECE_TYPE_OF(p);
+            int new_color = 1 - color;
+            uint8_t new_p = MAKE_PIECE_NEW(type, new_color);
+            
+            new_piece[flipped_sq] = new_p;
+            new_byTypeBB[new_color][type] |= (1ULL << flipped_sq);
+        }
+    }
+    
+    // Copy mirrored pieces back to board
+    for (int sq = 0; sq < 64; sq++) {
+        board->piece[sq] = new_piece[sq];
+    }
+    for (int color = 0; color < 2; color++) {
+        for (int type = 0; type < 6; type++) {
+            board->byTypeBB[color][type] = new_byTypeBB[color][type];
+        }
+    }
+    
+    // Flip side to move
+    board->whiteToMove = !board->whiteToMove;
+    
+    // Flip castling rights
+    uint8_t old_castling = board->castlingRights;
+    uint8_t new_castling = 0;
+    if (old_castling & WHITE_KINGSIDE_CASTLE)  new_castling |= BLACK_KINGSIDE_CASTLE;
+    if (old_castling & WHITE_QUEENSIDE_CASTLE) new_castling |= BLACK_QUEENSIDE_CASTLE;
+    if (old_castling & BLACK_KINGSIDE_CASTLE)  new_castling |= WHITE_KINGSIDE_CASTLE;
+    if (old_castling & BLACK_QUEENSIDE_CASTLE) new_castling |= WHITE_QUEENSIDE_CASTLE;
+    board->castlingRights = new_castling;
+    
+    // Flip en passant square
+    if (board->enPassantSquare != SQ_NONE) {
+        board->enPassantSquare = FLIP_SQUARE(board->enPassantSquare);
+    }
+    
+    // Recalculate Zobrist key (mirroring invalidates incremental zobrist)
+    board->zobristKey = 0;
+    for (int sq = 0; sq < 64; sq++) {
+        uint8_t p = board->piece[sq];
+        if (p != NO_PIECE) {
+            int color = PIECE_COLOR_OF(p);
+            int type = PIECE_TYPE_OF(p);
+            PieceTypeToken pt = (PieceTypeToken)(type + 1);
+            board->zobristKey ^= ZOBRIST_PIECE_KEY(pt, color, sq);
+        }
+    }
+    board->zobristKey ^= zobrist_castling_keys[board->castlingRights];
+    if (board->enPassantSquare != SQ_NONE) {
+        board->zobristKey ^= zobrist_enpassant_keys[board->enPassantSquare];
+    }
+    if (!board->whiteToMove) {
+        board->zobristKey ^= zobrist_side_to_move_key;
+    }
+    
+    // Clear history (mirrored position has new history)
+    board->historyIndex = 0;
+    
+    #undef FLIP_SQUARE
+}

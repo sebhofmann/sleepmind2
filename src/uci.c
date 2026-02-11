@@ -602,6 +602,20 @@ void uci_loop() {
                 printf("bestmove 0000\n"); // Should not happen in a legal position
             }
 
+        } else if (strcmp(line, "eval") == 0) {
+            // Evaluate current position using current evaluation (NNUE or HCE)
+            int score = evaluate(&current_board, &nnue_accumulator, nnue_network);
+            printf("info string Evaluation: %d cp (from %s perspective)\n", 
+                   score, current_board.whiteToMove ? "white" : "black");
+            fflush(stdout);
+        } else if (strcmp(line, "flip") == 0 || strcmp(line, "mirror") == 0) {
+            // Mirror the current position (swap colors and flip board)
+            mirrorBoard(&current_board);
+            nnue_reset_accumulator(&current_board, &nnue_accumulator, nnue_network);
+            printf("info string Position mirrored\n");
+            const char* mirrored_fen = outputFEN(&current_board);
+            printf("info string FEN: %s\n", mirrored_fen);
+            fflush(stdout);
         } else if (strcmp(line, "stop") == 0) {
             // stop_search(); // This function will set a flag for the search to stop
             // For now, this doesn't do much until search is implemented

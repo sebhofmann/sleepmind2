@@ -107,7 +107,7 @@ Board parseFEN(const char* fen) {
             fenIndex++; // Skip '-'
         }
     } else {
-        board.enPassantSquare = -1; // No en passant
+        board.enPassantSquare = SQ_NONE; // No en passant
         fenIndex++; // Skip '-'
     }
 

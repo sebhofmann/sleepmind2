@@ -48,6 +48,12 @@ PieceTypeToken getPieceTypeFromPromotionFlag(int promoFlag);
 Bitboard* getMutablePieceBitboardPointer(Board* board, Square sq, bool isPieceWhite);
 void clearCaptureSquareOnAllBitboards(Board* board, Square sq);
 
-
+/**
+ * @brief Mirrors the board vertically (flips black and white positions).
+ *        Used for testing evaluation/search symmetry.
+ * 
+ * @param board Pointer to the Board to be mirrored.
+ */
+void mirrorBoard(Board* board);
 
 #endif // BOARD_MODIFIERS_H
