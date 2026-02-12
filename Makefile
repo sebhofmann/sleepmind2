@@ -1,7 +1,12 @@
 CC = gcc
-CFLAGS = -g -Wall -Wextra -std=c11 -O3 -march=native # Added optimization flags for NNUE performance
+CFLAGS = -g -Wall -Wextra -std=c11 -O3 -march=native
 DEBUG_FLAGS = -g -Wall -Wextra -std=c11 -O0 -march=native -DDEBUG_NNUE_INCREMENTAL
 DEBUG_EVAL_FLAGS = -g -Wall -Wextra -std=c11 -O3 -march=native -DDEBUG_NNUE_EVAL
+
+# Optional flags: make STATS=1
+ifeq ($(STATS),1)
+  CFLAGS += -DSEARCH_STATS
+endif
 
 # Directories
 SRC_DIR = src

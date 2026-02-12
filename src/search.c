@@ -12,6 +12,37 @@
 
 // Define this to enable Zobrist hash verification after undo
 //#define DEBUG_ZOBRIST_VERIFY
+
+// Define this to enable search statistics (TT + pruning) output after each search
+// Can be enabled via: make STATS=1
+//#define SEARCH_STATS
+
+#ifdef SEARCH_STATS
+static uint64_t tt_probes = 0;
+static uint64_t tt_hits = 0;
+static uint64_t tt_cutoffs = 0;
+
+static struct {
+    uint64_t null_move;
+    uint64_t reverse_futility;
+    uint64_t razoring;
+    uint64_t futility;
+    uint64_t lmr;
+    uint64_t delta;
+    uint64_t see_pruning;
+} pruning_stats;
+
+#define TT_STAT_INC(var) ((var)++)
+#define TT_STATS_RESET() do { tt_probes = 0; tt_hits = 0; tt_cutoffs = 0; } while(0)
+#define PRUNING_STAT_INC(field) (pruning_stats.field++)
+#define PRUNING_STATS_RESET() memset(&pruning_stats, 0, sizeof(pruning_stats))
+#else
+#define TT_STAT_INC(var) ((void)0)
+#define TT_STATS_RESET() ((void)0)
+#define PRUNING_STAT_INC(field) ((void)0)
+#define PRUNING_STATS_RESET() ((void)0)
+#endif
+
 #include <limits.h>
 #include <stdlib.h>
 #include <time.h>
@@ -23,10 +54,7 @@
 // =============================================================================
 bool search_silent_mode = false;
 
-// TT Debug statistics
-static uint64_t tt_probes = 0;
-static uint64_t tt_hits = 0;
-static uint64_t tt_cutoffs = 0;
+
 
 // =============================================================================
 // LMR Reduction Table (precomputed for speed)
@@ -640,10 +668,10 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     // TT Probe in Quiescence Search
     // ==========================================================================
     Move tt_move = 0;
-    tt_probes++;
+    TT_STAT_INC(tt_probes);
     TTEntry* tt_entry = tt_probe(board->zobristKey);
     if (tt_entry != NULL) {
-        tt_hits++;
+        TT_STAT_INC(tt_hits);
         tt_move = tt_entry->bestMove;
         
         // Use TT cutoff if depth is sufficient (QS entries have depth 0)
@@ -659,15 +687,15 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
             }
             
             if (tt_flag == TT_EXACT) {
-                tt_cutoffs++;
+                TT_STAT_INC(tt_cutoffs);
                 return tt_score;
             }
             if (tt_flag == TT_LOWERBOUND && tt_score >= beta) {
-                tt_cutoffs++;
+                TT_STAT_INC(tt_cutoffs);
                 return tt_score;
             }
             if (tt_flag == TT_UPPERBOUND && tt_score <= alpha) {
-                tt_cutoffs++;
+                TT_STAT_INC(tt_cutoffs);
                 return tt_score;
             }
         }
@@ -790,6 +818,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     
     // Delta pruning: if we're so far behind that even capturing a queen won't help
     if (info->params.use_delta_pruning && stand_pat + 900 + info->params.delta_margin < alpha) {
+        PRUNING_STAT_INC(delta);
         return alpha;
     }
     
@@ -843,6 +872,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
             }
 
             if (stand_pat + gain + info->params.delta_margin < alpha) {
+                PRUNING_STAT_INC(delta);
                 continue;
             }
         }
@@ -938,10 +968,10 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     
     // TT Probe
     Move tt_move = 0;
-    tt_probes++;
+    TT_STAT_INC(tt_probes);
     TTEntry* tt_entry = tt_probe(board->zobristKey);
     if (tt_entry != NULL) {
-        tt_hits++;
+        TT_STAT_INC(tt_hits);
         tt_move = tt_entry->bestMove;
         
         // Only use TT cutoff in non-PV nodes
@@ -957,15 +987,15 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             }
             
             if (tt_flag == TT_EXACT) {
-                tt_cutoffs++;
+                TT_STAT_INC(tt_cutoffs);
                 return tt_score;
             }
             if (tt_flag == TT_LOWERBOUND && tt_score >= beta) {
-                tt_cutoffs++;
+                TT_STAT_INC(tt_cutoffs);
                 return tt_score;
             }
             if (tt_flag == TT_UPPERBOUND && tt_score <= alpha) {
-                tt_cutoffs++;
+                TT_STAT_INC(tt_cutoffs);
                 return tt_score;
             }
         }
@@ -1017,6 +1047,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             int verify = negamax(board, depth - info->params.null_move_reduction - 1, beta - 1, beta, 
                                 info, ply, false, false);
             if (verify >= beta) {
+                PRUNING_STAT_INC(null_move);
                 return beta;
             }
         }
@@ -1030,6 +1061,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         abs(beta) < MATE_SCORE - 100) {
         int rfp_margin = info->params.rfp_margin * depth;
         if (static_eval - rfp_margin >= beta) {
+            PRUNING_STAT_INC(reverse_futility);
             return static_eval - rfp_margin;
         }
     }
@@ -1044,6 +1076,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         if (static_eval + razor_margin < alpha) {
             int razor_score = quiescence(board, alpha - 1, alpha, info, ply);
             if (razor_score < alpha) {
+                PRUNING_STAT_INC(razoring);
                 return razor_score;
             }
         }
@@ -1094,6 +1127,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // Futility Pruning: skip quiet moves that can't improve alpha
         // =======================================================================
         if (futility_pruning && moves_searched > 0 && !is_tactical) {
+            PRUNING_STAT_INC(futility);
             continue;
         }
 
@@ -1198,6 +1232,9 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             }
             
             // Null window search with possible reduction
+            if (reduction > 0) {
+                PRUNING_STAT_INC(lmr);
+            }
             score = -negamax(board, depth - 1 - reduction, -alpha - 1, -alpha, 
                             info, ply + 1, true, false);
             
@@ -1383,10 +1420,9 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
     info->lastIterationTime = 0;
     info->seldepth = 0;
     
-    // Reset TT statistics
-    tt_probes = 0;
-    tt_hits = 0;
-    tt_cutoffs = 0;
+    // Reset search statistics
+    TT_STATS_RESET();
+    PRUNING_STATS_RESET();
     
     // Initialize TT for new search
     tt_new_search();
@@ -1552,12 +1588,27 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
     (void)best_score;
     if (!search_silent_mode) {
         printf("DEBUG: Best move: %u, Total time: %ld ms\n", best_move, get_elapsed_time(info));
+#ifdef SEARCH_STATS
         // Print TT statistics
         double hit_rate = tt_probes > 0 ? (100.0 * tt_hits / tt_probes) : 0;
         double cutoff_rate = tt_hits > 0 ? (100.0 * tt_cutoffs / tt_hits) : 0;
         printf("info string TT stats: probes=%llu hits=%llu (%.1f%%) cutoffs=%llu (%.1f%% of hits)\n",
                (unsigned long long)tt_probes, (unsigned long long)tt_hits, hit_rate,
                (unsigned long long)tt_cutoffs, cutoff_rate);
+        // Print pruning statistics
+        uint64_t total_prunings = pruning_stats.null_move + pruning_stats.reverse_futility +
+                                  pruning_stats.razoring + pruning_stats.futility +
+                                  pruning_stats.lmr + pruning_stats.delta +
+                                  pruning_stats.see_pruning;
+        printf("info string Pruning stats (total=%llu):\n", (unsigned long long)total_prunings);
+        printf("info string   Null Move:    %llu\n", (unsigned long long)pruning_stats.null_move);
+        printf("info string   Rev Futility: %llu\n", (unsigned long long)pruning_stats.reverse_futility);
+        printf("info string   Razoring:     %llu\n", (unsigned long long)pruning_stats.razoring);
+        printf("info string   Futility:     %llu\n", (unsigned long long)pruning_stats.futility);
+        printf("info string   LMR:          %llu\n", (unsigned long long)pruning_stats.lmr);
+        printf("info string   Delta:        %llu\n", (unsigned long long)pruning_stats.delta);
+        printf("info string   SEE Pruning:  %llu\n", (unsigned long long)pruning_stats.see_pruning);
+#endif
         fflush(stdout);
     }
     return best_move;
