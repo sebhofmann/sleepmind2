@@ -387,6 +387,11 @@ static bool see_ge(const Board* board, Move move, int threshold) {
     return see(board, move) >= threshold;
 }
 
+// Debug wrapper to expose SEE for testing
+int see_debug(const Board* board, Move move) {
+    return see(board, move);
+}
+
 // =============================================================================
 // Move ordering structures
 // =============================================================================

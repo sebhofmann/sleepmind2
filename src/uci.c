@@ -255,6 +255,16 @@ void uci_loop() {
         } else if (strcmp(line, "isready") == 0) {
             printf("readyok\n");
             fflush(stdout);
+        } else if (strncmp(line, "seedump", 7) == 0) {
+            // Debug: print SEE for every capture/promotion in current position
+            MoveList caps;
+            generateCaptureAndPromotionMoves(&current_board, &caps);
+            for (int i = 0; i < caps.count; i++) {
+                char s[6];
+                moveToString(caps.moves[i], s);
+                printf("see %s = %d\n", s, see_debug(&current_board, caps.moves[i]));
+            }
+            fflush(stdout);
         } else if (strncmp(line, "setoption", 9) == 0) {
             // Parse: setoption name <name> value <value>
             char* name_start = strstr(line, "name ");

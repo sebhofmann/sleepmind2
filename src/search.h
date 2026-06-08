@@ -101,6 +101,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info);
 int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximizingPlayer, SearchInfo* info, int ply);
 int quiescence_search(Board* board, int alpha, int beta, bool maximizingPlayer, SearchInfo* info, int ply);
 void clear_search_history(SearchInfo* info);
+int see_debug(const Board* board, Move move); // Debug: expose SEE
 
 #define MATE_SCORE 1000000 // Arbitrary large score for checkmate
 
