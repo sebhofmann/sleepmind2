@@ -339,22 +339,24 @@ static int see(const Board* board, Move move) {
     bool side_to_move = !attacker_side;
     
     while (attackers) {
-        depth++;
-        if (depth >= 32) break;
-        
-        // Find smallest attacker for current side
+        // Find smallest attacker for the side to move. If that side has no
+        // attacker left (even though opposite-colour attackers may linger in the
+        // set), the exchange is over. Must check BEFORE incrementing depth, else
+        // gain[depth] is left uninitialised and the negamax below reads garbage.
         int piece_square;
         int next_attacker_value = get_smallest_attacker(board, attackers, side_to_move, &piece_square);
-        
         if (next_attacker_value == 0) break;
-        
+
+        depth++;
+        if (depth >= 32) break;
+
         // Calculate gain: capture the current piece, but we might lose our attacker
         gain[depth] = current_piece_value - gain[depth - 1];
-        
-        // Prune: if the side to move can only lose from here, stop early
-        // Standard pruning: if max(gain[d-1], -gain[d]) < 0 for the side, break
-        if (gain[depth] < 0 && -gain[depth - 1] < 0) break;
-        
+
+        // No early-exit pruning: a sound cutoff must not change the result. The
+        // previous condition did (it stopped before a profitable recapture, e.g.
+        // Arasan SEE case "Bxc6" gave -130 instead of -230). Full swap instead.
+
         // Update occupied (remove the attacker)
         occupied &= ~(1ULL << piece_square);
         attackers &= ~(1ULL << piece_square);
