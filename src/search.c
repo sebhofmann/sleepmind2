@@ -96,6 +96,7 @@ void search_params_init(SearchParams* params) {
     params->use_rfp = true;
     params->use_delta_pruning = false;  // Disabled - tested to be better without
     params->use_aspiration = true;
+    params->use_qs_see_pruning = true;  // SPRT-confirmed +30 Elo (skip SEE<0 captures in qsearch)
 
     // Late Move Reduction parameters (tuned via tournament testing)
     params->lmr_full_depth_moves = 3;   // More aggressive LMR
@@ -878,14 +879,23 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
                 continue;
             }
         }
-        
+
+        // SEE pruning: skip captures that lose material (not in check here by branch).
+        // Keep the TT move and promotions, which may be tactically necessary.
+        if (info->params.use_qs_see_pruning && !MOVE_IS_PROMOTION(m) && m != tt_move) {
+            if (see(board, m) < 0) {
+                PRUNING_STAT_INC(see_pruning);
+                continue;
+            }
+        }
+
         #ifdef DEBUG_ZOBRIST_VERIFY
         uint64_t saved_zobrist = board->zobristKey;
         #endif
-        
+
         MoveUndoInfo undo;
         applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
-        
+
         // Skip illegal moves (king left in check) - needed because generateCaptureAndPromotionMoves is pseudo-legal
         if (isKingAttacked(board, !board->whiteToMove)) {
             undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);

@@ -21,6 +21,7 @@ typedef struct {
     bool use_rfp;              // Enable Reverse Futility Pruning (default: true)
     bool use_delta_pruning;    // Enable Delta Pruning in QSearch (default: true)
     bool use_aspiration;       // Enable Aspiration Windows (default: true)
+    bool use_qs_see_pruning;   // Skip losing captures (SEE<0) in quiescence (default: true, SPRT +30 Elo)
 
     // Late Move Reduction parameters
     int lmr_full_depth_moves;  // Number of moves before LMR kicks in (default: 4)

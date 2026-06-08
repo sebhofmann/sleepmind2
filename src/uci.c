@@ -236,6 +236,7 @@ void uci_loop() {
             printf("option name Use_DeltaPruning type check default false\n");
             printf("option name Use_Aspiration type check default true\n");
             printf("option name Use_Razoring type check default true\n");
+            printf("option name Use_QSSeePruning type check default true\n");
             // Search parameter options
             printf("option name LMR_FullDepthMoves type spin default 3 min 1 max 10\n");
             printf("option name LMR_ReductionLimit type spin default 2 min 1 max 6\n");
@@ -300,6 +301,9 @@ void uci_loop() {
                 } else if (strcmp(option_name, "Use_Razoring") == 0) {
                     search_params.use_razoring = bool_value;
                     printf("info string Set Use_Razoring to %s\n", bool_value ? "true" : "false");
+                } else if (strcmp(option_name, "Use_QSSeePruning") == 0) {
+                    search_params.use_qs_see_pruning = bool_value;
+                    printf("info string Set Use_QSSeePruning to %s\n", bool_value ? "true" : "false");
                 // Numeric parameters
                 } else if (strcmp(option_name, "LMR_FullDepthMoves") == 0) {
                     search_params.lmr_full_depth_moves = value;
