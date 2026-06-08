@@ -21,6 +21,7 @@ typedef struct {
     bool use_rfp;              // Enable Reverse Futility Pruning (default: true)
     bool use_delta_pruning;    // Enable Delta Pruning in QSearch (default: true)
     bool use_aspiration;       // Enable Aspiration Windows (default: true)
+    bool use_check_extension;  // Extend search depth by 1 when in check (default: true)
     bool use_qs_see_pruning;   // Skip losing captures (SEE<0) in quiescence (default: true, SPRT +30 Elo)
     bool use_bad_capture_last; // Order losing captures (SEE<0) below quiet moves (default: true, SPRT +11 Elo)
 

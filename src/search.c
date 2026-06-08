@@ -96,6 +96,7 @@ void search_params_init(SearchParams* params) {
     params->use_rfp = true;
     params->use_delta_pruning = false;  // Disabled - tested to be better without
     params->use_aspiration = true;
+    params->use_check_extension = true; // Extend by 1 ply when in check
     params->use_qs_see_pruning = true;  // SPRT-confirmed +30 Elo (skip SEE<0 captures in qsearch)
     params->use_bad_capture_last = true; // SPRT-confirmed +11 Elo (losing captures ordered after quiets)
 
@@ -983,7 +984,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     bool in_check = isKingAttacked(board, board->whiteToMove);
     
     // Check extension
-    if (in_check) {
+    if (in_check && info->params.use_check_extension) {
         depth++;
     }
     
