@@ -97,6 +97,7 @@ void search_params_init(SearchParams* params) {
     params->use_delta_pruning = false;  // Disabled - tested to be better without
     params->use_aspiration = true;
     params->use_qs_see_pruning = true;  // SPRT-confirmed +30 Elo (skip SEE<0 captures in qsearch)
+    params->use_bad_capture_last = true; // SPRT-confirmed +11 Elo (losing captures ordered after quiets)
 
     // Late Move Reduction parameters (tuned via tournament testing)
     params->lmr_full_depth_moves = 3;   // More aggressive LMR
@@ -452,6 +453,9 @@ static void score_moves(Board* board, MoveList* moves, ScoredMove* scored,
             if (see_value >= 0) {
                 // Good/equal captures: high priority, sorted by SEE then MVV-LVA
                 scored[i].score = 8000000 + see_value * 100 + mvv_lva;
+            } else if (info->params.use_bad_capture_last) {
+                // Bad captures ranked below all quiet moves (history in ~[-16384,16384])
+                scored[i].score = -1000000 + see_value * 100 + mvv_lva;
             } else {
                 // Bad captures: low priority but still above quiet moves with bad history
                 scored[i].score = 2000000 + see_value * 100 + mvv_lva;
