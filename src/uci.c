@@ -204,6 +204,11 @@ void uci_loop() {
     SearchParams search_params;
     search_params_init(&search_params);
 
+    // Search state persists across "go" commands so history/counter moves
+    // accumulate over the whole game; fully cleared on ucinewgame
+    static SearchInfo search_info;
+    clear_search_history(&search_info);
+
     printf("DEBUG: Starting uci_loop initialization\n"); fflush(stdout);
     
     initMoveGenerator(); // Initialize move generator data
@@ -369,6 +374,7 @@ void uci_loop() {
             // Reset board to startpos
             current_board = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
             nnue_reset_accumulator(&current_board, &nnue_accumulator, nnue_network);
+            clear_search_history(&search_info);
         } else if (strncmp(line, "position", 8) == 0) {
             char* token;
             char* rest = line + 9; // Skip "position "
@@ -573,7 +579,6 @@ void uci_loop() {
 
             printBoard(&current_board); // Print the current board state for debugging
 
-            SearchInfo search_info;
             search_info.startTime = clock();
             search_info.softTimeLimit = soft_limit;
             search_info.hardTimeLimit = hard_limit;
@@ -588,7 +593,7 @@ void uci_loop() {
             search_info.depthLimit = depth_limit;  // Set depth limit from UCI
             search_info.nodeLimit = node_limit;     // Set node limit from UCI
             search_info.params = search_params;    // Copy search parameters
-            clear_search_history(&search_info);  // Initialize killer moves, history, etc.
+            clear_volatile_history(&search_info);  // Killers/prev_moves only; history persists
 
 
             // This is where the search will be called.

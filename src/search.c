@@ -563,7 +563,7 @@ static void update_history(SearchInfo* info, Board* board, Move m, int depth) {
     
     // Bonus proportional to depth^2
     int bonus = depth * depth;
-    
+
     // Gravity formula to prevent runaway values
     int current = info->history[side][from][to];
     int max_history = 16384;
@@ -579,15 +579,31 @@ static void update_history_malus(SearchInfo* info, Board* board, Move m, int dep
     int malus = depth * depth;
     int current = info->history[side][from][to];
     int max_history = 16384;
-    info->history[side][from][to] -= malus - (current * abs(malus) / max_history);
+    // Gravity with negative bonus: h += -malus - h*|malus|/max.
+    // Converges to -max_history instead of diverging below it, and still
+    // penalizes moves whose history is at the positive cap.
+    info->history[side][from][to] += -malus - (current * abs(malus) / max_history);
 }
 
-// Clear search heuristics
+// Clear all search heuristics (new game / startup)
 void clear_search_history(SearchInfo* info) {
     memset(info->killers, 0, sizeof(info->killers));
     memset(info->history, 0, sizeof(info->history));
     memset(info->counter_moves, 0, sizeof(info->counter_moves));
     memset(info->prev_moves, 0, sizeof(info->prev_moves));
+}
+
+// Clear only ply-indexed heuristics before each search; history and
+// counter moves persist across moves within a game. History is halved
+// (aging) so stale entries from earlier positions decay instead of
+// staying saturated at the cap and outranking fresh in-search signal.
+void clear_volatile_history(SearchInfo* info) {
+    memset(info->killers, 0, sizeof(info->killers));
+    memset(info->prev_moves, 0, sizeof(info->prev_moves));
+    for (int s = 0; s < 2; s++)
+        for (int f = 0; f < 64; f++)
+            for (int t = 0; t < 64; t++)
+                info->history[s][f][t] /= 2;
 }
 
 // Forward declaration
@@ -750,7 +766,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
                 scored[j + 1] = key;
             }
         }
-        
+
         Move best_move = 0;
         int moves_searched = 0;
         
@@ -775,7 +791,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
             #endif
             int score = -quiescence(board, -beta, -alpha, info, ply + 1);
             undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
-            
+
             moves_searched++;
             
             #ifdef DEBUG_ZOBRIST_VERIFY
@@ -917,7 +933,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         #endif
         int score = -quiescence(board, -beta, -alpha, info, ply + 1);
         undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
-        
+
         #ifdef DEBUG_ZOBRIST_VERIFY
         if (board->zobristKey != saved_zobrist) {
             char move_str[6];
@@ -1066,7 +1082,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         
         if (null_score >= beta) {
             // Always do verification search for safety (eval not yet reliable)
-            int verify = negamax(board, depth - info->params.null_move_reduction - 1, beta - 1, beta, 
+            int verify = negamax(board, depth - info->params.null_move_reduction - 1, beta - 1, beta,
                                 info, ply, false, false);
             if (verify >= beta) {
                 PRUNING_STAT_INC(null_move);
@@ -1233,7 +1249,9 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                 }
 
                 // Adjust based on history score
-                int side = board->whiteToMove ? 0 : 1;
+                // Note: applyMove already flipped whiteToMove, so the mover's
+                // side index is the inverse here (history is indexed by mover)
+                int side = board->whiteToMove ? 1 : 0;
                 int hist = info->history[side][MOVE_FROM(m)][MOVE_TO(m)];
                 if (hist < -2000) {
                     reduction += 2;
@@ -1607,6 +1625,31 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         }
     }
     
+#ifdef DEBUG_HISTORY_RANGE
+    {
+        int hmin = 0, hmax = 0; long long below_cap = 0, nonzero = 0;
+        for (int s = 0; s < 2; s++)
+            for (int f = 0; f < 64; f++)
+                for (int t = 0; t < 64; t++) {
+                    int h = info->history[s][f][t];
+                    if (h < hmin) hmin = h;
+                    if (h > hmax) hmax = h;
+                    if (h < -16384) below_cap++;
+                    if (h != 0) nonzero++;
+                }
+        long long lmr_neg = 0, lmr_pos = 0;
+        for (int s = 0; s < 2; s++)
+            for (int f = 0; f < 64; f++)
+                for (int t = 0; t < 64; t++) {
+                    int h = info->history[s][f][t];
+                    if (h < -2000) lmr_neg++;
+                    if (h > 8000) lmr_pos++;
+                }
+        printf("info string HISTORY range=[%d,%d] below_cap=%lld nonzero=%lld lmr_neg=%lld lmr_pos=%lld\n",
+               hmin, hmax, below_cap, nonzero, lmr_neg, lmr_pos);
+        fflush(stdout);
+    }
+#endif
     (void)best_score;
     if (!search_silent_mode) {
         printf("DEBUG: Best move: %u, Total time: %ld ms\n", best_move, get_elapsed_time(info));
