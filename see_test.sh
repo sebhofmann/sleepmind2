@@ -1,7 +1,7 @@
 #!/bin/bash
 # SEE-Validierung gegen Arasan-Suite (unit.cpp testSee).
 # Erwartungswerte mit MEINEN Figurenwerten (P100 N320 B330 R500 Q900) nachgerechnet.
-# Nur Nicht-Promo-Captures (das was mein SEE-Pruning nutzt). Quiet/Promo-Faelle ausgelassen.
+# Inkl. Promotion-Faelle (SEE wertet promo-gain = Promofigur - Bauer).
 ENG=./build/sleepmind
 
 # Format: FEN|fromto|expected
@@ -24,6 +24,12 @@ CASES=(
 "4q3/1p1pr1k1/1B2rp2/6p1/p3PP2/P3R1P1/1P2R1K1/4Q3 b - -|e6e4|-400"
 "4k3/8/2p1p3/3p4/4P3/8/8/4K3 w - - 0 1|e4d5|0"
 "4q3/1p1pr1kb/1B2rp2/6p1/p3PP2/P3R1P1/1P2R1K1/4Q3 b - -|h7e4|100"
+# Promotion-Faelle (Arasan unit.cpp): f8=Q/N gedeckt vs. Laeufer, f8=Q/B frei, f8=R haengt
+"6RR/4bP2/8/8/5r2/3K4/5p2/4k3 w - -|f7f8q|230"
+"6RR/4bP2/8/8/5r2/3K4/5p2/4k3 w - -|f7f8n|220"
+"7R/5P2/8/8/8/3K2r1/5p2/4k3 w - -|f7f8q|800"
+"7R/5P2/8/8/8/3K2r1/5p2/4k3 w - -|f7f8b|230"
+"7R/4bP2/8/8/1q6/3K4/5p2/4k3 w - -|f7f8r|-100"
 )
 
 pass=0; fail=0

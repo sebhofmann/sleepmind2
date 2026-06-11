@@ -21,6 +21,8 @@
 static uint64_t tt_probes = 0;
 static uint64_t tt_hits = 0;
 static uint64_t tt_cutoffs = 0;
+static uint64_t beta_cutoffs = 0;
+static uint64_t beta_cutoffs_first = 0;
 
 static struct {
     uint64_t null_move;
@@ -33,7 +35,8 @@ static struct {
 } pruning_stats;
 
 #define TT_STAT_INC(var) ((var)++)
-#define TT_STATS_RESET() do { tt_probes = 0; tt_hits = 0; tt_cutoffs = 0; } while(0)
+#define TT_STATS_RESET() do { tt_probes = 0; tt_hits = 0; tt_cutoffs = 0; \
+                              beta_cutoffs = 0; beta_cutoffs_first = 0; } while(0)
 #define PRUNING_STAT_INC(field) (pruning_stats.field++)
 #define PRUNING_STATS_RESET() memset(&pruning_stats, 0, sizeof(pruning_stats))
 #else
@@ -290,11 +293,14 @@ static int see(const Board* board, Move move) {
     PieceTypeToken attacker_type = getPieceTypeAtSquare(board, from, &attacker_white);
     int attacker_value = get_piece_value(attacker_type);
 
-    // For promotion captures, the piece on the target square after capture
-    // is the promoted piece, not the pawn
+    // For promotions, the piece on the target square after the move is the
+    // promoted piece, not the pawn - and the move itself already gains
+    // (promo - pawn) in material, even with an empty target square
     int piece_on_target_value = attacker_value;
+    int promo_gain = 0;
     if (MOVE_IS_PROMOTION(move)) {
         piece_on_target_value = get_promotion_value(MOVE_PROMOTION(move));
+        promo_gain = piece_on_target_value - SEE_VALUES[1];
     }
     
     // Get victim value
@@ -307,17 +313,17 @@ static int see(const Board* board, Move move) {
         victim_value = SEE_VALUES[1]; // Pawn
     }
     
-    // If capturing nothing (shouldn't happen for captures), return 0
-    if (victim_value == 0 && !MOVE_IS_EN_PASSANT(move)) {
+    // If capturing nothing (and not promoting), there is no exchange to evaluate
+    if (victim_value == 0 && !MOVE_IS_EN_PASSANT(move) && !MOVE_IS_PROMOTION(move)) {
         return 0;
     }
-    
+
     // Gain array to track material balance at each step
     int gain[32];
     int depth = 0;
-    
-    // Initial capture
-    gain[depth] = victim_value;
+
+    // Initial capture (plus material gained by promoting)
+    gain[depth] = victim_value + promo_gain;
     
     // Simulate the capture
     Bitboard occupied = board->whitePawns | board->whiteKnights | board->whiteBishops |
@@ -1065,7 +1071,11 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             board->zobristKey ^= zobrist_enpassant_keys[old_ep];
         }
         board->enPassantSquare = SQ_NONE;
-        
+
+        // No previous move after a null move - prevents stale counter-move
+        // and continuation history lookups in the child node
+        info->prev_moves[ply] = 0;
+
         // Search with reduced depth - mark as null move search to skip TT store for this node
         int null_score = -negamax(board, depth - 1 - info->params.null_move_reduction, -beta, -beta + 1, 
                                   info, ply + 1, false, true);
@@ -1381,6 +1391,10 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         }
         
         if (alpha >= beta) {
+#ifdef SEARCH_STATS
+            beta_cutoffs++;
+            if (moves_searched == 1) beta_cutoffs_first++;
+#endif
             // Beta cutoff - update killers, history, and counter moves for quiet moves
             if (!is_capture) {
                 update_killers(info, m, ply);
@@ -1660,6 +1674,10 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         printf("info string TT stats: probes=%llu hits=%llu (%.1f%%) cutoffs=%llu (%.1f%% of hits)\n",
                (unsigned long long)tt_probes, (unsigned long long)tt_hits, hit_rate,
                (unsigned long long)tt_cutoffs, cutoff_rate);
+        // Move ordering quality: how often the first searched move caused the beta cutoff
+        double fh_first = beta_cutoffs > 0 ? (100.0 * beta_cutoffs_first / beta_cutoffs) : 0;
+        printf("info string Ordering: beta_cutoffs=%llu first_move=%llu (%.2f%%)\n",
+               (unsigned long long)beta_cutoffs, (unsigned long long)beta_cutoffs_first, fh_first);
         // Print pruning statistics
         uint64_t total_prunings = pruning_stats.null_move + pruning_stats.reverse_futility +
                                   pruning_stats.razoring + pruning_stats.futility +
