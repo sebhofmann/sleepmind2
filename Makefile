@@ -44,7 +44,10 @@ $(TRAINING_EXEC): $(TRAINING_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
-	$(CC) $(CFLAGS) -I$(SRC_DIR) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -I$(SRC_DIR) -c $< -o $@
+
+# Auto-generated header dependencies (so .h changes trigger rebuilds)
+-include $(wildcard $(BUILD_DIR)/*.d)
 
 clean:
 	rm -rf $(BUILD_DIR)
