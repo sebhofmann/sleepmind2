@@ -247,16 +247,27 @@ void uci_loop() {
             // Search parameter options
             printf("option name LMR_FullDepthMoves type spin default 3 min 1 max 10\n");
             printf("option name LMR_ReductionLimit type spin default 2 min 1 max 6\n");
-            printf("option name NullMove_Reduction type spin default 3 min 1 max 5\n");
+            printf("option name NullMove_Reduction type spin default 4 min 1 max 5\n");
             printf("option name NullMove_MinDepth type spin default 3 min 1 max 6\n");
-            printf("option name Futility_Margin type spin default 150 min 50 max 400\n");
-            printf("option name Futility_MarginD2 type spin default 300 min 100 max 600\n");
-            printf("option name Futility_MarginD3 type spin default 450 min 150 max 800\n");
-            printf("option name RFP_Margin type spin default 80 min 50 max 300\n");
-            printf("option name RFP_MaxDepth type spin default 8 min 2 max 10\n");
-            printf("option name Razor_Margin type spin default 300 min 100 max 600\n");
+            printf("option name Futility_Margin type spin default 69 min 50 max 400\n");
+            printf("option name Futility_MarginD2 type spin default 253 min 100 max 600\n");
+            printf("option name Futility_MarginD3 type spin default 269 min 150 max 800\n");
+            printf("option name RFP_Margin type spin default 93 min 50 max 300\n");
+            printf("option name RFP_MaxDepth type spin default 6 min 2 max 10\n");
+            printf("option name Razor_Margin type spin default 220 min 100 max 600\n");
             printf("option name Delta_Margin type spin default 200 min 50 max 500\n");
-            printf("option name Aspiration_Window type spin default 100 min 10 max 200\n");
+            printf("option name Aspiration_Window type spin default 83 min 10 max 200\n");
+            printf("option name Hist_BonusMult type spin default 518 min 50 max 800\n");
+            printf("option name Hist_BonusSub type spin default 199 min 0 max 1000\n");
+            printf("option name Hist_BonusMax type spin default 4325 min 500 max 16000\n");
+            printf("option name Hist_MalusMult type spin default 1167 min 100 max 4000\n");
+            printf("option name Hist_MalusSub type spin default 780 min 0 max 2000\n");
+            printf("option name Hist_MalusMax type spin default 3846 min 500 max 16000\n");
+            printf("option name FMH_Weight type spin default 166 min 0 max 256\n");
+            printf("option name LMR_StatLow2 type spin default -25544 min -49000 max 0\n");
+            printf("option name LMR_StatLow1 type spin default -10365 min -49000 max 0\n");
+            printf("option name LMR_StatHigh1 type spin default 21295 min 0 max 49000\n");
+            printf("option name LMR_StatHigh2 type spin default 23868 min 0 max 49000\n");
             printf("uciok\n");
             fflush(stdout);
         } else if (strcmp(line, "isready") == 0) {
@@ -364,6 +375,39 @@ void uci_loop() {
                 } else if (strcmp(option_name, "Aspiration_Window") == 0) {
                     search_params.aspiration_window = value;
                     printf("info string Set Aspiration_Window to %d\n", value);
+                } else if (strcmp(option_name, "Hist_BonusMult") == 0) {
+                    search_params.hist_bonus_mult = value;
+                    printf("info string Set Hist_BonusMult to %d\n", value);
+                } else if (strcmp(option_name, "Hist_BonusSub") == 0) {
+                    search_params.hist_bonus_sub = value;
+                    printf("info string Set Hist_BonusSub to %d\n", value);
+                } else if (strcmp(option_name, "Hist_BonusMax") == 0) {
+                    search_params.hist_bonus_max = value;
+                    printf("info string Set Hist_BonusMax to %d\n", value);
+                } else if (strcmp(option_name, "Hist_MalusMult") == 0) {
+                    search_params.hist_malus_mult = value;
+                    printf("info string Set Hist_MalusMult to %d\n", value);
+                } else if (strcmp(option_name, "Hist_MalusSub") == 0) {
+                    search_params.hist_malus_sub = value;
+                    printf("info string Set Hist_MalusSub to %d\n", value);
+                } else if (strcmp(option_name, "Hist_MalusMax") == 0) {
+                    search_params.hist_malus_max = value;
+                    printf("info string Set Hist_MalusMax to %d\n", value);
+                } else if (strcmp(option_name, "FMH_Weight") == 0) {
+                    search_params.fmh_weight = value;
+                    printf("info string Set FMH_Weight to %d\n", value);
+                } else if (strcmp(option_name, "LMR_StatLow2") == 0) {
+                    search_params.lmr_stat_low2 = value;
+                    printf("info string Set LMR_StatLow2 to %d\n", value);
+                } else if (strcmp(option_name, "LMR_StatLow1") == 0) {
+                    search_params.lmr_stat_low1 = value;
+                    printf("info string Set LMR_StatLow1 to %d\n", value);
+                } else if (strcmp(option_name, "LMR_StatHigh1") == 0) {
+                    search_params.lmr_stat_high1 = value;
+                    printf("info string Set LMR_StatHigh1 to %d\n", value);
+                } else if (strcmp(option_name, "LMR_StatHigh2") == 0) {
+                    search_params.lmr_stat_high2 = value;
+                    printf("info string Set LMR_StatHigh2 to %d\n", value);
                 } else {
                     printf("info string Unknown option: %s\n", option_name);
                 }

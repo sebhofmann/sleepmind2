@@ -107,28 +107,45 @@ void search_params_init(SearchParams* params) {
     params->lmr_full_depth_moves = 3;   // More aggressive LMR
     params->lmr_reduction_limit = 2;    // Start LMR earlier
 
-    // Null Move Pruning parameters
-    params->null_move_reduction = 3;    // Standard R=3 with NNUE
-    params->null_move_min_depth = 3;    // Can be more aggressive
+    // Null Move Pruning parameters (SPSA-tuned, 28500 games @200ms, SPRT +43 Elo)
+    params->null_move_reduction = 4;
+    params->null_move_min_depth = 3;
 
-    // Futility pruning margins (enabled with NNUE)
-    params->futility_margin = 150;      // Depth 1
-    params->futility_margin_d2 = 300;   // Depth 2
-    params->futility_margin_d3 = 450;   // Depth 3
+    // Futility pruning margins (SPSA-tuned)
+    params->futility_margin = 69;       // Depth 1
+    params->futility_margin_d2 = 253;   // Depth 2
+    params->futility_margin_d3 = 269;   // Depth 3
 
-    // Reverse Futility Pruning (tuned via tournament testing)
-    params->rfp_margin = 80;            // More aggressive pruning
-    params->rfp_max_depth = 8;          // Apply RFP at higher depths
+    // Reverse Futility Pruning (SPSA-tuned)
+    params->rfp_margin = 93;
+    params->rfp_max_depth = 6;
 
     // Razoring (drop into qsearch if position looks hopeless)
     params->use_razoring = true;
-    params->razor_margin = 300;         // Base margin (scaled by depth)
+    params->razor_margin = 220;         // Base margin (scaled by depth)
 
     // Delta pruning margin for quiescence
     params->delta_margin = 200;         // Tighter with reliable eval
 
-    // Aspiration window (tuned via tournament testing)
-    params->aspiration_window = 100;    // Wider window reduces re-searches
+    // Aspiration window (SPSA-tuned)
+    params->aspiration_window = 83;
+
+    // History update scale (SPSA-tuned: bonus steeper, malus flatter than
+    // the Stockfish magnitudes these started from)
+    params->hist_bonus_mult = 518;
+    params->hist_bonus_sub = 199;
+    params->hist_bonus_max = 4325;
+    params->hist_malus_mult = 1167;
+    params->hist_malus_sub = 780;
+    params->hist_malus_max = 3846;
+    params->fmh_weight = 166;           // 166/96: 2-ply history weighted above 1-ply
+
+    // LMR thresholds on the combined quiet ordering score - calibrated to
+    // the history magnitudes above, tune them together
+    params->lmr_stat_low2 = -25544;
+    params->lmr_stat_low1 = -10365;
+    params->lmr_stat_high1 = 21295;
+    params->lmr_stat_high2 = 23868;
 }
 
 // =============================================================================
@@ -401,6 +418,58 @@ int see_debug(const Board* board, Move move) {
 }
 
 // =============================================================================
+// Continuation history (Stockfish-style, replaces killers + countermoves)
+// Indexed by [prev_piece][prev_to][piece][to]; piece index = board->piece - 1
+// (0-5 white, 6-11 black). File-scope static because the tables are too large
+// for the stack-allocated SearchInfo used in training. Cleared on new game,
+// persists (un-decayed) across searches within a game, like Stockfish.
+// =============================================================================
+#define CMH_MAX 16384
+static int16_t cmh_table[12][64][12][64]; // 1 ply back (countermove history)
+static int16_t fmh_table[12][64][12][64]; // 2 plies back (follow-up history)
+
+// Piece index for continuation tables, -1 if square is empty
+static inline int cmh_piece_index(const Board* board, int sq) {
+    int p = board->piece[sq];
+    return p - 1; // NO_PIECE(0) -> -1
+}
+
+// Continuation history score for move m, `delta` plies back (0 if unavailable)
+static inline int cont_score(int16_t (*tbl)[64][12][64], const Board* board,
+                             SearchInfo* info, int ply, int delta, Move m) {
+    if (ply < delta) return 0;
+    Move prev = info->prev_moves[ply - delta];
+    if (prev == 0) return 0;
+    int pp = info->prev_pieces[ply - delta];
+    if (pp < 0) return 0;
+    int cp = cmh_piece_index(board, MOVE_FROM(m));
+    if (cp < 0) return 0;
+    return tbl[pp][MOVE_TO(prev)][cp][MOVE_TO(m)];
+}
+
+// Gravity update of a continuation history entry (bonus may be negative)
+static void update_cont(int16_t (*tbl)[64][12][64], const Board* board,
+                        SearchInfo* info, int ply, int delta, Move m, int bonus) {
+    if (ply < delta) return;
+    Move prev = info->prev_moves[ply - delta];
+    if (prev == 0) return;
+    int pp = info->prev_pieces[ply - delta];
+    if (pp < 0) return;
+    int cp = cmh_piece_index(board, MOVE_FROM(m));
+    if (cp < 0) return;
+    int16_t* e = &tbl[pp][MOVE_TO(prev)][cp][MOVE_TO(m)];
+    int v = *e;
+    *e = (int16_t)(v + bonus - v * abs(bonus) / CMH_MAX);
+}
+
+// Apply bonus/malus to both continuation tables (fmh down-weighted like SF)
+static void update_cont_histories(const Board* board, SearchInfo* info, int ply,
+                                  Move m, int bonus) {
+    update_cont(cmh_table, board, info, ply, 1, m, bonus);
+    update_cont(fmh_table, board, info, ply, 2, m, bonus * info->params.fmh_weight / 96);
+}
+
+// =============================================================================
 // Move ordering structures
 // =============================================================================
 
@@ -481,33 +550,12 @@ static void score_moves(Board* board, MoveList* moves, ScoredMove* scored,
             continue;
         }
         
-        // 4. Killer moves
-        if (ply < MAX_PLY) {
-            if (m == info->killers[ply][0]) {
-                scored[i].score = 6000000;
-                continue;
-            }
-            if (m == info->killers[ply][1]) {
-                scored[i].score = 5900000;
-                continue;
-            }
-        }
-
-        // 5. Counter move (best response to opponent's previous move)
-        if (ply > 0) {
-            Move prev = info->prev_moves[ply - 1];
-            if (prev != 0) {
-                int prev_from = MOVE_FROM(prev);
-                int prev_to = MOVE_TO(prev);
-                if (m == info->counter_moves[prev_from][prev_to]) {
-                    scored[i].score = 5800000;
-                    continue;
-                }
-            }
-        }
-
-        // 6. History heuristic for quiet moves
-        scored[i].score = info->history[side][from][to];
+        // 4. Quiet moves: combined butterfly + continuation history.
+        // Replaces the former killer/countermove bonuses (Stockfish-style:
+        // continuation history subsumes both).
+        scored[i].score = info->history[side][from][to]
+                        + cont_score(cmh_table, board, info, ply, 1, m)
+                        + cont_score(fmh_table, board, info, ply, 2, m);
     }
     
     qsort(scored, moves->count, sizeof(ScoredMove), compare_moves);
@@ -549,16 +597,20 @@ static void score_captures(Board* board, MoveList* moves, ScoredMove* scored) {
 // Helper functions
 // =============================================================================
 
-// Update killer moves
-static void update_killers(SearchInfo* info, Move m, int ply) {
-    if (ply >= MAX_PLY) return;
-    
-    // Don't add if already first killer
-    if (info->killers[ply][0] == m) return;
-    
-    // Shift killers down and add new one
-    info->killers[ply][1] = info->killers[ply][0];
-    info->killers[ply][0] = m;
+// History bonus/malus sizes: linear in depth with a cap (Stockfish-style,
+// scaled from SF's 7183 cap to our 16384). Malus is steeper than the bonus
+// so refuted moves are unlearned quickly. The LMR history thresholds below
+// are calibrated to THESE magnitudes - change them together.
+static inline int history_bonus(const SearchInfo* info, int depth) {
+    const SearchParams* p = &info->params;
+    int b = p->hist_bonus_mult * depth - p->hist_bonus_sub;
+    return b > p->hist_bonus_max ? p->hist_bonus_max : b;
+}
+
+static inline int history_malus(const SearchInfo* info, int depth) {
+    const SearchParams* p = &info->params;
+    int m = p->hist_malus_mult * depth - p->hist_malus_sub;
+    return m > p->hist_malus_max ? p->hist_malus_max : m;
 }
 
 // Update history heuristic with gravity (bonus for good moves, malus for bad)
@@ -566,9 +618,8 @@ static void update_history(SearchInfo* info, Board* board, Move m, int depth) {
     int side = board->whiteToMove ? 0 : 1;
     int from = MOVE_FROM(m);
     int to = MOVE_TO(m);
-    
-    // Bonus proportional to depth^2
-    int bonus = depth * depth;
+
+    int bonus = history_bonus(info, depth);
 
     // Gravity formula to prevent runaway values
     int current = info->history[side][from][to];
@@ -581,8 +632,8 @@ static void update_history_malus(SearchInfo* info, Board* board, Move m, int dep
     int side = board->whiteToMove ? 0 : 1;
     int from = MOVE_FROM(m);
     int to = MOVE_TO(m);
-    
-    int malus = depth * depth;
+
+    int malus = history_malus(info, depth);
     int current = info->history[side][from][to];
     int max_history = 16384;
     // Gravity with negative bonus: h += -malus - h*|malus|/max.
@@ -593,18 +644,18 @@ static void update_history_malus(SearchInfo* info, Board* board, Move m, int dep
 
 // Clear all search heuristics (new game / startup)
 void clear_search_history(SearchInfo* info) {
-    memset(info->killers, 0, sizeof(info->killers));
     memset(info->history, 0, sizeof(info->history));
-    memset(info->counter_moves, 0, sizeof(info->counter_moves));
     memset(info->prev_moves, 0, sizeof(info->prev_moves));
+    memset(info->prev_pieces, 0, sizeof(info->prev_pieces));
+    memset(cmh_table, 0, sizeof(cmh_table));
+    memset(fmh_table, 0, sizeof(fmh_table));
 }
 
-// Clear only ply-indexed heuristics before each search; history and
-// counter moves persist across moves within a game. History is halved
-// (aging) so stale entries from earlier positions decay instead of
-// staying saturated at the cap and outranking fresh in-search signal.
+// Clear only ply-indexed state before each search; histories persist
+// across moves within a game. Butterfly history is halved (aging) so stale
+// entries decay; continuation history is NOT decayed (entries are context-
+// specific, Stockfish keeps them un-decayed too).
 void clear_volatile_history(SearchInfo* info) {
-    memset(info->killers, 0, sizeof(info->killers));
     memset(info->prev_moves, 0, sizeof(info->prev_moves));
     for (int s = 0; s < 2; s++)
         for (int f = 0; f < 64; f++)
@@ -1212,8 +1263,10 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // Prefetch next position's TT entry
         tt_prefetch(board->zobristKey);
 
-        // Track this move for counter move heuristic
+        // Track this move for continuation history. Piece recorded
+        // post-applyMove: the mover (or promoted piece) on `to`.
         info->prev_moves[ply] = m;
+        info->prev_pieces[ply] = cmh_piece_index(board, MOVE_TO(m));
 
         int score;
 
@@ -1241,35 +1294,18 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                     reduction++;
                 }
 
-                // Reduce less for killer moves
-                if (ply < MAX_PLY && (m == info->killers[ply][0] || m == info->killers[ply][1])) {
-                    reduction--;
-                }
-
-                // Reduce less for counter moves
-                if (ply > 0) {
-                    Move prev = info->prev_moves[ply - 1];
-                    if (prev != 0) {
-                        int prev_from = MOVE_FROM(prev);
-                        int prev_to = MOVE_TO(prev);
-                        if (m == info->counter_moves[prev_from][prev_to]) {
-                            reduction--;
-                        }
-                    }
-                }
-
-                // Adjust based on history score
-                // Note: applyMove already flipped whiteToMove, so the mover's
-                // side index is the inverse here (history is indexed by mover)
-                int side = board->whiteToMove ? 1 : 0;
-                int hist = info->history[side][MOVE_FROM(m)][MOVE_TO(m)];
-                if (hist < -2000) {
+                // Adjust based on the combined history score (butterfly +
+                // continuation history = this quiet's ordering score, computed
+                // before applyMove). Thresholds match the SF-scale update
+                // magnitudes in history_bonus()/history_malus().
+                int stat = scored[i].score;
+                if (stat < info->params.lmr_stat_low2) {
                     reduction += 2;
-                } else if (hist < 0) {
+                } else if (stat < info->params.lmr_stat_low1) {
                     reduction++;
-                } else if (hist > 8000) {
+                } else if (stat > info->params.lmr_stat_high2) {
                     reduction -= 2;
-                } else if (hist > 4000) {
+                } else if (stat > info->params.lmr_stat_high1) {
                     reduction--;
                 }
 
@@ -1395,26 +1431,17 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             beta_cutoffs++;
             if (moves_searched == 1) beta_cutoffs_first++;
 #endif
-            // Beta cutoff - update killers, history, and counter moves for quiet moves
+            // Beta cutoff - update histories for quiet moves
             if (!is_capture) {
-                update_killers(info, m, ply);
                 update_history(info, board, m, depth);
-
-                // Update counter move: this move is a good response to opponent's previous move
-                if (ply > 0) {
-                    Move prev = info->prev_moves[ply - 1];
-                    if (prev != 0) {
-                        int prev_from = MOVE_FROM(prev);
-                        int prev_to = MOVE_TO(prev);
-                        info->counter_moves[prev_from][prev_to] = m;
-                    }
-                }
+                update_cont_histories(board, info, ply, m, history_bonus(info, depth));
 
                 // Apply malus to all previously considered quiet moves
                 for (int j = 0; j < i; j++) {
                     Move prev = scored[j].move;
                     if (!MOVE_IS_CAPTURE(prev) && !MOVE_IS_PROMOTION(prev)) {
                         update_history_malus(info, board, prev, depth);
+                        update_cont_histories(board, info, ply, prev, -history_malus(info, depth));
                     }
                 }
             }

@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import logging
+import threading
 from typing import Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import chess
@@ -30,11 +31,24 @@ import chess.pgn
 ENGINE_PATH = "../build/sleepmind"
 OPENING_BOOK_PATH = "/home/paschty/Downloads/klo_eco_a00-e97v/klo_250_eco_a00-e97_variations.pgn"
 
-NUM_GAMES = 128  # Games per iteration (θ+ vs θ-)
 TIME_PER_MOVE_MS = 200
-MAX_ITERATIONS = 300
-SAVE_INTERVAL = 5
-MAX_PARALLEL_GAMES = 32
+MAX_ITERATIONS = 36000   # one iteration = one opening pair (2 games), fishtest-style
+SAVE_INTERVAL = 50       # save state every N completed pairs
+PRINT_INTERVAL = 50      # print full parameter state every N completed pairs
+MAX_PARALLEL_GAMES = 24  # = physical cores on the 14900K
+
+# Spall decay schedules (fishtest-style): the c/r values in PARAMETERS are
+# END values; early iterations use larger perturbations and learning rates.
+#   c_k = c_end * (MAX_ITERATIONS / k)^GAMMA
+#   r_k = r_end * ((A + MAX_ITERATIONS) / (A + k))^ALPHA
+SPSA_ALPHA = 0.602
+SPSA_GAMMA = 0.101
+SPSA_A = MAX_ITERATIONS // 10  # stabilization constant
+
+# Updates happen per pair (2 games), but the r values below follow the c/4
+# heuristic calibrated for ~24-game batches. Scale per-pair updates so the
+# drift and noise per *game* stay the same as with 24-game batches.
+R_PAIR_SCALE = 2.0 / 24.0
 
 logging.getLogger("chess.engine").setLevel(logging.ERROR)
 
@@ -64,7 +78,7 @@ PARAMETERS = {
 
     # Null Move parameters (range ~5)
     "NullMove_Reduction": {
-        "default": 3, "min": 1, "max": 5,
+        "default": 4, "min": 1, "max": 5,
         "c": 1, "r": 0.5
     },
     "NullMove_MinDepth": {
@@ -74,38 +88,86 @@ PARAMETERS = {
 
     # Futility parameters (range ~350-650)
     "Futility_Margin": {
-        "default": 150, "min": 50, "max": 400,
+        "default": 69, "min": 50, "max": 400,
         "c": 20, "r": 8
     },
     "Futility_MarginD2": {
-        "default": 300, "min": 100, "max": 600,
+        "default": 253, "min": 100, "max": 600,
         "c": 30, "r": 10
     },
     "Futility_MarginD3": {
-        "default": 450, "min": 150, "max": 800,
+        "default": 269, "min": 150, "max": 800,
         "c": 40, "r": 12
     },
 
     # RFP parameters
     "RFP_Margin": {
-        "default": 80, "min": 50, "max": 300,
+        "default": 93, "min": 50, "max": 300,
         "c": 15, "r": 5
     },
     "RFP_MaxDepth": {
-        "default": 8, "min": 2, "max": 10,
+        "default": 6, "min": 2, "max": 10,
         "c": 1, "r": 0.5
     },
 
     # Aspiration parameters
     "Aspiration_Window": {
-        "default": 100, "min": 10, "max": 200,
+        "default": 83, "min": 10, "max": 200,
         "c": 10, "r": 4
     },
 
     # Razoring parameters
     "Razor_Margin": {
-        "default": 300, "min": 100, "max": 600,
+        "default": 220, "min": 100, "max": 600,
         "c": 25, "r": 8
+    },
+
+    # History update scale (fix_7: butterfly + continuation history)
+    "Hist_BonusMult": {
+        "default": 518, "min": 50, "max": 800,
+        "c": 35, "r": 9
+    },
+    "Hist_BonusSub": {
+        "default": 199, "min": 0, "max": 1000,
+        "c": 50, "r": 12
+    },
+    "Hist_BonusMax": {
+        "default": 4325, "min": 500, "max": 16000,
+        "c": 600, "r": 150
+    },
+    "Hist_MalusMult": {
+        "default": 1167, "min": 100, "max": 4000,
+        "c": 200, "r": 50
+    },
+    "Hist_MalusSub": {
+        "default": 780, "min": 0, "max": 2000,
+        "c": 100, "r": 25
+    },
+    "Hist_MalusMax": {
+        "default": 3846, "min": 500, "max": 16000,
+        "c": 600, "r": 150
+    },
+    "FMH_Weight": {
+        "default": 166, "min": 0, "max": 256,
+        "c": 10, "r": 3
+    },
+
+    # LMR thresholds on the combined quiet ordering score (fix_7)
+    "LMR_StatLow2": {
+        "default": -25544, "min": -49000, "max": 0,
+        "c": 2400, "r": 600
+    },
+    "LMR_StatLow1": {
+        "default": -10365, "min": -49000, "max": 0,
+        "c": 2400, "r": 600
+    },
+    "LMR_StatHigh1": {
+        "default": 21295, "min": 0, "max": 49000,
+        "c": 2400, "r": 600
+    },
+    "LMR_StatHigh2": {
+        "default": 23868, "min": 0, "max": 49000,
+        "c": 2400, "r": 600
     },
 }
 
@@ -180,7 +242,10 @@ class SPSATuner:
         if os.path.exists("spsa_state.json"):
             with open("spsa_state.json", "r") as f:
                 state = json.load(f)
-                self.params = {k: float(v) for k, v in state.get("params", self.params).items()}
+                # Merge: keep defaults for params added after the state was saved
+                for k, v in state.get("params", {}).items():
+                    if k in self.params:
+                        self.params[k] = float(v)
                 self.best_params = state.get("best_params", self.best_params)
                 self.iteration = state.get("iteration", 0)
             print(f"Resumed from iteration {self.iteration}")
@@ -208,13 +273,23 @@ class SPSATuner:
             for name in PARAMETERS
         }
 
+    def current_c(self, name: str) -> float:
+        """Perturbation size at this iteration (decays toward PARAMETERS c)"""
+        k = max(1, self.iteration + 1)
+        return PARAMETERS[name]["c"] * (MAX_ITERATIONS / k) ** SPSA_GAMMA
+
+    def current_r(self, name: str) -> float:
+        """Learning rate at this iteration (decays toward PARAMETERS r)"""
+        k = max(1, self.iteration + 1)
+        return PARAMETERS[name]["r"] * ((SPSA_A + MAX_ITERATIONS) / (SPSA_A + k)) ** SPSA_ALPHA
+
     def create_theta_plus_minus(self, direction: Dict[str, int]) -> tuple:
         """Create θ+ and θ- parameter sets"""
         theta_plus = {}
         theta_minus = {}
 
         for name, d in direction.items():
-            c = PARAMETERS[name]["c"]
+            c = round(self.current_c(name))
             base = round(self.params[name])
 
             plus_val = self.clamp_param(name, base + c * d)
@@ -225,71 +300,13 @@ class SPSATuner:
 
         return theta_plus, theta_minus
 
-    def play_match(self, params_a: Dict[str, int], params_b: Dict[str, int],
-                   openings: List[List[chess.Move]]) -> float:
-        """Play games between A and B. Returns score for A (0 to 1)."""
-        wins_a = 0
-        wins_b = 0
-        draws = 0
-
-        # Each opening played twice (color swap)
-        game_configs = []
-        for i, opening in enumerate(openings):
-            # Game 1: A plays White
-            game_configs.append({
-                "game_num": i * 2,
-                "white_params": params_a,
-                "black_params": params_b,
-                "a_is_white": True,
-                "opening": opening
-            })
-            # Game 2: A plays Black
-            game_configs.append({
-                "game_num": i * 2 + 1,
-                "white_params": params_b,
-                "black_params": params_a,
-                "a_is_white": False,
-                "opening": opening
-            })
-
-        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_GAMES) as executor:
-            futures = {
-                executor.submit(
-                    self.play_game,
-                    cfg["white_params"],
-                    cfg["black_params"],
-                    cfg["opening"]
-                ): cfg
-                for cfg in game_configs
-            }
-
-            for future in as_completed(futures):
-                cfg = futures[future]
-                a_is_white = cfg["a_is_white"]
-
-                try:
-                    result = future.result()  # 1=white wins, -1=black wins, 0=draw
-
-                    if result == 1:  # White won
-                        if a_is_white:
-                            wins_a += 1
-                        else:
-                            wins_b += 1
-                    elif result == -1:  # Black won
-                        if a_is_white:
-                            wins_b += 1
-                        else:
-                            wins_a += 1
-                    else:
-                        draws += 1
-
-                except Exception as e:
-                    draws += 1
-
-        total = len(game_configs)
-        score = (wins_a + 0.5 * draws) / total
-        print(f"  Result: +{wins_a} -{wins_b} ={draws} | θ+ score: {score:.3f}")
-        return score
+    def play_pair(self, theta_plus: Dict[str, int], theta_minus: Dict[str, int],
+                  opening: List[chess.Move]) -> float:
+        """Play one opening pair (color swap), sequentially on this worker slot.
+        Returns score for θ+ in [0, 1]."""
+        r1 = self.play_game(theta_plus, theta_minus, opening)   # θ+ is White
+        r2 = self.play_game(theta_minus, theta_plus, opening)   # θ+ is Black
+        return ((r1 + 1) / 2 + (1 - r2) / 2) / 2
 
     def play_game(self, white_params: Dict[str, int], black_params: Dict[str, int],
                   opening: List[chess.Move]) -> int:
@@ -337,101 +354,78 @@ class SPSATuner:
                     except:
                         pass
 
-    def run_iteration(self):
-        """Run one SPSA iteration (Fishtest style)"""
-        self.iteration += 1
-
-        print(f"\n{'=' * 60}")
-        print(f"Iteration {self.iteration}")
-        print(f"{'=' * 60}")
-
-        # Generate perturbation direction
-        direction = self.get_perturbation()
-
-        # Create θ+ and θ-
-        theta_plus, theta_minus = self.create_theta_plus_minus(direction)
-
-        # Show what we're testing
-        print("\nTesting θ+ vs θ-:")
-        for name in PARAMETERS:
-            cur = round(self.params[name])
-            print(f"  {name}: {theta_minus[name]} vs {theta_plus[name]}  (current: {cur})")
-
-        # Get openings (same for both color swaps)
-        num_pairs = NUM_GAMES // 2
-        openings = self.opening_book.get_openings(num_pairs)
-
-        # Play θ+ vs θ- directly
-        print(f"\nPlaying {NUM_GAMES} games (θ+ vs θ-)...")
-        score = self.play_match(theta_plus, theta_minus, openings)
-
-        # =================================================================
-        # Fishtest-style update:
-        #   θ += r * (score - 0.5) * 2 * direction
-        #
-        # If score > 0.5: θ+ won → move toward θ+ (same direction as perturbation)
-        # If score < 0.5: θ- won → move toward θ- (opposite direction)
-        # If score = 0.5: draw → no change
-        #
-        # The factor (score - 0.5) * 2 maps [0,1] to [-1,1]
-        # =================================================================
-
+    def apply_update(self, direction: Dict[str, int], score: float):
+        """Fishtest-style update from one pair result. Caller holds the lock.
+        θ += r * (score - 0.5) * 2 * direction, r scaled to pair size."""
         gradient = (score - 0.5) * 2  # Range: -1 to +1
 
-        print(f"\nUpdating parameters (gradient: {gradient:+.3f}):")
-
         for name in PARAMETERS:
-            r = PARAMETERS[name]["r"]
             d = direction[name]
-
-            update = r * gradient * d
-            old_val = self.params[name]
-            new_val = old_val + update
-
-            # Clamp to bounds
+            if d == 0:
+                continue
+            r = self.current_r(name) * R_PAIR_SCALE
             info = PARAMETERS[name]
-            new_val = max(float(info["min"]), min(float(info["max"]), new_val))
-            self.params[name] = new_val
+            new_val = self.params[name] + r * gradient * d
+            self.params[name] = max(float(info["min"]), min(float(info["max"]), new_val))
 
-            if abs(update) > 0.01:
-                print(f"  {name}: {old_val:.2f} -> {new_val:.2f} ({update:+.2f})")
+    def worker(self):
+        """One asynchronous SPSA step: snapshot θ±c, play a pair, update θ."""
+        with self.lock:
+            if self.iteration >= MAX_ITERATIONS:
+                return
+            direction = self.get_perturbation()
+            theta_plus, theta_minus = self.create_theta_plus_minus(direction)
+        opening = self.opening_book.get_opening()
 
-        # Calculate Elo estimate
-        elo = 0
-        if 0 < score < 1:
-            elo = -400 * math.log10(1 / score - 1)
+        score = self.play_pair(theta_plus, theta_minus, opening)
 
-        # Record history
-        self.history.append({
-            "iteration": self.iteration,
-            "score": score,
-            "elo_diff": round(elo, 1),
-            "params": self.get_int_params()
-        })
+        with self.lock:
+            self.apply_update(direction, score)
+            self.iteration += 1
+            it = self.iteration
 
-        # Update best if θ+ was clearly better
-        if score > 0.53:
-            self.best_params = theta_plus.copy()
-            print(f"\n*** New best: θ+ won with {score:.1%} ***")
-        elif score < 0.47:
-            self.best_params = theta_minus.copy()
-            print(f"\n*** New best: θ- won with {1-score:.1%} ***")
+            self.history.append({
+                "iteration": it,
+                "score": score,
+                "params": self.get_int_params()
+            })
 
-        # Print current state
-        print(f"\nCurrent parameters (internal float values):")
-        int_params = self.get_int_params()
-        for name in PARAMETERS:
-            val = int_params[name]
-            fval = self.params[name]
-            diff = val - PARAMETERS[name]["default"]
-            sign = "+" if diff > 0 else ""
-            print(f"  {name}: {val} (float: {fval:.2f}, {sign}{diff} from default)")
+            print(f"[{it}/{MAX_ITERATIONS}] pair score θ+: {score:.2f}")
 
-        print(f"\nθ+ vs θ- Elo: {elo:+.1f}")
+            if it % PRINT_INTERVAL == 0:
+                print(f"\n--- Parameters after {it} pairs ({it * 2} games) ---")
+                int_params = self.get_int_params()
+                for name in PARAMETERS:
+                    diff = int_params[name] - PARAMETERS[name]["default"]
+                    sign = "+" if diff > 0 else ""
+                    print(f"  {name}: {int_params[name]} ({sign}{diff} from default)")
+                print()
 
-        if self.iteration % SAVE_INTERVAL == 0:
-            self.save_state()
-            print("State saved.")
+            if it % SAVE_INTERVAL == 0:
+                self.save_state()
+
+    def run_async(self):
+        """Continuous fishtest-style loop: MAX_PARALLEL_GAMES worker slots,
+        each plays one opening pair and applies its update immediately —
+        no iteration barrier, no idle cores waiting for stragglers."""
+        self.lock = threading.Lock()
+        remaining = MAX_ITERATIONS - self.iteration
+        if remaining <= 0:
+            print("MAX_ITERATIONS already reached.")
+            return
+
+        executor = ThreadPoolExecutor(max_workers=MAX_PARALLEL_GAMES)
+        futures = [executor.submit(self.worker) for _ in range(remaining)]
+        try:
+            for future in as_completed(futures):
+                exc = future.exception()
+                if exc is not None:
+                    print(f"Worker error: {exc}")
+        except KeyboardInterrupt:
+            print("\nInterrupted - cancelling pending pairs, waiting for running games...")
+            executor.shutdown(wait=True, cancel_futures=True)
+            raise
+        executor.shutdown()
 
 
 def main():
@@ -456,9 +450,10 @@ def main():
         print(f"Other parameters fixed at defaults.")
     else:
         print("Tuning all parameters.")
-    print(f"Games per iteration: {NUM_GAMES}")
+    print(f"Update granularity: 1 opening pair (2 games), asynchronous")
+    print(f"Max pairs: {MAX_ITERATIONS} ({MAX_ITERATIONS * 2} games)")
     print(f"Time per move: {TIME_PER_MOVE_MS}ms")
-    print(f"Max parallel games: {MAX_PARALLEL_GAMES}")
+    print(f"Parallel pair slots: {MAX_PARALLEL_GAMES}")
     print()
 
     if not os.path.exists(ENGINE_PATH):
@@ -468,9 +463,7 @@ def main():
     tuner = SPSATuner(tune_only=tune_only)
 
     try:
-        while tuner.iteration < MAX_ITERATIONS:
-            tuner.run_iteration()
-
+        tuner.run_async()
     except KeyboardInterrupt:
         print("\n\nInterrupted.")
 
@@ -479,14 +472,15 @@ def main():
     print("\n" + "=" * 60)
     print("Final Results")
     print("=" * 60)
-    print("\nBest parameters:")
-    for name, val in tuner.best_params.items():
+    print("\nFinal parameters (converged θ):")
+    final_params = tuner.get_int_params()
+    for name, val in final_params.items():
         diff = val - PARAMETERS[name]["default"]
         sign = "+" if diff > 0 else ""
         print(f"  {name}: {val} ({sign}{diff})")
 
     with open("best_params.json", "w") as f:
-        json.dump(tuner.best_params, f, indent=2)
+        json.dump(final_params, f, indent=2)
     print("\nSaved to best_params.json")
 
 
