@@ -3,9 +3,13 @@ CFLAGS = -g -Wall -Wextra -std=c11 -O3 -march=native
 DEBUG_FLAGS = -g -Wall -Wextra -std=c11 -O0 -march=native -DDEBUG_NNUE_INCREMENTAL
 DEBUG_EVAL_FLAGS = -g -Wall -Wextra -std=c11 -O3 -march=native -DDEBUG_NNUE_EVAL
 
-# Optional flags: make STATS=1
+# Optional flags: make STATS=1, or make hl_256, or make hl_768
 ifeq ($(STATS),1)
   CFLAGS += -DSEARCH_STATS
+endif
+
+ifeq ($(hl_768),1)
+  CFLAGS += -DNNUE_HIDDEN_SIZE=768
 endif
 
 # Directories
