@@ -1,3 +1,6 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 199309L
+#endif
 #include "search.h"
 #include "evaluation.h"
 #include "move_generator.h"
@@ -82,6 +85,12 @@ static void init_lmr_table(void) {
 
 void set_search_silent(bool silent) {
     search_silent_mode = silent;
+}
+
+long search_current_time_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
 }
 
 // =============================================================================
@@ -679,7 +688,7 @@ static NNUEAccumulator* search_prepare_nnue_child(SearchInfo* info, int ply) {
 // Check time limit (hard limit - sofortiger Abbruch)
 static bool check_time(SearchInfo* info) {
     if (info->hardTimeLimit > 0) {
-        long elapsed = (long)((clock() - info->startTime) * 1000.0 / CLOCKS_PER_SEC);
+        long elapsed = search_current_time_ms() - info->startTimeMs;
         if (elapsed >= info->hardTimeLimit) {
             info->stopSearch = true;
             return true;
@@ -693,7 +702,7 @@ static bool check_time(SearchInfo* info) {
 
 // Hilfsfunktion: Verstrichene Zeit in ms
 static long get_elapsed_time(SearchInfo* info) {
-    return (long)((clock() - info->startTime) * 1000.0 / CLOCKS_PER_SEC);
+    return search_current_time_ms() - info->startTimeMs;
 }
 
 // Check if position is likely a draw

@@ -623,7 +623,7 @@ void uci_loop() {
 
             printBoard(&current_board); // Print the current board state for debugging
 
-            search_info.startTime = clock();
+            search_info.startTimeMs = search_current_time_ms();
             search_info.softTimeLimit = soft_limit;
             search_info.hardTimeLimit = hard_limit;
             search_info.stopSearch = false;

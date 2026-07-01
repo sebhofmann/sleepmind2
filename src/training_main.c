@@ -266,7 +266,7 @@ static bool play_game(int game_num, NNUENetwork* nnue_network) {
         // Search for best move if not random
         if (!is_random_move) {
             SearchInfo search_info;
-            search_info.startTime = clock();
+            search_info.startTimeMs = search_current_time_ms();
             search_params_init(&search_info.params);  // Initialize search parameters
             
             if (config.search_nodes > 0) {

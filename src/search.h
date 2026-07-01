@@ -4,7 +4,6 @@
 #include "board.h"
 #include "move.h"
 #include "nnue.h"
-#include <time.h> // For clock_t
 #include <stdbool.h>
 
 #define MAX_PLY 64 // Maximum search depth
@@ -72,13 +71,14 @@ typedef struct {
 
 // Initialize SearchParams with default values
 void search_params_init(SearchParams* params);
+long search_current_time_ms(void);
 
 // Silent mode - disables info and debug output (for training)
 extern bool search_silent_mode;
 void set_search_silent(bool silent);
 
 typedef struct {
-    clock_t startTime;
+    long startTimeMs;
     long softTimeLimit;  // Zeit, nach der keine neue Tiefe begonnen wird
     long hardTimeLimit;  // Absolutes Zeitlimit (Abbruch der Suche)
     bool stopSearch;
