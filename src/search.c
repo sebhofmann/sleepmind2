@@ -113,48 +113,48 @@ void search_params_init(SearchParams* params) {
     params->use_bad_capture_last = true; // SPRT-confirmed +11 Elo (losing captures ordered after quiets)
 
     // Late Move Reduction parameters (tuned via tournament testing)
-    params->lmr_full_depth_moves = 3;   // More aggressive LMR
-    params->lmr_reduction_limit = 2;    // Start LMR earlier
+    params->lmr_full_depth_moves = 4;   // More aggressive LMR
+    params->lmr_reduction_limit = 3;    // Start LMR earlier
 
     // Null Move Pruning parameters (SPSA-tuned, 28500 games @200ms, SPRT +43 Elo)
-    params->null_move_reduction = 4;
-    params->null_move_min_depth = 3;
+    params->null_move_reduction = 5;
+    params->null_move_min_depth = 2;
 
     // Futility pruning margins (SPSA-tuned)
-    params->futility_margin = 69;       // Depth 1
-    params->futility_margin_d2 = 253;   // Depth 2
-    params->futility_margin_d3 = 269;   // Depth 3
+    params->futility_margin = 157;      // Depth 1
+    params->futility_margin_d2 = 116;   // Depth 2
+    params->futility_margin_d3 = 416;   // Depth 3
 
     // Reverse Futility Pruning (SPSA-tuned)
-    params->rfp_margin = 93;
-    params->rfp_max_depth = 6;
+    params->rfp_margin = 81;
+    params->rfp_max_depth = 4;
 
     // Razoring (drop into qsearch if position looks hopeless)
     params->use_razoring = true;
-    params->razor_margin = 220;         // Base margin (scaled by depth)
+    params->razor_margin = 143;         // Base margin (scaled by depth)
 
     // Delta pruning margin for quiescence
     params->delta_margin = 200;         // Tighter with reliable eval
 
     // Aspiration window (SPSA-tuned)
-    params->aspiration_window = 83;
+    params->aspiration_window = 35;
 
     // History update scale (SPSA-tuned: bonus steeper, malus flatter than
     // the Stockfish magnitudes these started from)
-    params->hist_bonus_mult = 518;
-    params->hist_bonus_sub = 199;
-    params->hist_bonus_max = 4325;
-    params->hist_malus_mult = 1167;
-    params->hist_malus_sub = 780;
-    params->hist_malus_max = 3846;
-    params->fmh_weight = 166;           // 166/96: 2-ply history weighted above 1-ply
+    params->hist_bonus_mult = 620;
+    params->hist_bonus_sub = 314;
+    params->hist_bonus_max = 4119;
+    params->hist_malus_mult = 877;
+    params->hist_malus_sub = 667;
+    params->hist_malus_max = 2941;
+    params->fmh_weight = 169;           // 169/96: 2-ply history weighted above 1-ply
 
     // LMR thresholds on the combined quiet ordering score - calibrated to
     // the history magnitudes above, tune them together
-    params->lmr_stat_low2 = -25544;
-    params->lmr_stat_low1 = -10365;
-    params->lmr_stat_high1 = 21295;
-    params->lmr_stat_high2 = 23868;
+    params->lmr_stat_low2 = -27517;
+    params->lmr_stat_low1 = -7379;
+    params->lmr_stat_high1 = 16538;
+    params->lmr_stat_high2 = 29404;
 }
 
 // =============================================================================
