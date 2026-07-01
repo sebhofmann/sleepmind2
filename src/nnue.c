@@ -58,6 +58,13 @@ static KingBucket get_king_bucket(int king_square, int perspective) {
     return result;
 }
 
+bool nnue_king_move_requires_refresh(int from_sq, int to_sq, bool is_white) {
+    int perspective = is_white ? 0 : 1;
+    KingBucket from_bucket = get_king_bucket(from_sq, perspective);
+    KingBucket to_bucket = get_king_bucket(to_sq, perspective);
+    return from_bucket.index != to_bucket.index || from_bucket.mirrored != to_bucket.mirrored;
+}
+
 // Get feature index for a piece
 static int get_feature_index(int perspective, int piece_type, int piece_color, int square, KingBucket king_bucket) {
     const int COLOR_STRIDE = 64 * 6;
@@ -280,6 +287,9 @@ void nnue_refresh_accumulator(const Board* board, NNUEAccumulator* acc, const NN
         memset(acc->white, 0, sizeof(acc->white));
         memset(acc->black, 0, sizeof(acc->black));
         acc->computed = false;
+        acc->dirty = false;
+        acc->requires_refresh = false;
+        acc->previous = NULL;
         return;
     }
 
@@ -305,12 +315,54 @@ void nnue_refresh_accumulator(const Board* board, NNUEAccumulator* acc, const NN
     add_piece_features(acc, net, board->blackKings, NNUE_PIECE_KING, 1, white_bucket, black_bucket);
     
     acc->computed = true;
+    acc->dirty = false;
+    acc->requires_refresh = false;
+    acc->previous = NULL;
 }
 
 // Reset accumulator for new position using network
 void nnue_reset_accumulator(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
     if (acc == NULL || net == NULL) return;
     nnue_refresh_accumulator(board, acc, net);
+}
+
+void nnue_prepare_child_accumulator(NNUEAccumulator* child, NNUEAccumulator* parent) {
+    if (child == NULL) return;
+
+    child->computed = false;
+    child->dirty = true;
+    child->requires_refresh = false;
+    child->previous = parent;
+    child->from_sq = -1;
+    child->to_sq = -1;
+    child->piece_type = -1;
+    child->captured_piece_type = -1;
+    child->moving_color = -1;
+    child->capture_sq = -1;
+    child->white_king_sq = -1;
+    child->black_king_sq = -1;
+}
+
+void nnue_mark_accumulator_dirty(NNUEAccumulator* acc, const Board* board, int from_sq, int to_sq,
+                                 int piece_type, int captured_piece_type, bool is_white,
+                                 bool is_en_passant, bool requires_refresh) {
+    if (acc == NULL) return;
+
+    acc->computed = false;
+    acc->dirty = true;
+    acc->requires_refresh = requires_refresh;
+    acc->from_sq = from_sq;
+    acc->to_sq = to_sq;
+    acc->piece_type = piece_type;
+    acc->captured_piece_type = captured_piece_type;
+    acc->moving_color = is_white ? 0 : 1;
+    acc->capture_sq = -1;
+    acc->white_king_sq = board ? get_lsb(board->whiteKings) : -1;
+    acc->black_king_sq = board ? get_lsb(board->blackKings) : -1;
+
+    if (captured_piece_type >= 0) {
+        acc->capture_sq = is_en_passant ? (is_white ? to_sq - 8 : to_sq + 8) : to_sq;
+    }
 }
 
 // SCReLU² dot product using Leorik's trick:
@@ -376,7 +428,7 @@ int nnue_evaluate(const Board* board, NNUEAccumulator* acc, const NNUENetwork* n
     if (acc == NULL || net == NULL) return 0;
 
     if (!acc->computed) {
-        nnue_refresh_accumulator(board, acc, net);
+        nnue_materialize_accumulator(board, acc, net);
     }
 
     int output_bucket = nnue_get_output_bucket(board);
@@ -467,6 +519,77 @@ static void nnue_update_piece_move_with_kings(NNUEAccumulator* acc, const NNUENe
         // undo: dst = dst + from - to (same as dst = dst - to + from)
         vec_sub_add(acc->white, w_to, w_from, NNUE_HIDDEN_SIZE);
         vec_sub_add(acc->black, b_to, b_from, NNUE_HIDDEN_SIZE);
+    }
+}
+
+static bool nnue_apply_lazy_delta(NNUEAccumulator* acc, const NNUENetwork* net) {
+    if (acc == NULL || net == NULL) return false;
+    if (acc->requires_refresh || acc->piece_type < 0 ||
+        acc->white_king_sq < 0 || acc->black_king_sq < 0) {
+        return false;
+    }
+
+    nnue_update_piece_move_with_kings(acc, net, acc->from_sq, acc->to_sq,
+                                      acc->piece_type, acc->moving_color,
+                                      acc->white_king_sq, acc->black_king_sq, true);
+
+    if (acc->captured_piece_type >= 0) {
+        KingBucket white_bucket = get_king_bucket(acc->white_king_sq, 0);
+        KingBucket black_bucket = get_king_bucket(acc->black_king_sq, 1);
+
+        int captured_color = acc->moving_color ^ 1;
+        int white_cap_idx = get_feature_index(0, acc->captured_piece_type, captured_color,
+                                              acc->capture_sq, white_bucket);
+        int black_cap_idx = get_feature_index(1, acc->captured_piece_type, captured_color,
+                                              acc->capture_sq, black_bucket);
+
+        int white_bucket_idx = white_cap_idx / NNUE_INPUT_SIZE;
+        int white_cap_input = white_cap_idx % NNUE_INPUT_SIZE;
+        int black_bucket_idx = black_cap_idx / NNUE_INPUT_SIZE;
+        int black_cap_input = black_cap_idx % NNUE_INPUT_SIZE;
+
+        vec_sub(acc->white, net->ft_weights[white_bucket_idx][white_cap_input], NNUE_HIDDEN_SIZE);
+        vec_sub(acc->black, net->ft_weights[black_bucket_idx][black_cap_input], NNUE_HIDDEN_SIZE);
+    }
+
+    return true;
+}
+
+void nnue_materialize_accumulator(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
+    if (acc == NULL || net == NULL) return;
+    if (acc->computed) return;
+
+    NNUEAccumulator* chain[256];
+    int count = 0;
+    NNUEAccumulator* cursor = acc;
+
+    while (cursor != NULL && !cursor->computed) {
+        if (cursor->requires_refresh || count >= (int)(sizeof(chain) / sizeof(chain[0]))) {
+            nnue_refresh_accumulator(board, acc, net);
+            return;
+        }
+        chain[count++] = cursor;
+        cursor = cursor->previous;
+    }
+
+    if (cursor == NULL || !cursor->computed) {
+        nnue_refresh_accumulator(board, acc, net);
+        return;
+    }
+
+    for (int i = count - 1; i >= 0; i--) {
+        NNUEAccumulator* frame = chain[i];
+        vec_copy(frame->white, cursor->white, NNUE_HIDDEN_SIZE);
+        vec_copy(frame->black, cursor->black, NNUE_HIDDEN_SIZE);
+
+        if (!nnue_apply_lazy_delta(frame, net)) {
+            nnue_refresh_accumulator(board, acc, net);
+            return;
+        }
+
+        frame->computed = true;
+        frame->dirty = false;
+        cursor = frame;
     }
 }
 

@@ -666,6 +666,16 @@ void clear_volatile_history(SearchInfo* info) {
 // Forward declaration
 int evaluate(const Board* board, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net);
 
+static NNUEAccumulator* search_prepare_nnue_child(SearchInfo* info, int ply) {
+    if (info->nnue_acc == NULL || info->nnue_net == NULL || ply + 1 >= MAX_PLY + 2) {
+        return info->nnue_acc;
+    }
+
+    NNUEAccumulator* child = &info->nnue_stack[ply + 1];
+    nnue_prepare_child_accumulator(child, info->nnue_acc);
+    return child;
+}
+
 // Check time limit (hard limit - sofortiger Abbruch)
 static bool check_time(SearchInfo* info) {
     if (info->hardTimeLimit > 0) {
@@ -834,20 +844,24 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
             uint64_t saved_zobrist = board->zobristKey;
             #endif
             
+            NNUEAccumulator* parent_acc = info->nnue_acc;
+            NNUEAccumulator* child_acc = search_prepare_nnue_child(info, ply);
             MoveUndoInfo undo;
-            applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+            applyMove(board, m, &undo, child_acc, info->nnue_net);
             
             // Skip illegal moves (king left in check) - move generator now returns pseudo-legal moves
             if (isKingAttacked(board, !board->whiteToMove)) {
-                undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+                undoMove(board, m, &undo, child_acc, info->nnue_net);
                 continue;
             }
+            info->nnue_acc = child_acc;
             
             #ifdef DEBUG_NNUE_EVAL
             eval_set_last_move(m, MOVE_FROM(m), MOVE_TO(m));
             #endif
             int score = -quiescence(board, -beta, -alpha, info, ply + 1);
-            undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+            info->nnue_acc = parent_acc;
+            undoMove(board, m, &undo, child_acc, info->nnue_net);
 
             moves_searched++;
             
@@ -976,20 +990,24 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         uint64_t saved_zobrist = board->zobristKey;
         #endif
 
+        NNUEAccumulator* parent_acc = info->nnue_acc;
+        NNUEAccumulator* child_acc = search_prepare_nnue_child(info, ply);
         MoveUndoInfo undo;
-        applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+        applyMove(board, m, &undo, child_acc, info->nnue_net);
 
         // Skip illegal moves (king left in check) - needed because generateCaptureAndPromotionMoves is pseudo-legal
         if (isKingAttacked(board, !board->whiteToMove)) {
-            undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+            undoMove(board, m, &undo, child_acc, info->nnue_net);
             continue;
         }
+        info->nnue_acc = child_acc;
         
         #ifdef DEBUG_NNUE_EVAL
         eval_set_last_move(m, MOVE_FROM(m), MOVE_TO(m));
         #endif
         int score = -quiescence(board, -beta, -alpha, info, ply + 1);
-        undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+        info->nnue_acc = parent_acc;
+        undoMove(board, m, &undo, child_acc, info->nnue_net);
 
         #ifdef DEBUG_ZOBRIST_VERIFY
         if (board->zobristKey != saved_zobrist) {
@@ -1101,12 +1119,6 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         return quiescence(board, alpha, beta, info, ply);
     }
     
-    // Static evaluation for pruning decisions
-    int static_eval = evaluate(board, info->nnue_acc, info->nnue_net);
-    if (!board->whiteToMove) {
-        static_eval = -static_eval;
-    }
-
     // ==========================================================================
     // Null Move Pruning
     // ==========================================================================
@@ -1151,13 +1163,27 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             }
         }
     }
+
+    bool can_rfp = info->params.use_rfp && !is_pv && !in_check &&
+        depth <= info->params.rfp_max_depth && abs(beta) < MATE_SCORE - 100;
+    bool can_razor = info->params.use_razoring && !is_pv && !in_check &&
+        depth <= 3 && abs(alpha) < MATE_SCORE - 100;
+    bool can_futility = info->params.use_futility && !is_pv && !in_check &&
+        depth <= 3 && abs(alpha) < MATE_SCORE - 100 && abs(beta) < MATE_SCORE - 100;
+
+    int static_eval = 0;
+    if (can_rfp || can_razor || can_futility) {
+        static_eval = evaluate(board, info->nnue_acc, info->nnue_net);
+        if (!board->whiteToMove) {
+            static_eval = -static_eval;
+        }
+    }
     
     // ==========================================================================
     // Reverse Futility Pruning (Static Null Move Pruning)
     // If static eval is way above beta, we can assume a beta cutoff
     // ==========================================================================
-    if (info->params.use_rfp && !is_pv && !in_check && depth <= info->params.rfp_max_depth &&
-        abs(beta) < MATE_SCORE - 100) {
+    if (can_rfp) {
         int rfp_margin = info->params.rfp_margin * depth;
         if (static_eval - rfp_margin >= beta) {
             PRUNING_STAT_INC(reverse_futility);
@@ -1169,8 +1195,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     // Razoring: If static eval is far below alpha, drop into qsearch
     // Very effective at low depths to cut hopeless positions early
     // ==========================================================================
-    if (info->params.use_razoring && !is_pv && !in_check && depth <= 3 &&
-        abs(alpha) < MATE_SCORE - 100) {
+    if (can_razor) {
         int razor_margin = info->params.razor_margin + info->params.razor_margin * (depth - 1);
         if (static_eval + razor_margin < alpha) {
             int razor_score = quiescence(board, alpha - 1, alpha, info, ply);
@@ -1186,8 +1211,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     // ==========================================================================
     bool futility_pruning = false;
     int futility_margin = 0;
-    if (info->params.use_futility && !is_pv && !in_check && depth <= 3 &&
-        abs(alpha) < MATE_SCORE - 100 && abs(beta) < MATE_SCORE - 100) {
+    if (can_futility) {
         if (depth == 1) {
             futility_margin = info->params.futility_margin;
         } else if (depth == 2) {
@@ -1246,14 +1270,17 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         }
         #endif
         
+        NNUEAccumulator* parent_acc = info->nnue_acc;
+        NNUEAccumulator* child_acc = search_prepare_nnue_child(info, ply);
         MoveUndoInfo undo;
-        applyMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+        applyMove(board, m, &undo, child_acc, info->nnue_net);
         
         // Skip illegal moves (king left in check) - move generator now returns pseudo-legal moves
         if (isKingAttacked(board, !board->whiteToMove)) {
-            undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+            undoMove(board, m, &undo, child_acc, info->nnue_net);
             continue;
         }
+        info->nnue_acc = child_acc;
         
         // Track last move for debug
         #ifdef DEBUG_NNUE_EVAL
@@ -1335,7 +1362,8 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             }
         }
         
-        undoMove(board, m, &undo, info->nnue_acc, info->nnue_net);
+        info->nnue_acc = parent_acc;
+        undoMove(board, m, &undo, child_acc, info->nnue_net);
         
         // DEBUG: Verify Zobrist hash is correctly restored after undo
         #ifdef DEBUG_ZOBRIST_VERIFY
@@ -1496,6 +1524,12 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
 
     Move best_move = 0;
     int best_score = 0;
+    NNUEAccumulator* external_acc = info->nnue_acc;
+    if (external_acc != NULL && info->nnue_net != NULL) {
+        memcpy(&info->nnue_stack[0], external_acc, sizeof(NNUEAccumulator));
+        info->nnue_stack[0].previous = NULL;
+        info->nnue_acc = &info->nnue_stack[0];
+    }
     
     info->nodesSearched = 0;
     info->lastIterationTime = 0;
@@ -1721,6 +1755,12 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
 #endif
         fflush(stdout);
     }
+    if (external_acc != NULL && info->nnue_acc != NULL) {
+        memcpy(external_acc, &info->nnue_stack[0], sizeof(NNUEAccumulator));
+        external_acc->previous = NULL;
+        info->nnue_acc = external_acc;
+    }
+
     return best_move;
 }
 

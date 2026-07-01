@@ -396,6 +396,7 @@ void eval_set_last_move(Move m, int from, int to) {
 int evaluate(const Board* board, NNUEAccumulator* nnue_acc, const NNUENetwork* nnue_net) {
     if (nnue_acc != NULL && nnue_net != NULL && nnue_net->loaded) {
         #ifdef DEBUG_NNUE_EVAL
+        nnue_materialize_accumulator(board, nnue_acc, nnue_net);
         // Verify accumulator matches refresh
         NNUEAccumulator temp_acc;
         nnue_refresh_accumulator(board, &temp_acc, nnue_net);

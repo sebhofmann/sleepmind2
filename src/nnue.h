@@ -29,10 +29,21 @@
 
 // Accumulator for efficient incremental updates (activation values only)
 // Aligned to 64 bytes for AVX-512 optimal access
-typedef struct {
+typedef struct NNUEAccumulator {
     alignas(64) int16_t white[NNUE_HIDDEN_SIZE];
     alignas(64) int16_t black[NNUE_HIDDEN_SIZE];
     bool computed;
+    bool dirty;
+    bool requires_refresh;
+    struct NNUEAccumulator* previous;
+    int from_sq;
+    int to_sq;
+    int piece_type;
+    int captured_piece_type;
+    int moving_color;
+    int capture_sq;
+    int white_king_sq;
+    int black_king_sq;
 } NNUEAccumulator;
 
 // NNUE Network weights (separate from accumulator, can be loaded from file)
@@ -77,11 +88,25 @@ void nnue_reset_accumulator(const Board* board, NNUEAccumulator* acc, const NNUE
 // Refresh accumulator from current board state
 void nnue_refresh_accumulator(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net);
 
+// Prepare/copy-make a child accumulator frame. The child is updated lazily on eval.
+void nnue_prepare_child_accumulator(NNUEAccumulator* child, NNUEAccumulator* parent);
+
+// Mark a prepared child accumulator as dirty for the move just made.
+void nnue_mark_accumulator_dirty(NNUEAccumulator* acc, const Board* board, int from_sq, int to_sq,
+                                 int piece_type, int captured_piece_type, bool is_white,
+                                 bool is_en_passant, bool requires_refresh);
+
+// Materialize pending lazy updates up to this accumulator.
+void nnue_materialize_accumulator(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net);
+
 // Evaluate position using NNUE - only needs accumulator
 int nnue_evaluate(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net);
 
 // Get output bucket based on piece count
 int nnue_get_output_bucket(const Board* board);
+
+// True when a king move changes the moving side's input bucket or mirror state.
+bool nnue_king_move_requires_refresh(int from_sq, int to_sq, bool is_white);
 
 // Apply move incrementally - needs network for weights
 void nnue_apply_move(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net, int from_sq, int to_sq, 

@@ -103,6 +103,7 @@ typedef struct {
     // NNUE accumulator and network for incremental updates
     NNUEAccumulator* nnue_acc;
     const NNUENetwork* nnue_net;
+    NNUEAccumulator nnue_stack[MAX_PLY + 2];
     
     long lastIterationTime;  // Zeit der letzten Iteration für Vorhersage
     int seldepth;            // Selective depth (max depth reached)

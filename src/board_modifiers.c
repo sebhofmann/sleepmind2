@@ -130,9 +130,15 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
     // NNUE update before board modification
     int promoFlag = MOVE_PROMOTION(move);
     bool isKingMove = (movingType == KING);
+    bool kingNeedsRefresh = isKingMove && nnue_king_move_requires_refresh(from, to, us == WHITE);
+    bool nnue_lazy = (nnue_acc != NULL && nnue_acc->previous != NULL);
     
     if (nnue_acc != NULL && nnue_net != NULL) {
-        if (MOVE_IS_CASTLING(move) || promoFlag || isKingMove) {
+        if (nnue_lazy) {
+            nnue_mark_accumulator_dirty(nnue_acc, board, from, to, movingType,
+                                        capturedType, us == WHITE, MOVE_IS_EN_PASSANT(move),
+                                        MOVE_IS_CASTLING(move) || promoFlag || kingNeedsRefresh);
+        } else if (MOVE_IS_CASTLING(move) || promoFlag || kingNeedsRefresh) {
             // Refresh after board update
         } else {
             int nnue_piece = movingType;
@@ -232,18 +238,18 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
         
         zobrist ^= ZOBRIST_PIECE_KEY(ROOK_T, us, rookFrom) ^ ZOBRIST_PIECE_KEY(ROOK_T, us, rookTo);
         
-        if (nnue_acc != NULL && nnue_net != NULL) {
+        if (nnue_acc != NULL && nnue_net != NULL && !nnue_lazy) {
             nnue_refresh_accumulator(board, nnue_acc, nnue_net);
         }
     }
     
     // NNUE refresh for promotions
-    if (promoFlag && nnue_acc != NULL && nnue_net != NULL) {
+    if (promoFlag && nnue_acc != NULL && nnue_net != NULL && !nnue_lazy) {
         nnue_refresh_accumulator(board, nnue_acc, nnue_net);
     }
     
     // NNUE refresh for king moves
-    if (isKingMove && !MOVE_IS_CASTLING(move) && nnue_acc != NULL && nnue_net != NULL) {
+    if (kingNeedsRefresh && !MOVE_IS_CASTLING(move) && nnue_acc != NULL && nnue_net != NULL && !nnue_lazy) {
         nnue_refresh_accumulator(board, nnue_acc, nnue_net);
     }
 
@@ -349,6 +355,8 @@ void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumul
     }
 
     // Revert castling rook move
+    bool nnue_lazy = (nnue_acc != NULL && nnue_acc->previous != NULL);
+
     if (MOVE_IS_CASTLING(move)) {
         Square rookFrom, rookTo;
         if (us == WHITE) {
@@ -364,14 +372,16 @@ void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumul
         board->piece[rookTo] = NO_PIECE;
         board->piece[rookFrom] = (us == WHITE) ? W_ROOK : B_ROOK;
         
-        if (nnue_acc != NULL && nnue_net != NULL) {
+        if (nnue_acc != NULL && nnue_net != NULL && !nnue_lazy) {
             nnue_refresh_accumulator(board, nnue_acc, nnue_net);
         }
+    } else if (nnue_lazy) {
+        // Copy-make/lazy search frames are discarded after undo; parent stays intact.
     } else if (promoFlag) {
         if (nnue_acc != NULL && nnue_net != NULL) {
             nnue_refresh_accumulator(board, nnue_acc, nnue_net);
         }
-    } else if (movedPieceType == KING_T) {
+    } else if (movedPieceType == KING_T && nnue_king_move_requires_refresh(from, to, us == WHITE)) {
         if (nnue_acc != NULL && nnue_net != NULL) {
             nnue_refresh_accumulator(board, nnue_acc, nnue_net);
         }
