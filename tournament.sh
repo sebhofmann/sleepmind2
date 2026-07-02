@@ -5,7 +5,7 @@ set -e
 CHECKPOINTS_DIR="training/checkpoints"
 ARCHIVE_DIR="archive/gen3"
 BUILD_SLEEPMIND="build/sleepmind"
-OPENINGS_FILE="/home/paschty/Downloads/klo_eco_a00-e97v/klo_250_eco_a00-e97_variations.pgn"
+OPENINGS_FILE="/home/paschty/Downloads/2moves_v2.pgn"
 WORKSPACE="/home/paschty/workspace/sleepmind2"
 VARIANTS_DIR="$WORKSPACE/variants"
 

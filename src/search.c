@@ -11,7 +11,11 @@
 #include "move.h"
 #include "bitboard_utils.h"
 #include "zobrist.h"
+#include "syzygy.h"
 #include <stdio.h>
+
+// UCI cp value reported for a proven TB win/loss without a known mate distance.
+#define TB_DISPLAY_CP 20000
 
 // Define this to enable Zobrist hash verification after undo
 //#define DEBUG_ZOBRIST_VERIFY
@@ -748,8 +752,10 @@ static bool can_do_null_move(Board* board) {
 #define QS_TT_DEPTH 0
 
 static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int ply) {
-    info->nodesSearched++;
-    
+    // This node was already counted by the caller (the negamax leaf/razoring
+    // node, or the parent quiescence before it recursed), so do NOT count it
+    // again here - otherwise every qsearch-root node is counted twice.
+
     // Update selective depth
     if (ply > info->seldepth) {
         info->seldepth = ply;
@@ -784,10 +790,10 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
             int tt_score = tt_entry->score;
             uint8_t tt_flag = TT_GET_FLAG(tt_entry);
             
-            // Adjust mate scores
-            if (tt_score > MATE_SCORE - 100) {
+            // Adjust ply-dependent (mate and TB) scores
+            if (tt_score >= TB_SCORE_MIN) {
                 tt_score -= ply;
-            } else if (tt_score < -MATE_SCORE + 100) {
+            } else if (tt_score <= -TB_SCORE_MIN) {
                 tt_score += ply;
             }
             
@@ -868,6 +874,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
             #ifdef DEBUG_NNUE_EVAL
             eval_set_last_move(m, MOVE_FROM(m), MOVE_TO(m));
             #endif
+            info->nodesSearched++;  // count this qsearch child exactly once
             int score = -quiescence(board, -beta, -alpha, info, ply + 1);
             info->nnue_acc = parent_acc;
             undoMove(board, m, &undo, child_acc, info->nnue_net);
@@ -1014,6 +1021,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         #ifdef DEBUG_NNUE_EVAL
         eval_set_last_move(m, MOVE_FROM(m), MOVE_TO(m));
         #endif
+        info->nodesSearched++;  // count this qsearch child exactly once
         int score = -quiescence(board, -beta, -alpha, info, ply + 1);
         info->nnue_acc = parent_acc;
         undoMove(board, m, &undo, child_acc, info->nnue_net);
@@ -1101,10 +1109,10 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             int tt_score = tt_entry->score;
             uint8_t tt_flag = TT_GET_FLAG(tt_entry);
             
-            // Adjust mate scores
-            if (tt_score > MATE_SCORE - 100) {
+            // Adjust ply-dependent (mate and TB) scores
+            if (tt_score >= TB_SCORE_MIN) {
                 tt_score -= ply;
-            } else if (tt_score < -MATE_SCORE + 100) {
+            } else if (tt_score <= -TB_SCORE_MIN) {
                 tt_score += ply;
             }
             
@@ -1123,6 +1131,39 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         }
     }
     
+    // ==========================================================================
+    // Syzygy tablebase WDL probe (interior, non-root nodes)
+    //
+    // Only when castling is impossible and the 50-move counter is zero (Fathom's
+    // WDL probe requires rule50 == 0). Gives an exact win/draw/loss verdict that
+    // overrides the speculative pruning below.
+    // ==========================================================================
+    if (ply > 0 && info->tbProbeLimit > 0 &&
+        board->castlingRights == NO_CASTLING && board->halfMoveClock == 0) {
+        Bitboard tb_occ =
+            board->byTypeBB[WHITE][PAWN]   | board->byTypeBB[BLACK][PAWN]   |
+            board->byTypeBB[WHITE][KNIGHT] | board->byTypeBB[BLACK][KNIGHT] |
+            board->byTypeBB[WHITE][BISHOP] | board->byTypeBB[BLACK][BISHOP] |
+            board->byTypeBB[WHITE][ROOK]   | board->byTypeBB[BLACK][ROOK]   |
+            board->byTypeBB[WHITE][QUEEN]  | board->byTypeBB[BLACK][QUEEN]  |
+            board->byTypeBB[WHITE][KING]   | board->byTypeBB[BLACK][KING];
+        int tb_pieces = POPCOUNT(tb_occ);
+        int wdl;
+        if (tb_pieces <= info->tbProbeLimit && syzygy_available(tb_pieces) &&
+            syzygy_probe_wdl(board, &wdl)) {
+            info->tbHits++;
+            int tb_score = (wdl > 0) ?  (TB_WIN_SCORE - ply)
+                         : (wdl < 0) ? -(TB_WIN_SCORE - ply)
+                         :              0;
+            // Store exact, applying the same ply-offset used on store below.
+            int store_score = tb_score;
+            if (store_score >= TB_SCORE_MIN)       store_score += ply;
+            else if (store_score <= -TB_SCORE_MIN) store_score -= ply;
+            tt_store(board->zobristKey, depth, store_score, TT_EXACT, 0);
+            return tb_score;
+        }
+    }
+
     // Quiescence search at leaf nodes
     if (depth <= 0) {
         return quiescence(board, alpha, beta, info, ply);
@@ -1174,11 +1215,11 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     }
 
     bool can_rfp = info->params.use_rfp && !is_pv && !in_check &&
-        depth <= info->params.rfp_max_depth && abs(beta) < MATE_SCORE - 100;
+        depth <= info->params.rfp_max_depth && abs(beta) < TB_SCORE_MIN;
     bool can_razor = info->params.use_razoring && !is_pv && !in_check &&
-        depth <= 3 && abs(alpha) < MATE_SCORE - 100;
+        depth <= 3 && abs(alpha) < TB_SCORE_MIN;
     bool can_futility = info->params.use_futility && !is_pv && !in_check &&
-        depth <= 3 && abs(alpha) < MATE_SCORE - 100 && abs(beta) < MATE_SCORE - 100;
+        depth <= 3 && abs(alpha) < TB_SCORE_MIN && abs(beta) < TB_SCORE_MIN;
 
     int static_eval = 0;
     if (can_rfp || can_razor || can_futility) {
@@ -1251,6 +1292,16 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     
     for (int i = 0; i < moves.count; i++) {
         Move m = scored[i].move;
+
+        // Syzygy root-move restriction: at the root, only search TB-optimal moves.
+        if (ply == 0 && info->tbRootMoveCount > 0) {
+            bool tb_allowed = false;
+            for (int k = 0; k < info->tbRootMoveCount; k++) {
+                if (info->tbRootMoves[k] == m) { tb_allowed = true; break; }
+            }
+            if (!tb_allowed) continue;
+        }
+
         bool is_capture = MOVE_IS_CAPTURE(m);
         bool is_promotion = MOVE_IS_PROMOTION(m);
         bool is_tactical = is_capture || is_promotion;
@@ -1508,9 +1559,9 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         
         // Adjust mate scores for storage
         int store_score = alpha;
-        if (store_score > MATE_SCORE - 100) {
+        if (store_score >= TB_SCORE_MIN) {
             store_score += ply;
-        } else if (store_score < -MATE_SCORE + 100) {
+        } else if (store_score <= -TB_SCORE_MIN) {
             store_score -= ply;
         }
         
@@ -1543,7 +1594,8 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
     info->nodesSearched = 0;
     info->lastIterationTime = 0;
     info->seldepth = 0;
-    
+    info->tbHits = 0;
+
     // Reset search statistics
     TT_STATS_RESET();
     PRUNING_STATS_RESET();
@@ -1635,25 +1687,64 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         uint64_t nps = time_ms > 0 ? (info->nodesSearched * 1000ULL / time_ms) : 0;
         int hashfull = tt_hashfull();
         
-        // Convert score to white's perspective for UCI output
-        int uci_score = board->whiteToMove ? score : -score;
-        
+        // Format the score for UCI (side-to-move perspective; the internal
+        // negamax score already is). "mate N" is only reported for a known
+        // mate distance: a real search mate, or a root TB hit whose PV was
+        // walked out to mate. TB scores without a mate distance are shown as
+        // a fixed large cp value so GUIs never see a false mate claim.
+        char score_str[32];
+        if (info->tbRootMoveCount > 0) {
+            // Root TB hit: report the DTZ-optimal verdict, not the search score.
+            int sign = (info->tbRootScore > 0) - (info->tbRootScore < 0);
+            if (info->tbRootMatePlies >= 0 && sign != 0) {
+                int mate_moves = (info->tbRootMatePlies + 1) / 2;
+                snprintf(score_str, sizeof(score_str), "mate %d", sign * mate_moves);
+            } else {
+                snprintf(score_str, sizeof(score_str), "cp %d", sign * TB_DISPLAY_CP);
+            }
+        } else if (score > TB_WIN_SCORE) {
+            int plies = MATE_SCORE - score;
+            snprintf(score_str, sizeof(score_str), "mate %d", (plies + 1) / 2);
+        } else if (score < -TB_WIN_SCORE) {
+            int plies = MATE_SCORE + score;
+            snprintf(score_str, sizeof(score_str), "mate %d", -((plies + 1) / 2));
+        } else if (score >= TB_SCORE_MIN) {
+            // TB win propagated from the subtree: proven win, unknown distance.
+            snprintf(score_str, sizeof(score_str), "cp %d", TB_DISPLAY_CP);
+        } else if (score <= -TB_SCORE_MIN) {
+            snprintf(score_str, sizeof(score_str), "cp %d", -TB_DISPLAY_CP);
+        } else {
+            snprintf(score_str, sizeof(score_str), "cp %d", score);
+        }
+
         if (!search_silent_mode) {
-            printf("info depth %d seldepth %d score cp %d nodes %llu nps %llu time %ld hashfull %d pv",
-                   depth, info->seldepth, uci_score, (unsigned long long)info->nodesSearched, (unsigned long long)nps, time_ms, hashfull);
+            printf("info depth %d seldepth %d score %s nodes %llu nps %llu time %ld hashfull %d tbhits %llu pv",
+                   depth, info->seldepth, score_str, (unsigned long long)info->nodesSearched, (unsigned long long)nps, time_ms, hashfull, (unsigned long long)info->tbHits);
             
-            for (int i = 0; i < info->pv_length[0]; i++) {
-                if (info->pv_table[0][i] == 0) break;
-                char move_str[10];
-                moveToString(info->pv_table[0][i], move_str);
-                printf(" %s", move_str);
+            if (info->tbRootMoveCount > 0 && info->tbRootPvLen > 0) {
+                // Tablebase root hit: report the DTZ-optimal line.
+                for (int i = 0; i < info->tbRootPvLen; i++) {
+                    char move_str[10];
+                    moveToString(info->tbRootPv[i], move_str);
+                    printf(" %s", move_str);
+                }
+            } else {
+                for (int i = 0; i < info->pv_length[0]; i++) {
+                    if (info->pv_table[0][i] == 0) break;
+                    char move_str[10];
+                    moveToString(info->pv_table[0][i], move_str);
+                    printf(" %s", move_str);
+                }
             }
             printf("\n");
             fflush(stdout);
         }
         
-        // Stop if mate found
-        if (abs(score) > MATE_SCORE - 100) {
+        // Stop if mate found. Strictly above TB_WIN_SCORE means a real mate
+        // score; TB win scores (<= TB_WIN_SCORE) must NOT stop the search,
+        // since they carry no mate distance and deeper iterations are needed
+        // to actually convert the win.
+        if (abs(score) > TB_WIN_SCORE) {
             if (!search_silent_mode) {
                 printf("info string Mate found, stopping search\n");
                 fflush(stdout);
@@ -1780,8 +1871,9 @@ int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximiz
     return negamax(board, depth, alpha, beta, info, ply, true, false);
 }
 
-int quiescence_search(Board* board, int alpha, int beta, bool maximizingPlayer, 
+int quiescence_search(Board* board, int alpha, int beta, bool maximizingPlayer,
                       SearchInfo* info, int ply) {
     (void)maximizingPlayer;
+    info->nodesSearched++;  // quiescence() expects the caller to count its root
     return quiescence(board, alpha, beta, info, ply);
 }

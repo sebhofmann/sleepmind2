@@ -17,7 +17,7 @@ SRC_DIR = src
 BUILD_DIR = build
 
 # Common source files (shared between engine and training)
-COMMON_SRCS = board_io.c move_generator.c move.c bitboard_utils.c search.c tt.c evaluation.c board_modifiers.c zobrist.c nnue.c
+COMMON_SRCS = board_io.c move_generator.c move.c bitboard_utils.c search.c tt.c evaluation.c board_modifiers.c zobrist.c nnue.c syzygy.c tbprobe.c
 
 # Engine source files
 ENGINE_SRCS = main.c uci.c $(COMMON_SRCS)
@@ -46,6 +46,11 @@ $(ENGINE_EXEC): $(ENGINE_OBJS)
 
 $(TRAINING_EXEC): $(TRAINING_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+# Vendored Fathom probing code: needs POSIX (mmap) under -std=c11, and its
+# warnings are not actionable for us, so they are suppressed.
+$(BUILD_DIR)/tbprobe.o: $(SRC_DIR)/tbprobe.c
+	$(CC) $(CFLAGS) -D_GNU_SOURCE -w -MMD -MP -I$(SRC_DIR) -c $< -o $@
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) -MMD -MP -I$(SRC_DIR) -c $< -o $@

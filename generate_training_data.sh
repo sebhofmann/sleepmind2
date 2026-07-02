@@ -18,13 +18,15 @@ CONCURRENCY=${CONCURRENCY:-32}          # Anzahl paralleler Instanzen
 DEPTH=${DEPTH:-6}                       # Suchtiefe
 NODES=${NODES:-5000}                       # Knotenlimit (0=benutze Tiefe)
 RANDOM_MOVES=${RANDOM_MOVES:-12}         # Zufallszüge am Anfang
-RANDOM_PROB=${RANDOM_PROB:-100}         # Wahrscheinlichkeit für Zufallszüge (%)
-MAX_MOVES=${MAX_MOVES:-250}  # Maximale Züge pro Spiel
+RANDOM_PROB=${RANDOM_PROB:-50}         # Wahrscheinlichkeit für Zufallszüge (%)
+MAX_MOVES=${MAX_MOVES:-250}  # Maximale Züge pro Spiel 
 DRAW_THRESHOLD=${DRAW_THRESHOLD:-50} # 50-Züge-Regel
-EVAL_THRESHOLD=${EVAL_THRESHOLD:-3}  # Max Bewertung in Bauern nach Zufallszügen (0=aus)
-ADJUDICATE=${ADJUDICATE:-10} # Spiel beenden bei +/- N Bauern (0=aus)
+EVAL_THRESHOLD=${EVAL_THRESHOLD:-4}  # Max Bewertung in Bauern nach Zufallszügen (0=aus)
+ADJUDICATE=${ADJUDICATE:-0} # Spiel beenden bei +/- N Bauern (0=aus)
 FILTER_TACTICS=${FILTER_TACTICS:-1}   # Taktische Positionen filtern (0=aus)
 VERBOSE=${VERBOSE:-1}  # Verbosity Level
+SYZYGY_PATH=${SYZYGY_PATH:-}          # Pfad zu Syzygy-Tablebases (leer=aus)
+SYZYGY_PROBE_LIMIT=${SYZYGY_PROBE_LIMIT:-7}  # Max. Steinezahl für TB-Adjudication
 
 # Farben für Output
 RED='\033[0;31m'
@@ -69,8 +71,19 @@ echo "  Draw-Threshold:    $DRAW_THRESHOLD"
 echo "  Eval-Threshold:    $EVAL_THRESHOLD Bauern (0=aus)"
 echo "  Adjudicate bei:    $ADJUDICATE Bauern (0=aus)"
 echo "  Filter Taktik:     $FILTER_TACTICS (1=an, 0=aus)"
+if [ -n "$SYZYGY_PATH" ]; then
+echo "  Syzygy-TB:         $SYZYGY_PATH (bis $SYZYGY_PROBE_LIMIT Steine)"
+else
+echo "  Syzygy-TB:         aus"
+fi
 echo "  Output:            $OUTPUT_FILE"
 echo ""
+
+# Optionale Syzygy-Argumente (nur wenn ein Pfad gesetzt ist)
+SYZYGY_ARGS=()
+if [ -n "$SYZYGY_PATH" ]; then
+    SYZYGY_ARGS=(-S "$SYZYGY_PATH" -L "$SYZYGY_PROBE_LIMIT")
+fi
 
 # Array für PIDs der Hintergrundprozesse
 declare -a PIDS
@@ -102,7 +115,7 @@ combine_data() {
     echo "  Neue Positionen:     $NEW_LINES"
     echo "  Gesamt in Datei:     $TOTAL_LINES"
     echo "  Output-Datei:        $OUTPUT_FILE"
-    
+
     # Lösche temporäre Dateien
     echo ""
     echo "Lösche temporäre Dateien..."
@@ -165,6 +178,7 @@ for i in $(seq 1 $CONCURRENCY); do
             --max-moves "$MAX_MOVES" \
             --draw-threshold "$DRAW_THRESHOLD" \
             -v "$VERBOSE" \
+            "${SYZYGY_ARGS[@]}" \
             > "${OUTPUT_TEMP}.log" 2>&1 &
     else
         "$TRAINING_PATH" \
@@ -179,6 +193,7 @@ for i in $(seq 1 $CONCURRENCY); do
             --max-moves "$MAX_MOVES" \
             --draw-threshold "$DRAW_THRESHOLD" \
             -v "$VERBOSE" \
+            "${SYZYGY_ARGS[@]}" \
             > "${OUTPUT_TEMP}.log" 2>&1 &
     fi
     

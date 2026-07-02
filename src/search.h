@@ -4,6 +4,7 @@
 #include "board.h"
 #include "move.h"
 #include "nnue.h"
+#include "syzygy.h"
 #include <stdbool.h>
 
 #define MAX_PLY 64 // Maximum search depth
@@ -109,10 +110,33 @@ typedef struct {
     int seldepth;            // Selective depth (max depth reached)
     int depthLimit;          // Maximum search depth (0 = no limit)
     uint64_t nodeLimit;      // Maximum nodes to search (0 = no limit)
-    
+
+    // Syzygy tablebase support
+    int tbProbeLimit;        // Max piece count to probe WDL in search (0 = off)
+    uint64_t tbHits;         // Number of successful TB probes this search
+    // Root move restriction from a DTZ probe (count 0 = inactive). When active,
+    // the search at ply 0 only considers these moves.
+    Move tbRootMoves[MAX_MOVES];
+    int tbRootMoveCount;
+    // DTZ-optimal verdict for display (set when tbRootMoveCount > 0):
+    int tbRootScore;           // side-to-move score (mate-distance based)
+    int tbRootMatePlies;       // plies to mate along tbRootPv, -1 if unknown
+    Move tbRootPv[SYZYGY_MAX_PV]; // DTZ-optimal principal variation
+    int tbRootPvLen;           // length of tbRootPv
+
     // Tunable search parameters
     SearchParams params;
 } SearchInfo;
+
+// TB win/loss score base. Below real mate scores (so a found mate is always
+// preferred) but above all normal evaluations. Caller offsets by ply.
+// Since ply <= MAX_PLY, mate scores (MATE_SCORE - ply) are always strictly
+// greater than TB_WIN_SCORE, so `score > TB_WIN_SCORE` identifies real mates.
+#define TB_WIN_SCORE (MATE_SCORE - MAX_PLY - 1)
+// Smallest magnitude a ply-offset TB score can take. Every score at or above
+// this (TB and mate scores alike) is ply-dependent and must be ply-adjusted
+// when stored to / loaded from the transposition table.
+#define TB_SCORE_MIN (TB_WIN_SCORE - MAX_PLY)
 
 Move iterative_deepening_search(Board* board, SearchInfo* info);
 int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximizingPlayer, SearchInfo* info, int ply);

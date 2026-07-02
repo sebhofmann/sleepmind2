@@ -29,7 +29,7 @@ import chess.pgn
 # =============================================================================
 
 ENGINE_PATH = "../build/sleepmind"
-OPENING_BOOK_PATH = "/home/paschty/Downloads/klo_eco_a00-e97v/klo_250_eco_a00-e97_variations.pgn"
+OPENING_BOOK_PATH = "/home/paschty/Downloads/2moves_v2.pgn"
 
 TIME_PER_MOVE_MS = 200
 MAX_ITERATIONS = 36000   # one iteration = one opening pair (2 games), fishtest-style

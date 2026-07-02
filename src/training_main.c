@@ -19,6 +19,7 @@
 #include "training_data.h"
 #include "zobrist.h"
 #include "tt.h"
+#include "syzygy.h"
 
 // =============================================================================
 // Configuration
@@ -38,6 +39,8 @@ typedef struct {
     int eval_threshold;         // Max eval (in pawns) after random moves, 0 = disabled
     int adjudicate_threshold;   // Adjudicate game as won/lost if eval exceeds this (in pawns), 0 = disabled
     bool filter_tactics;        // Filter out tactical positions (checks, captures)
+    char syzygy_path[1024];     // Syzygy tablebase path (empty = disabled)
+    int syzygy_probe_limit;     // Max piece count for TB adjudication
 } TrainingConfig;
 
 static TrainingConfig config = {
@@ -53,7 +56,9 @@ static TrainingConfig config = {
     .verbose = 1,
     .eval_threshold = 1,        // Default: discard games with eval > +/-100cp after random moves
     .adjudicate_threshold = 10, // Default: adjudicate at +/-1000cp
-    .filter_tactics = true      // Default: filter tactical positions
+    .filter_tactics = true,     // Default: filter tactical positions
+    .syzygy_path = "",          // Default: tablebases disabled
+    .syzygy_probe_limit = 7     // Max pieces for TB adjudication (when loaded)
 };
 
 // Global flag for graceful shutdown
@@ -224,6 +229,7 @@ static bool play_game(int game_num, NNUENetwork* nnue_network) {
     int half_move_clock = 0;
     GameResult result = GAME_ONGOING;
     bool checked_threshold = false;  // Track if we've checked eval after random moves
+    bool tb_adjudicated = false;     // Game ended by an exact tablebase result
     
     // Reset position history and training data for this game
     reset_position_history();
@@ -265,9 +271,48 @@ static bool play_game(int game_num, NNUENetwork* nnue_network) {
         
         // Search for best move if not random
         if (!is_random_move) {
+            // --- Tablebase adjudication ---
+            // Once the position is within the tablebases the exact outcome is
+            // known: end the game immediately and use the TB WDL as the game
+            // result. The TB position itself is NOT recorded as training data.
+            Move tb_move = 0;
+            int tb_wdl = 0, tb_dtz = 0;
+            if (syzygy_max_pieces() > 0 && board.castlingRights == NO_CASTLING &&
+                !isKingAttacked(&board, !board.whiteToMove)) {
+                Bitboard tb_occ =
+                    board.byTypeBB[WHITE][PAWN]   | board.byTypeBB[BLACK][PAWN]   |
+                    board.byTypeBB[WHITE][KNIGHT] | board.byTypeBB[BLACK][KNIGHT] |
+                    board.byTypeBB[WHITE][BISHOP] | board.byTypeBB[BLACK][BISHOP] |
+                    board.byTypeBB[WHITE][ROOK]   | board.byTypeBB[BLACK][ROOK]   |
+                    board.byTypeBB[WHITE][QUEEN]  | board.byTypeBB[BLACK][QUEEN]  |
+                    board.byTypeBB[WHITE][KING]   | board.byTypeBB[BLACK][KING];
+                int tb_pieces = POPCOUNT(tb_occ);
+                if (tb_pieces <= config.syzygy_probe_limit &&
+                    syzygy_available(tb_pieces) &&
+                    syzygy_probe_play(&board, &tb_move, &tb_wdl, &tb_dtz) == 1) {
+                    int white_wdl = board.whiteToMove ? tb_wdl : -tb_wdl;
+                    result = white_wdl > 0 ? GAME_WHITE_WINS
+                           : white_wdl < 0 ? GAME_BLACK_WINS : GAME_DRAW;
+                    tb_adjudicated = true;
+                    if (config.verbose >= 2) {
+                        printf("  Ply %d: TB adjudication (wdl %d, dtz %d)\n",
+                               ply, tb_wdl, tb_dtz);
+                    }
+                    break;
+                }
+            }
+
             SearchInfo search_info;
             search_info.startTimeMs = search_current_time_ms();
             search_params_init(&search_info.params);  // Initialize search parameters
+            // Tablebases are not probed inside the search during training
+            // data generation (adjudication above handles TB positions).
+            search_info.tbProbeLimit = 0;
+            search_info.tbHits = 0;
+            search_info.tbRootMoveCount = 0;
+            search_info.tbRootScore = 0;
+            search_info.tbRootMatePlies = -1;
+            search_info.tbRootPvLen = 0;
             
             if (config.search_nodes > 0) {
                 // Node-based search: no time or depth limit
@@ -405,7 +450,13 @@ static bool play_game(int game_num, NNUENetwork* nnue_network) {
         result_value = 0;
         result_str = "draw";
     }
-    
+
+    // Label TB-adjudicated games as such in the log.
+    if (tb_adjudicated) {
+        result_str = result_value > 0 ? "white wins (TB)"
+                   : result_value < 0 ? "black wins (TB)" : "draw (TB)";
+    }
+
     // Write training data
     int entries_written = training_data_count;
     total_positions += entries_written;
@@ -440,6 +491,8 @@ static void print_usage(const char* program_name) {
     printf("  -a, --adjudicate N      Adjudicate game if eval exceeds N pawns (default: 10, 0=off)\n");
     printf("  -f, --filter-tactics B  Filter tactical positions: checks/captures (default: 1, 0=off)\n");
     printf("  -v, --verbose LEVEL     Verbosity level 0-2 (default: 1)\n");
+    printf("  -S, --syzygy-path PATH  Syzygy tablebase path for exact endgame adjudication (default: off)\n");
+    printf("  -L, --syzygy-probe-limit N  Max piece count for TB adjudication (default: 7)\n");
     printf("  -h, --help              Show this help message\n");
     printf("\nExample:\n");
     printf("  %s -o data.txt -n 1000 -r 8 -d 6 -e 4 -a 10 -f 1\n", program_name);
@@ -461,12 +514,14 @@ static void parse_arguments(int argc, char* argv[]) {
         {"adjudicate",     required_argument, 0, 'a'},
         {"filter-tactics", required_argument, 0, 'f'},
         {"verbose",        required_argument, 0, 'v'},
+        {"syzygy-path",        required_argument, 0, 'S'},
+        {"syzygy-probe-limit", required_argument, 0, 'L'},
         {"help",           no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
-    
+
     int c;
-    while ((c = getopt_long(argc, argv, "o:n:r:p:d:t:N:e:a:f:v:h", long_options, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "o:n:r:p:d:t:N:e:a:f:v:S:L:h", long_options, NULL)) != -1) {
         switch (c) {
             case 'o':
                 strncpy(config.output_file, optarg, sizeof(config.output_file) - 1);
@@ -508,6 +563,13 @@ static void parse_arguments(int argc, char* argv[]) {
                 break;
             case 'v':
                 config.verbose = atoi(optarg);
+                break;
+            case 'S':
+                strncpy(config.syzygy_path, optarg, sizeof(config.syzygy_path) - 1);
+                config.syzygy_path[sizeof(config.syzygy_path) - 1] = '\0';
+                break;
+            case 'L':
+                config.syzygy_probe_limit = atoi(optarg);
                 break;
             case 'h':
                 print_usage(argv[0]);
@@ -555,6 +617,9 @@ int main(int argc, char* argv[]) {
         printf("Warning: NNUE network not loaded, using classical evaluation\n");
     }
     
+    // Initialize Syzygy tablebases (no-op if path is empty)
+    syzygy_init(config.syzygy_path);
+
     // Set up training data output
     set_training_data_path(config.output_file);
     
@@ -584,6 +649,12 @@ int main(int argc, char* argv[]) {
         printf("Adjudicate at:     disabled\n");
     }
     printf("Filter tactics:    %s\n", config.filter_tactics ? "yes" : "no");
+    if (syzygy_max_pieces() > 0) {
+        printf("Syzygy TB:         %s (adjudicate up to %d pieces, %d loaded)\n",
+               config.syzygy_path, config.syzygy_probe_limit, syzygy_max_pieces());
+    } else {
+        printf("Syzygy TB:         disabled\n");
+    }
     printf("================================\n\n");
     
     // Initialize timing for statistics
@@ -620,7 +691,8 @@ int main(int argc, char* argv[]) {
     
     // Cleanup
     init_training_data();  // Closes training file properly
+    syzygy_free();
     free(nnue_network);
-    
+
     return 0;
 }

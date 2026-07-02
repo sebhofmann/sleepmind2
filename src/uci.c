@@ -14,6 +14,7 @@
 #include "bitboard_utils.h" // ADDED
 #include "nnue.h" // For NNUE accumulator management
 #include "evaluation.h" // For eval_init
+#include "syzygy.h" // Syzygy tablebase adapter
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -28,6 +29,10 @@
 static Board current_board;
 static MoveList move_list;
 static int current_ply = 0;
+
+// Syzygy tablebase settings (configured via UCI options)
+static char syzygy_path[1024] = {0};
+static int syzygy_probe_limit = 7; // max piece count probed during search
 
 // Function to parse moves in UCI format (e.g., "e2e4", "e7e8q")
 
@@ -268,6 +273,8 @@ void uci_loop() {
             printf("option name LMR_StatLow1 type spin default -10365 min -49000 max 0\n");
             printf("option name LMR_StatHigh1 type spin default 21295 min 0 max 49000\n");
             printf("option name LMR_StatHigh2 type spin default 23868 min 0 max 49000\n");
+            printf("option name SyzygyPath type string default <empty>\n");
+            printf("option name SyzygyProbeLimit type spin default 7 min 0 max 7\n");
             printf("uciok\n");
             fflush(stdout);
         } else if (strcmp(line, "isready") == 0) {
@@ -408,6 +415,20 @@ void uci_loop() {
                 } else if (strcmp(option_name, "LMR_StatHigh2") == 0) {
                     search_params.lmr_stat_high2 = value;
                     printf("info string Set LMR_StatHigh2 to %d\n", value);
+                } else if (strcmp(option_name, "SyzygyPath") == 0) {
+                    // value_start holds the raw path; strip trailing whitespace.
+                    strncpy(syzygy_path, value_start, sizeof(syzygy_path) - 1);
+                    syzygy_path[sizeof(syzygy_path) - 1] = '\0';
+                    size_t plen = strlen(syzygy_path);
+                    while (plen > 0 && (syzygy_path[plen - 1] == '\n' ||
+                                        syzygy_path[plen - 1] == '\r' ||
+                                        syzygy_path[plen - 1] == ' ')) {
+                        syzygy_path[--plen] = '\0';
+                    }
+                    syzygy_init(syzygy_path);
+                } else if (strcmp(option_name, "SyzygyProbeLimit") == 0) {
+                    syzygy_probe_limit = value;
+                    printf("info string Set SyzygyProbeLimit to %d\n", value);
                 } else {
                     printf("info string Unknown option: %s\n", option_name);
                 }
@@ -639,6 +660,77 @@ void uci_loop() {
             search_info.params = search_params;    // Copy search parameters
             clear_volatile_history(&search_info);  // Killers/prev_moves only; history persists
 
+            // =================================================================
+            // Syzygy tablebases: configure in-search WDL probing and probe the
+            // root with DTZ to restrict the search to TB-optimal moves.
+            // =================================================================
+            int tb_max = syzygy_max_pieces();
+            // Disable all probing for an illegal root (side-not-to-move in check):
+            // the search could otherwise capture the king and probe a kingless
+            // position, tripping an assertion inside Fathom.
+            bool root_legal =
+                !isKingAttacked(&current_board, !current_board.whiteToMove);
+            search_info.tbProbeLimit =
+                (tb_max > 0 && syzygy_probe_limit > 0 && root_legal)
+                    ? (syzygy_probe_limit < tb_max ? syzygy_probe_limit : tb_max)
+                    : 0;
+            search_info.tbRootMoveCount = 0;
+            search_info.tbRootScore = 0;
+            search_info.tbRootMatePlies = -1;
+            search_info.tbRootPvLen = 0;
+            if (search_info.tbProbeLimit > 0 &&
+                current_board.castlingRights == NO_CASTLING) {
+                Bitboard tb_occ =
+                    current_board.byTypeBB[WHITE][PAWN]   | current_board.byTypeBB[BLACK][PAWN]   |
+                    current_board.byTypeBB[WHITE][KNIGHT] | current_board.byTypeBB[BLACK][KNIGHT] |
+                    current_board.byTypeBB[WHITE][BISHOP] | current_board.byTypeBB[BLACK][BISHOP] |
+                    current_board.byTypeBB[WHITE][ROOK]   | current_board.byTypeBB[BLACK][ROOK]   |
+                    current_board.byTypeBB[WHITE][QUEEN]  | current_board.byTypeBB[BLACK][QUEEN]  |
+                    current_board.byTypeBB[WHITE][KING]   | current_board.byTypeBB[BLACK][KING];
+                int tb_pieces = POPCOUNT(tb_occ);
+                if (tb_pieces <= search_info.tbProbeLimit &&
+                    syzygy_available(tb_pieces)) {
+                    SyzygyRootResult tb_root;
+                    if (syzygy_probe_root(&current_board, &tb_root)) {
+                        for (int i = 0; i < tb_root.count; i++) {
+                            search_info.tbRootMoves[i] = tb_root.moves[i];
+                        }
+                        search_info.tbRootMoveCount = tb_root.count;
+
+                        // Mate-distance score (side-to-move perspective) from
+                        // the DTZ-optimal line length.
+                        int mate = tb_root.matePlies;
+                        search_info.tbRootMatePlies = mate;
+                        if (tb_root.wdl > 0) {
+                            search_info.tbRootScore =
+                                (mate >= 0) ? (MATE_SCORE - mate) : TB_WIN_SCORE;
+                        } else if (tb_root.wdl < 0) {
+                            search_info.tbRootScore =
+                                (mate >= 0) ? -(MATE_SCORE - mate) : -TB_WIN_SCORE;
+                        } else {
+                            search_info.tbRootScore = 0;
+                        }
+
+                        // Copy the DTZ-optimal PV for display.
+                        search_info.tbRootPvLen = tb_root.pvLen;
+                        for (int i = 0; i < tb_root.pvLen; i++) {
+                            search_info.tbRootPv[i] = tb_root.pv[i];
+                        }
+
+                        const char* verdict = tb_root.wdl > 0 ? "win"
+                                            : tb_root.wdl < 0 ? "loss" : "draw";
+                        if (mate >= 0) {
+                            printf("info string Syzygy root hit: %s, mate in %d ply, %d optimal move(s)\n",
+                                   verdict, mate, tb_root.count);
+                        } else {
+                            printf("info string Syzygy root hit: %s, %d optimal move(s)\n",
+                                   verdict, tb_root.count);
+                        }
+                        fflush(stdout);
+                    }
+                }
+            }
+
 
             // This is where the search will be called.
             // For now, let's just pick the first legal move.
@@ -656,6 +748,11 @@ void uci_loop() {
                 printf("info string FEN: %s\n", fen_before_search);
                 fflush(stdout);
                 best_move = iterative_deepening_search(&current_board, &search_info);
+                // On a tablebase root hit, play the DTZ-optimal move so that the
+                // played move, the reported score and the displayed PV all agree.
+                if (search_info.tbRootMoveCount > 0 && search_info.tbRootPvLen > 0) {
+                    best_move = search_info.tbRootPv[0];
+                }
                 printf("info string DEBUG: UCI: iterative_deepening_search returned. Best move: %u\n", best_move);
                 fflush(stdout);
                 printf("Best score: %d\n", search_info.bestScoreThisIteration);
@@ -698,6 +795,7 @@ void uci_loop() {
         // fflush(stderr); // Consider adding here as well for other commands if needed
     }
     
-    // Free heap-allocated NNUE network
+    // Release tablebases and heap-allocated NNUE network
+    syzygy_free();
     free(nnue_network);
 }
