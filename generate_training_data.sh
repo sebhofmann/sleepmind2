@@ -22,7 +22,7 @@ RANDOM_PROB=${RANDOM_PROB:-50}         # Wahrscheinlichkeit für Zufallszüge (%
 MAX_MOVES=${MAX_MOVES:-250}  # Maximale Züge pro Spiel 
 DRAW_THRESHOLD=${DRAW_THRESHOLD:-50} # 50-Züge-Regel
 EVAL_THRESHOLD=${EVAL_THRESHOLD:-4}  # Max Bewertung in Bauern nach Zufallszügen (0=aus)
-ADJUDICATE=${ADJUDICATE:-0} # Spiel beenden bei +/- N Bauern (0=aus)
+ADJUDICATE=${ADJUDICATE:-10} # Spiel beenden bei +/- N Bauern (0=aus)
 FILTER_TACTICS=${FILTER_TACTICS:-1}   # Taktische Positionen filtern (0=aus)
 VERBOSE=${VERBOSE:-1}  # Verbosity Level
 SYZYGY_PATH=${SYZYGY_PATH:-}          # Pfad zu Syzygy-Tablebases (leer=aus)
