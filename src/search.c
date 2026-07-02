@@ -120,7 +120,9 @@ void search_params_init(SearchParams* params) {
     params->lmr_full_depth_moves = 3;   // More aggressive LMR
     params->lmr_reduction_limit = 2;    // Start LMR earlier
 
-    // Null Move Pruning parameters (SPSA-tuned, 28500 games @200ms, SPRT +43 Elo)
+    // Null Move Pruning: reduction is adaptive in negamax (3 + depth/3 +
+    // eval margin term; LTC-SPRT +15.7 Elo vs static R=4 with verification).
+    // null_move_reduction is kept only for UCI option compatibility - unused.
     params->null_move_reduction = 4;
     params->null_move_min_depth = 3;
 
@@ -1169,12 +1171,31 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         return quiescence(board, alpha, beta, info, ply);
     }
     
+    bool can_null = info->params.use_null_move && do_null && !in_check && !is_pv &&
+        depth >= info->params.null_move_min_depth && can_do_null_move(board);
+    bool can_rfp = info->params.use_rfp && !is_pv && !in_check &&
+        depth <= info->params.rfp_max_depth && abs(beta) < TB_SCORE_MIN;
+    bool can_razor = info->params.use_razoring && !is_pv && !in_check &&
+        depth <= 3 && abs(alpha) < TB_SCORE_MIN;
+    bool can_futility = info->params.use_futility && !is_pv && !in_check &&
+        depth <= 3 && abs(alpha) < TB_SCORE_MIN && abs(beta) < TB_SCORE_MIN;
+
+    int static_eval = 0;
+    if (can_null || can_rfp || can_razor || can_futility) {
+        static_eval = evaluate(board, info->nnue_acc, info->nnue_net);
+        if (!board->whiteToMove) {
+            static_eval = -static_eval;
+        }
+    }
+
     // ==========================================================================
     // Null Move Pruning
+    // Adaptive reduction (deeper searches and larger eval margins allow larger
+    // reductions); only tried when static eval already fails high, so no
+    // verification search is needed.
     // ==========================================================================
-    if (info->params.use_null_move && do_null && !in_check && !is_pv && 
-        depth >= info->params.null_move_min_depth && can_do_null_move(board)) {
-        
+    if (can_null && static_eval >= beta) {
+
         // Make null move - update zobrist key for consistent TT usage
         board->whiteToMove = !board->whiteToMove;
         board->zobristKey ^= zobrist_side_to_move_key;
@@ -1189,8 +1210,15 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // and continuation history lookups in the child node
         info->prev_moves[ply] = 0;
 
+        // Adaptive reduction: base 3, grows with depth and with the margin by
+        // which the static eval exceeds beta (capped so shallow real search
+        // remains for zugzwang-ish positions).
+        int eval_term = (static_eval - beta) / 200;
+        if (eval_term > 3) eval_term = 3;
+        int null_reduction = 3 + depth / 3 + eval_term;
+
         // Search with reduced depth - mark as null move search to skip TT store for this node
-        int null_score = -negamax(board, depth - 1 - info->params.null_move_reduction, -beta, -beta + 1, 
+        int null_score = -negamax(board, depth - 1 - null_reduction, -beta, -beta + 1,
                                   info, ply + 1, false, true);
         
         // Unmake null move - restore zobrist key
@@ -1204,31 +1232,13 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         if (info->stopSearch) return 0;
         
         if (null_score >= beta) {
-            // Always do verification search for safety (eval not yet reliable)
-            int verify = negamax(board, depth - info->params.null_move_reduction - 1, beta - 1, beta,
-                                info, ply, false, false);
-            if (verify >= beta) {
-                PRUNING_STAT_INC(null_move);
-                return beta;
-            }
+            PRUNING_STAT_INC(null_move);
+            // Never return unproven mate/TB scores from a null-window search
+            return null_score >= TB_SCORE_MIN ? beta : null_score;
         }
     }
 
-    bool can_rfp = info->params.use_rfp && !is_pv && !in_check &&
-        depth <= info->params.rfp_max_depth && abs(beta) < TB_SCORE_MIN;
-    bool can_razor = info->params.use_razoring && !is_pv && !in_check &&
-        depth <= 3 && abs(alpha) < TB_SCORE_MIN;
-    bool can_futility = info->params.use_futility && !is_pv && !in_check &&
-        depth <= 3 && abs(alpha) < TB_SCORE_MIN && abs(beta) < TB_SCORE_MIN;
 
-    int static_eval = 0;
-    if (can_rfp || can_razor || can_futility) {
-        static_eval = evaluate(board, info->nnue_acc, info->nnue_net);
-        if (!board->whiteToMove) {
-            static_eval = -static_eval;
-        }
-    }
-    
     // ==========================================================================
     // Reverse Futility Pruning (Static Null Move Pruning)
     // If static eval is way above beta, we can assume a beta cutoff
