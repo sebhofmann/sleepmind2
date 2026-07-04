@@ -194,14 +194,27 @@
         const PARAMETERS = {
             "LMR_FullDepthMoves": { default: 3, min: 1, max: 10 },
             "LMR_ReductionLimit": { default: 2, min: 1, max: 6 },
-            "NullMove_Reduction": { default: 3, min: 1, max: 5 },
+            "LMP_Base": { default: 3, min: 1, max: 20 },
+            "LMP_MaxDepth": { default: 8, min: 1, max: 12 },
             "NullMove_MinDepth": { default: 3, min: 1, max: 6 },
-            "Futility_Margin": { default: 150, min: 50, max: 400 },
-            "Futility_MarginD2": { default: 300, min: 100, max: 600 },
-            "Futility_MarginD3": { default: 450, min: 150, max: 800 },
-            "RFP_Margin": { default: 80, min: 50, max: 300 },
-            "RFP_MaxDepth": { default: 8, min: 2, max: 10 },
-            "Aspiration_Window": { default: 100, min: 10, max: 200 }
+            "Futility_Margin": { default: 69, min: 50, max: 400 },
+            "Futility_MarginD2": { default: 253, min: 100, max: 600 },
+            "Futility_MarginD3": { default: 269, min: 150, max: 800 },
+            "RFP_Margin": { default: 93, min: 50, max: 300 },
+            "RFP_MaxDepth": { default: 6, min: 2, max: 10 },
+            "Aspiration_Window": { default: 83, min: 10, max: 200 },
+            "Razor_Margin": { default: 220, min: 100, max: 600 },
+            "Hist_BonusMult": { default: 518, min: 50, max: 800 },
+            "Hist_BonusSub": { default: 199, min: 0, max: 1000 },
+            "Hist_BonusMax": { default: 4325, min: 500, max: 16000 },
+            "Hist_MalusMult": { default: 1167, min: 100, max: 4000 },
+            "Hist_MalusSub": { default: 780, min: 0, max: 2000 },
+            "Hist_MalusMax": { default: 3846, min: 500, max: 16000 },
+            "FMH_Weight": { default: 166, min: 0, max: 256 },
+            "LMR_StatLow2": { default: -25544, min: -49000, max: 0 },
+            "LMR_StatLow1": { default: -10365, min: -49000, max: 0 },
+            "LMR_StatHigh1": { default: 21295, min: 0, max: 49000 },
+            "LMR_StatHigh2": { default: 23868, min: 0, max: 49000 }
         };
 
         let scoreChart, eloChart, histogramChart, paramsChart;

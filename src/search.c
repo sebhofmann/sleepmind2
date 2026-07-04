@@ -36,6 +36,7 @@ static struct {
     uint64_t reverse_futility;
     uint64_t razoring;
     uint64_t futility;
+    uint64_t lmp;
     uint64_t lmr;
     uint64_t delta;
     uint64_t see_pruning;
@@ -115,6 +116,11 @@ void search_params_init(SearchParams* params) {
     params->use_check_extension = true; // Extend by 1 ply when in check
     params->use_qs_see_pruning = true;  // SPRT-confirmed +30 Elo (skip SEE<0 captures in qsearch)
     params->use_bad_capture_last = true; // SPRT-confirmed +11 Elo (losing captures ordered after quiets)
+    params->use_lmp = true;
+
+    // Late Move Pruning: skip quiets after base + depth^2 searched moves
+    params->lmp_base = 3;
+    params->lmp_max_depth = 8;
 
     // Late Move Reduction parameters (tuned via tournament testing)
     params->lmr_full_depth_moves = 3;   // More aggressive LMR
@@ -122,8 +128,6 @@ void search_params_init(SearchParams* params) {
 
     // Null Move Pruning: reduction is adaptive in negamax (3 + depth/3 +
     // eval margin term; LTC-SPRT +15.7 Elo vs static R=4 with verification).
-    // null_move_reduction is kept only for UCI option compatibility - unused.
-    params->null_move_reduction = 4;
     params->null_move_min_depth = 3;
 
     // Futility pruning margins (SPSA-tuned)
@@ -1179,6 +1183,9 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         depth <= 3 && abs(alpha) < TB_SCORE_MIN;
     bool can_futility = info->params.use_futility && !is_pv && !in_check &&
         depth <= 3 && abs(alpha) < TB_SCORE_MIN && abs(beta) < TB_SCORE_MIN;
+    bool can_lmp = info->params.use_lmp && !is_pv && !in_check &&
+        depth <= info->params.lmp_max_depth && abs(alpha) < TB_SCORE_MIN;
+    int lmp_threshold = info->params.lmp_base + depth * depth;
 
     int static_eval = 0;
     if (can_null || can_rfp || can_razor || can_futility) {
@@ -1321,6 +1328,15 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // =======================================================================
         if (futility_pruning && moves_searched > 0 && !is_tactical) {
             PRUNING_STAT_INC(futility);
+            continue;
+        }
+
+        // =======================================================================
+        // Late Move Pruning: quiets ordered this late at shallow depth almost
+        // never raise alpha - skip them entirely (movecount-based pruning)
+        // =======================================================================
+        if (can_lmp && !is_tactical && moves_searched >= lmp_threshold) {
+            PRUNING_STAT_INC(lmp);
             continue;
         }
 
@@ -1852,13 +1868,14 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         // Print pruning statistics
         uint64_t total_prunings = pruning_stats.null_move + pruning_stats.reverse_futility +
                                   pruning_stats.razoring + pruning_stats.futility +
-                                  pruning_stats.lmr + pruning_stats.delta +
-                                  pruning_stats.see_pruning;
+                                  pruning_stats.lmp + pruning_stats.lmr +
+                                  pruning_stats.delta + pruning_stats.see_pruning;
         printf("info string Pruning stats (total=%llu):\n", (unsigned long long)total_prunings);
         printf("info string   Null Move:    %llu\n", (unsigned long long)pruning_stats.null_move);
         printf("info string   Rev Futility: %llu\n", (unsigned long long)pruning_stats.reverse_futility);
         printf("info string   Razoring:     %llu\n", (unsigned long long)pruning_stats.razoring);
         printf("info string   Futility:     %llu\n", (unsigned long long)pruning_stats.futility);
+        printf("info string   LMP:          %llu\n", (unsigned long long)pruning_stats.lmp);
         printf("info string   LMR:          %llu\n", (unsigned long long)pruning_stats.lmr);
         printf("info string   Delta:        %llu\n", (unsigned long long)pruning_stats.delta);
         printf("info string   SEE Pruning:  %llu\n", (unsigned long long)pruning_stats.see_pruning);

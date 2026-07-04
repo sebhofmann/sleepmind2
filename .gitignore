@@ -10,3 +10,8 @@ training/.idea
 archive
 variants
 ansible/collected_data
+spsa/spsa_state.json
+spsa/spsa_history.json
+spsa/spsa_run.log
+spsa/best_params.json
+spsa/venv

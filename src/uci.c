@@ -249,10 +249,12 @@ void uci_loop() {
             printf("option name Use_CheckExtension type check default true\n");
             printf("option name Use_QSSeePruning type check default true\n");
             printf("option name Use_BadCaptureLast type check default true\n");
+            printf("option name Use_LMP type check default true\n");
             // Search parameter options
             printf("option name LMR_FullDepthMoves type spin default 3 min 1 max 10\n");
+            printf("option name LMP_Base type spin default 3 min 1 max 20\n");
+            printf("option name LMP_MaxDepth type spin default 8 min 1 max 12\n");
             printf("option name LMR_ReductionLimit type spin default 2 min 1 max 6\n");
-            printf("option name NullMove_Reduction type spin default 4 min 1 max 5\n");
             printf("option name NullMove_MinDepth type spin default 3 min 1 max 6\n");
             printf("option name Futility_Margin type spin default 69 min 50 max 400\n");
             printf("option name Futility_MarginD2 type spin default 253 min 100 max 600\n");
@@ -345,16 +347,22 @@ void uci_loop() {
                 } else if (strcmp(option_name, "Use_BadCaptureLast") == 0) {
                     search_params.use_bad_capture_last = bool_value;
                     printf("info string Set Use_BadCaptureLast to %s\n", bool_value ? "true" : "false");
+                } else if (strcmp(option_name, "Use_LMP") == 0) {
+                    search_params.use_lmp = bool_value;
+                    printf("info string Set Use_LMP to %s\n", bool_value ? "true" : "false");
                 // Numeric parameters
+                } else if (strcmp(option_name, "LMP_Base") == 0) {
+                    search_params.lmp_base = value;
+                    printf("info string Set LMP_Base to %d\n", value);
+                } else if (strcmp(option_name, "LMP_MaxDepth") == 0) {
+                    search_params.lmp_max_depth = value;
+                    printf("info string Set LMP_MaxDepth to %d\n", value);
                 } else if (strcmp(option_name, "LMR_FullDepthMoves") == 0) {
                     search_params.lmr_full_depth_moves = value;
                     printf("info string Set LMR_FullDepthMoves to %d\n", value);
                 } else if (strcmp(option_name, "LMR_ReductionLimit") == 0) {
                     search_params.lmr_reduction_limit = value;
                     printf("info string Set LMR_ReductionLimit to %d\n", value);
-                } else if (strcmp(option_name, "NullMove_Reduction") == 0) {
-                    search_params.null_move_reduction = value;
-                    printf("info string Set NullMove_Reduction to %d\n", value);
                 } else if (strcmp(option_name, "NullMove_MinDepth") == 0) {
                     search_params.null_move_min_depth = value;
                     printf("info string Set NullMove_MinDepth to %d\n", value);

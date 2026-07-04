@@ -24,13 +24,17 @@ typedef struct {
     bool use_check_extension;  // Extend search depth by 1 when in check (default: true)
     bool use_qs_see_pruning;   // Skip losing captures (SEE<0) in quiescence (default: true, SPRT +30 Elo)
     bool use_bad_capture_last; // Order losing captures (SEE<0) below quiet moves (default: true, SPRT +11 Elo)
+    bool use_lmp;              // Enable Late Move Pruning (default: true)
 
     // Late Move Reduction parameters
     int lmr_full_depth_moves;  // Number of moves before LMR kicks in (default: 4)
     int lmr_reduction_limit;   // Minimum depth for LMR (default: 3)
 
-    // Null Move Pruning parameters
-    int null_move_reduction;   // Depth reduction for null move (default: 4)
+    // Late Move Pruning parameters (skip quiets after base + depth^2 moves)
+    int lmp_base;              // Movecount threshold base (default: 3)
+    int lmp_max_depth;         // Maximum depth for LMP (default: 8)
+
+    // Null Move Pruning parameters (reduction itself is adaptive in negamax)
     int null_move_min_depth;   // Minimum depth for null move pruning (default: 3)
 
     // Futility pruning margins

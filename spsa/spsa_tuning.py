@@ -31,7 +31,7 @@ import chess.pgn
 ENGINE_PATH = "../build/sleepmind"
 OPENING_BOOK_PATH = "/home/paschty/Downloads/2moves_v2.pgn"
 
-TIME_PER_MOVE_MS = 200
+TIME_PER_MOVE_MS = int(os.environ.get("SPSA_MOVETIME_MS", "1000"))
 MAX_ITERATIONS = 36000   # one iteration = one opening pair (2 games), fishtest-style
 SAVE_INTERVAL = 50       # save state every N completed pairs
 PRINT_INTERVAL = 50      # print full parameter state every N completed pairs
@@ -76,11 +76,17 @@ PARAMETERS = {
         "c": 1, "r": 0.5
     },
 
-    # Null Move parameters (range ~5)
-    "NullMove_Reduction": {
-        "default": 4, "min": 1, "max": 5,
+    # Late Move Pruning parameters (skip quiets after base + depth^2 moves)
+    "LMP_Base": {
+        "default": 3, "min": 1, "max": 20,
         "c": 1, "r": 0.5
     },
+    "LMP_MaxDepth": {
+        "default": 8, "min": 1, "max": 12,
+        "c": 1, "r": 0.5
+    },
+
+    # Null Move parameters (reduction is adaptive in-engine, not tunable)
     "NullMove_MinDepth": {
         "default": 3, "min": 1, "max": 6,
         "c": 1, "r": 0.5
