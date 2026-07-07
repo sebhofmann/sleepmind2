@@ -3,6 +3,12 @@ CFLAGS = -g -Wall -Wextra -std=c11 -O3 -march=native
 DEBUG_FLAGS = -g -Wall -Wextra -std=c11 -O0 -march=native -DDEBUG_NNUE_INCREMENTAL
 DEBUG_EVAL_FLAGS = -g -Wall -Wextra -std=c11 -O3 -march=native -DDEBUG_NNUE_EVAL
 
+ifeq ($(shell uname -s),Darwin)
+  CFLAGS += -D_DARWIN_C_SOURCE
+  DEBUG_FLAGS += -D_DARWIN_C_SOURCE
+  DEBUG_EVAL_FLAGS += -D_DARWIN_C_SOURCE
+endif
+
 # Optional flags: make STATS=1, or make hl_256, or make hl_768
 ifeq ($(STATS),1)
   CFLAGS += -DSEARCH_STATS
