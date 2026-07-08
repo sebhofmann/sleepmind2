@@ -1,3 +1,6 @@
+// posix_memalign needs POSIX visibility under glibc's strict -std=c11 mode
+#define _POSIX_C_SOURCE 200112L
+
 #include "tt.h"
 #include <stdlib.h>
 #include <string.h> // For memset
