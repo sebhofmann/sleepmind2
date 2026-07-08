@@ -780,21 +780,23 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     }
     
     int original_alpha = alpha;
-    
+    bool is_pv = (beta - alpha) > 1;
+
     // ==========================================================================
     // TT Probe in Quiescence Search
     // ==========================================================================
     Move tt_move = 0;
     TT_STAT_INC(tt_probes);
-    TTEntry* tt_entry = tt_probe(board->zobristKey);
-    if (tt_entry != NULL) {
+    TTData tte = tt_probe(board->zobristKey);
+    bool tt_pv = is_pv || (tte.found && tte.is_pv);
+    if (tte.found) {
         TT_STAT_INC(tt_hits);
-        tt_move = tt_entry->bestMove;
-        
+        tt_move = tte.move;
+
         // Use TT cutoff if depth is sufficient (QS entries have depth 0)
-        if (tt_entry->depth >= QS_TT_DEPTH) {
-            int tt_score = tt_entry->score;
-            uint8_t tt_flag = TT_GET_FLAG(tt_entry);
+        if (tte.depth >= QS_TT_DEPTH) {
+            int tt_score = tte.score;
+            uint8_t tt_flag = tte.bound;
             
             // Adjust ply-dependent (mate and TB) scores
             if (tt_score >= TB_SCORE_MIN) {
@@ -902,7 +904,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
             
             if (score >= beta) {
                 // TT Store for beta cutoff
-                tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m);
+                tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m, tt_pv, TT_EVAL_NONE);
                 return beta;
             }
             if (score > alpha) {
@@ -919,16 +921,21 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         // TT Store at end
         if (!info->stopSearch) {
             uint8_t tt_flag = (alpha <= original_alpha) ? TT_UPPERBOUND : TT_EXACT;
-            tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move);
+            tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move, tt_pv, TT_EVAL_NONE);
         }
-        
+
         return alpha;
     }
     
-    // Not in check: use stand pat
-    int stand_pat = evaluate(board, info->nnue_acc, info->nnue_net);
-    if (!board->whiteToMove) {
-        stand_pat = -stand_pat;
+    // Not in check: stand pat, reusing the TT static eval when available
+    int stand_pat;
+    if (tte.found && tte.eval != TT_EVAL_NONE) {
+        stand_pat = tte.eval;
+    } else {
+        stand_pat = evaluate(board, info->nnue_acc, info->nnue_net);
+        if (!board->whiteToMove) {
+            stand_pat = -stand_pat;
+        }
     }
     
     if (stand_pat >= beta) {
@@ -1047,7 +1054,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         
         if (score >= beta) {
             // TT Store for beta cutoff
-            tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m);
+            tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m, tt_pv, stand_pat);
             return beta;
         }
         if (score > alpha) {
@@ -1059,7 +1066,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     // TT Store at end of QS
     if (!info->stopSearch) {
         uint8_t tt_flag = (alpha <= original_alpha) ? TT_UPPERBOUND : TT_EXACT;
-        tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move);
+        tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move, tt_pv, stand_pat);
     }
     
     return alpha;
@@ -1105,15 +1112,16 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     // TT Probe
     Move tt_move = 0;
     TT_STAT_INC(tt_probes);
-    TTEntry* tt_entry = tt_probe(board->zobristKey);
-    if (tt_entry != NULL) {
+    TTData tte = tt_probe(board->zobristKey);
+    bool tt_pv = is_pv || (tte.found && tte.is_pv);
+    if (tte.found) {
         TT_STAT_INC(tt_hits);
-        tt_move = tt_entry->bestMove;
-        
+        tt_move = tte.move;
+
         // Only use TT cutoff in non-PV nodes
-        if (!is_pv && tt_entry->depth >= depth && ply > 0) {
-            int tt_score = tt_entry->score;
-            uint8_t tt_flag = TT_GET_FLAG(tt_entry);
+        if (!is_pv && tte.depth >= depth && ply > 0) {
+            int tt_score = tte.score;
+            uint8_t tt_flag = tte.bound;
             
             // Adjust ply-dependent (mate and TB) scores
             if (tt_score >= TB_SCORE_MIN) {
@@ -1165,7 +1173,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             int store_score = tb_score;
             if (store_score >= TB_SCORE_MIN)       store_score += ply;
             else if (store_score <= -TB_SCORE_MIN) store_score -= ply;
-            tt_store(board->zobristKey, depth, store_score, TT_EXACT, 0);
+            tt_store(board->zobristKey, depth, store_score, TT_EXACT, 0, tt_pv, TT_EVAL_NONE);
             return tb_score;
         }
     }
@@ -1187,11 +1195,17 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         depth <= info->params.lmp_max_depth && abs(alpha) < TB_SCORE_MIN;
     int lmp_threshold = info->params.lmp_base + depth * depth;
 
-    int static_eval = 0;
+    // Static eval only where pruning needs it, reusing the TT copy when
+    // available; stays TT_EVAL_NONE otherwise (in check / PV nodes)
+    int static_eval = TT_EVAL_NONE;
     if (can_null || can_rfp || can_razor || can_futility) {
-        static_eval = evaluate(board, info->nnue_acc, info->nnue_net);
-        if (!board->whiteToMove) {
-            static_eval = -static_eval;
+        if (tte.found && tte.eval != TT_EVAL_NONE) {
+            static_eval = tte.eval;
+        } else {
+            static_eval = evaluate(board, info->nnue_acc, info->nnue_net);
+            if (!board->whiteToMove) {
+                static_eval = -static_eval;
+            }
         }
     }
 
@@ -1591,7 +1605,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             store_score -= ply;
         }
         
-        tt_store(board->zobristKey, depth, store_score, tt_flag, best_move);
+        tt_store(board->zobristKey, depth, store_score, tt_flag, best_move, tt_pv, static_eval);
     }
     
     return alpha;
