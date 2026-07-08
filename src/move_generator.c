@@ -879,6 +879,184 @@ void generateMoves(const Board* board, MoveList* list) {
     generateCastlingMoves(board, list, isWhite);
 }
 
+// Generate only pseudo-legal QUIET moves (no captures, no promotions).
+// Together with generateCaptureAndPromotionMoves this covers exactly the
+// move set of generateMoves - the staged move picker relies on that.
+void generateQuietMoves(const Board* board, MoveList* list) {
+    list->count = 0;
+    bool isWhite = board->whiteToMove;
+
+    Bitboard friendlyPieces = getOccupiedByColor(board, isWhite);
+    Bitboard enemyPieces = getOccupiedByColor(board, !isWhite);
+    Bitboard allPieces = friendlyPieces | enemyPieces;
+    Bitboard emptySquares = ~allPieces;
+
+    // 1. Pawn pushes (pushes to the promotion rank are in the capture/promotion list)
+    Bitboard pawns = isWhite ? board->whitePawns : board->blackPawns;
+    int direction = isWhite ? 1 : -1;
+    int startRank = isWhite ? 1 : 6;
+    int promotionRank = isWhite ? 7 : 0;
+    Bitboard currentPawns = pawns;
+    while (currentPawns) {
+        Square fromSq = BIT_SCAN_FORWARD(currentPawns);
+        CLEAR_BIT(currentPawns, fromSq);
+        int rank = fromSq / 8;
+        if (rank + direction == promotionRank) continue;
+
+        Square toSq = fromSq + 8 * direction;
+        if (!GET_BIT(allPieces, toSq)) {
+            addMove(list, CREATE_MOVE(fromSq, toSq, 0,0,0,0,0));
+            if (rank == startRank) {
+                Square toSq_double = fromSq + 16 * direction;
+                if (!GET_BIT(allPieces, toSq_double)) {
+                    addMove(list, CREATE_MOVE(fromSq, toSq_double, 0,0,1,0,0));
+                }
+            }
+        }
+    }
+
+    // 2. Knight quiet moves
+    Bitboard knights = isWhite ? board->whiteKnights : board->blackKnights;
+    while (knights) {
+        Square fromSq = BIT_SCAN_FORWARD(knights);
+        CLEAR_BIT(knights, fromSq);
+        Bitboard quietTargets = KNIGHT_ATTACKS[fromSq] & emptySquares;
+        while (quietTargets) {
+            Square toSq = BIT_SCAN_FORWARD(quietTargets);
+            CLEAR_BIT(quietTargets, toSq);
+            addMove(list, CREATE_MOVE(fromSq, toSq, 0,0,0,0,0));
+        }
+    }
+
+    // 3. King quiet moves (castling handled separately below)
+    Bitboard king = isWhite ? board->whiteKings : board->blackKings;
+    if (king) {
+        Square fromSq = BIT_SCAN_FORWARD(king);
+        Bitboard quietTargets = KING_ATTACKS[fromSq] & emptySquares;
+        while (quietTargets) {
+            Square toSq = BIT_SCAN_FORWARD(quietTargets);
+            CLEAR_BIT(quietTargets, toSq);
+            addMove(list, CREATE_MOVE(fromSq, toSq, 0,0,0,0,0));
+        }
+    }
+
+    // 4. Sliding piece quiet moves
+    PieceTypeToken slidingPieceTypes[] = {BISHOP_T, ROOK_T, QUEEN_T};
+    for (int i = 0; i < 3; ++i) {
+        PieceTypeToken pieceType = slidingPieceTypes[i];
+        Bitboard pieces;
+        if (isWhite) {
+            if (pieceType == BISHOP_T) pieces = board->whiteBishops;
+            else if (pieceType == ROOK_T) pieces = board->whiteRooks;
+            else pieces = board->whiteQueens;
+        } else {
+            if (pieceType == BISHOP_T) pieces = board->blackBishops;
+            else if (pieceType == ROOK_T) pieces = board->blackRooks;
+            else pieces = board->blackQueens;
+        }
+
+        while (pieces) {
+            Square fromSq = BIT_SCAN_FORWARD(pieces);
+            CLEAR_BIT(pieces, fromSq);
+            Bitboard attacks;
+            if (pieceType == ROOK_T) attacks = getRookAttacks(fromSq, allPieces);
+            else if (pieceType == BISHOP_T) attacks = getBishopAttacks(fromSq, allPieces);
+            else /* QUEEN_T */ attacks = getQueenAttacks(fromSq, allPieces);
+
+            Bitboard quietTargets = attacks & emptySquares;
+            while (quietTargets) {
+                Square toSq = BIT_SCAN_FORWARD(quietTargets);
+                CLEAR_BIT(quietTargets, toSq);
+                addMove(list, CREATE_MOVE(fromSq, toSq, 0,0,0,0,0));
+            }
+        }
+    }
+
+    // 5. Castling
+    generateCastlingMoves(board, list, isWhite);
+}
+
+// Check whether a move is pseudo-legal in the given position, i.e. whether
+// generateMoves would emit exactly this move. The staged move picker uses
+// this to validate TT moves before trying them without any generated list -
+// a corrupted or colliding TT entry must never reach applyMove.
+bool moveIsPseudoLegal(const Board* board, Move m) {
+    if (m == 0) return false;
+    int from = MOVE_FROM(m);
+    int to = MOVE_TO(m);
+    bool isWhite = board->whiteToMove;
+
+    uint8_t p = board->piece[from];
+    if (p == NO_PIECE || PIECE_COLOR_OF(p) != (isWhite ? WHITE : BLACK)) return false;
+    int type = PIECE_TYPE_OF(p);
+
+    Bitboard friendlyPieces = getOccupiedByColor(board, isWhite);
+    Bitboard enemyPieces = getOccupiedByColor(board, !isWhite);
+    Bitboard allPieces = friendlyPieces | enemyPieces;
+
+    if (MOVE_IS_CASTLING(m)) {
+        if (type != KING) return false;
+        MoveList list;
+        list.count = 0;
+        generateCastlingMoves(board, &list, isWhite);
+        for (int i = 0; i < list.count; i++) {
+            if (list.moves[i] == m) return true;
+        }
+        return false;
+    }
+
+    if (type == PAWN) {
+        int direction = isWhite ? 1 : -1;
+        int startRank = isWhite ? 1 : 6;
+        int promotionRank = isWhite ? 7 : 0;
+        int rank = from / 8;
+        Bitboard pawnAttacks = PAWN_ATTACKS[isWhite ? 0 : 1][from];
+
+        if (MOVE_IS_EN_PASSANT(m)) {
+            if (board->enPassantSquare == SQ_NONE || to != board->enPassantSquare) return false;
+            if (!GET_BIT(pawnAttacks, to)) return false;
+            return m == CREATE_MOVE(from, to, 0, 1, 0, 1, 0);
+        }
+
+        if (GET_BIT(pawnAttacks, to) && GET_BIT(enemyPieces, to)) {
+            if (rank + direction == promotionRank) {
+                int promo = (int)MOVE_PROMOTION(m);
+                if (promo < PROMOTION_N || promo > PROMOTION_Q) return false;
+                return m == CREATE_MOVE(from, to, promo, 1, 0, 0, 0);
+            }
+            return m == CREATE_MOVE(from, to, 0, 1, 0, 0, 0);
+        }
+
+        if (to == from + 8 * direction && !GET_BIT(allPieces, to)) {
+            if (rank + direction == promotionRank) {
+                int promo = (int)MOVE_PROMOTION(m);
+                if (promo < PROMOTION_N || promo > PROMOTION_Q) return false;
+                return m == CREATE_MOVE(from, to, promo, 0, 0, 0, 0);
+            }
+            return m == CREATE_MOVE(from, to, 0, 0, 0, 0, 0);
+        }
+
+        if (to == from + 16 * direction && rank == startRank &&
+            !GET_BIT(allPieces, from + 8 * direction) && !GET_BIT(allPieces, to)) {
+            return m == CREATE_MOVE(from, to, 0, 0, 1, 0, 0);
+        }
+
+        return false;
+    }
+
+    Bitboard attacks;
+    switch (type) {
+        case KNIGHT: attacks = KNIGHT_ATTACKS[from]; break;
+        case BISHOP: attacks = getBishopAttacks(from, allPieces); break;
+        case ROOK:   attacks = getRookAttacks(from, allPieces); break;
+        case QUEEN:  attacks = getQueenAttacks(from, allPieces); break;
+        case KING:   attacks = KING_ATTACKS[from]; break;
+        default:     return false;
+    }
+    if (!GET_BIT(attacks & ~friendlyPieces, to)) return false;
+    return m == CREATE_MOVE(from, to, 0, GET_BIT(enemyPieces, to), 0, 0, 0);
+}
+
 // Generate all legal moves (filters out moves that leave king in check)
 // Use this when you need guaranteed legal moves (e.g., training data generation)
 void generateLegalMoves(Board* board, MoveList* list) {

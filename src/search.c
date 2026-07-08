@@ -489,7 +489,16 @@ static void update_cont_histories(const Board* board, SearchInfo* info, int ply,
 }
 
 // =============================================================================
-// Move ordering structures
+// Staged move picker
+//
+// Yields moves lazily instead of scoring/sorting the full move list up front:
+//   1. TT move (validated pseudo-legal, no generation needed)
+//   2. generate captures/promotions, yield the good ones (SEE >= 0, promos)
+//   3. generate quiet moves, yield by combined history score
+//   4. losing captures last (or before the quiets if use_bad_capture_last
+//      is disabled)
+// Qsearch skips the quiet stage; in-check qsearch uses a single evasion
+// stage over all moves.
 // =============================================================================
 
 typedef struct {
@@ -497,119 +506,249 @@ typedef struct {
     int score;
 } ScoredMove;
 
-static int compare_moves(const void* a, const void* b) {
-    return ((ScoredMove*)b)->score - ((ScoredMove*)a)->score;
-}
+#define TT_MOVE_SCORE 10000000
 
-// Check if a move is in the move list (for TT move validation)
-static bool is_move_in_list(Move move, const MoveList* moves) {
-    if (move == 0) return false;
-    for (int i = 0; i < moves->count; i++) {
-        if (moves->moves[i] == move) return true;
+typedef enum { MP_NORMAL, MP_QSEARCH, MP_EVASION } MovePickerMode;
+
+enum {
+    MP_STAGE_TT,
+    MP_STAGE_GEN_CAPTURES,
+    MP_STAGE_GOOD_CAPTURES,
+    MP_STAGE_GEN_QUIETS,
+    MP_STAGE_QUIETS,
+    MP_STAGE_BAD_CAPTURES,
+    MP_STAGE_GEN_EVASIONS,
+    MP_STAGE_EVASIONS,
+    MP_STAGE_DONE
+};
+
+typedef struct {
+    Board* board;
+    SearchInfo* info;
+    int ply;
+    Move tt_move;          // validated pseudo-legal TT move, 0 if none
+    MovePickerMode mode;
+    int stage;
+    // list layout: [0, good_count) good captures/promotions,
+    // [good_count, cap_count) losing captures, [cap_count, total_count)
+    // quiets. In evasion mode all moves live in [0, total_count).
+    ScoredMove list[MAX_MOVES];
+    int good_count;
+    int cap_count;
+    int total_count;
+    int idx;               // next pick position within the active region
+} MovePicker;
+
+static void movepicker_init(MovePicker* mp, Board* board, SearchInfo* info,
+                            int ply, Move tt_move, MovePickerMode mode) {
+    mp->board = board;
+    mp->info = info;
+    mp->ply = ply;
+    mp->mode = mode;
+    mp->stage = MP_STAGE_TT;
+    mp->tt_move = 0;
+    mp->idx = 0;
+    if (tt_move != 0 && moveIsPseudoLegal(board, tt_move)) {
+        // Qsearch (not in check) only searches captures/promotions
+        if (mode != MP_QSEARCH || MOVE_IS_CAPTURE(tt_move) || MOVE_IS_PROMOTION(tt_move)) {
+            mp->tt_move = tt_move;
+        }
     }
-    return false;
 }
 
-// =============================================================================
-// Move scoring for ordering
-// =============================================================================
+// Selection pick: swap the best-scored entry of [idx, end) to idx, return it
+static Move mp_pick(MovePicker* mp, int end, int* score_out) {
+    int best = mp->idx;
+    for (int i = mp->idx + 1; i < end; i++) {
+        if (mp->list[i].score > mp->list[best].score) best = i;
+    }
+    ScoredMove picked = mp->list[best];
+    mp->list[best] = mp->list[mp->idx];
+    mp->list[mp->idx] = picked;
+    mp->idx++;
+    if (score_out) *score_out = picked.score;
+    return picked.move;
+}
 
-static void score_moves(Board* board, MoveList* moves, ScoredMove* scored, 
-                       Move tt_move, SearchInfo* info, int ply) {
+// Score a capture or (non-capture) promotion; *is_good selects the partition
+static int mp_capture_score(MovePicker* mp, Move m, bool* is_good) {
+    Board* board = mp->board;
+
+    if (MOVE_IS_CAPTURE(m)) {
+        int see_value = see(board, m);
+
+        // MVV-LVA as tiebreaker
+        bool isWhite = board->whiteToMove;
+        bool isBlack = !isWhite;
+        PieceTypeToken victim = getPieceTypeAtSquare(board, MOVE_TO(m), &isBlack);
+        PieceTypeToken attacker = getPieceTypeAtSquare(board, MOVE_FROM(m), &isWhite);
+        int mvv_lva = get_piece_value(victim) * 10 - get_piece_value(attacker);
+
+        *is_good = see_value >= 0;
+        if (mp->mode == MP_NORMAL) {
+            return *is_good ? 8000000 + see_value * 100 + mvv_lva
+                            : -1000000 + see_value * 100 + mvv_lva;
+        }
+        return *is_good ? 1000000 + see_value * 100 + mvv_lva
+                        : see_value * 100 + mvv_lva;
+    }
+
+    // Non-capture promotion (kept in the good partition; underpromotions
+    // score below every good capture and therefore come after them)
+    *is_good = true;
+    int promo = MOVE_PROMOTION(m);
+    if (mp->mode == MP_NORMAL) {
+        return promo == PROMOTION_Q ? 9000000 : 7000000 + get_promotion_value(promo);
+    }
+    return 500000 + get_promotion_value(promo);
+}
+
+static void mp_fill_captures(MovePicker* mp) {
+    MoveList caps;
+    generateCaptureAndPromotionMoves(mp->board, &caps);
+
+    int n = 0;
+    int good = 0;
+    for (int i = 0; i < caps.count; i++) {
+        Move m = caps.moves[i];
+        if (m == mp->tt_move) continue;
+        bool is_good;
+        int score = mp_capture_score(mp, m, &is_good);
+        mp->list[n].move = m;
+        mp->list[n].score = score;
+        if (is_good) {
+            ScoredMove tmp = mp->list[n];
+            mp->list[n] = mp->list[good];
+            mp->list[good] = tmp;
+            good++;
+        }
+        n++;
+    }
+    mp->good_count = good;
+    mp->cap_count = n;
+    mp->total_count = n;
+}
+
+static void mp_fill_quiets(MovePicker* mp) {
+    MoveList quiets;
+    generateQuietMoves(mp->board, &quiets);
+
+    Board* board = mp->board;
+    SearchInfo* info = mp->info;
     int side = board->whiteToMove ? 0 : 1;
-    
-    for (int i = 0; i < moves->count; i++) {
-        Move m = moves->moves[i];
-        scored[i].move = m;
-        scored[i].score = 0;
-        
-        int from = MOVE_FROM(m);
-        int to = MOVE_TO(m);
-        
-        // 1. TT move gets highest priority
-        if (m == tt_move) {
-            scored[i].score = 10000000;
-            continue;
-        }
-        
-        // 2. Captures - use SEE for accurate ordering
-        if (MOVE_IS_CAPTURE(m)) {
-            int see_value = see(board, m);
-            
-            // Also compute MVV-LVA as tiebreaker
-            bool isWhite = board->whiteToMove;
-            bool isBlack = !isWhite;
-            PieceTypeToken victim = getPieceTypeAtSquare(board, to, &isBlack);
-            PieceTypeToken attacker = getPieceTypeAtSquare(board, from, &isWhite);
-            int victim_val = get_piece_value(victim);
-            int attacker_val = get_piece_value(attacker);
-            int mvv_lva = victim_val * 10 - attacker_val;
-            
-            if (see_value >= 0) {
-                // Good/equal captures: high priority, sorted by SEE then MVV-LVA
-                scored[i].score = 8000000 + see_value * 100 + mvv_lva;
-            } else if (info->params.use_bad_capture_last) {
-                // Bad captures ranked below all quiet moves (history in ~[-16384,16384])
-                scored[i].score = -1000000 + see_value * 100 + mvv_lva;
-            } else {
-                // Bad captures: low priority but still above quiet moves with bad history
-                scored[i].score = 2000000 + see_value * 100 + mvv_lva;
-            }
-            continue;
-        }
-        
-        // 3. Queen promotions
-        if (MOVE_IS_PROMOTION(m)) {
-            int promo = MOVE_PROMOTION(m);
-            if (promo == PROMOTION_Q) {
-                scored[i].score = 9000000;
-            } else {
-                scored[i].score = 7000000 + get_promotion_value(promo);
-            }
-            continue;
-        }
-        
-        // 4. Quiet moves: combined butterfly + continuation history.
-        // Replaces the former killer/countermove bonuses (Stockfish-style:
-        // continuation history subsumes both).
-        scored[i].score = info->history[side][from][to]
-                        + cont_score(cmh_table, board, info, ply, 1, m)
-                        + cont_score(fmh_table, board, info, ply, 2, m);
+    int n = mp->cap_count;
+    for (int i = 0; i < quiets.count && n < MAX_MOVES; i++) {
+        Move m = quiets.moves[i];
+        if (m == mp->tt_move) continue;
+        // Combined butterfly + continuation history (Stockfish-style:
+        // continuation history subsumes killers and countermoves)
+        mp->list[n].move = m;
+        mp->list[n].score = info->history[side][MOVE_FROM(m)][MOVE_TO(m)]
+                          + cont_score(cmh_table, board, info, mp->ply, 1, m)
+                          + cont_score(fmh_table, board, info, mp->ply, 2, m);
+        n++;
     }
-    
-    qsort(scored, moves->count, sizeof(ScoredMove), compare_moves);
+    mp->total_count = n;
 }
 
-// Score moves for quiescence (simpler, only captures matter)
-static void score_captures(Board* board, MoveList* moves, ScoredMove* scored) {
-    for (int i = 0; i < moves->count; i++) {
-        Move m = moves->moves[i];
-        scored[i].move = m;
-        scored[i].score = 0;
-        
-        if (MOVE_IS_CAPTURE(m)) {
-            // Use SEE for accurate capture ordering in qsearch
-            int see_value = see(board, m);
-            
-            // MVV-LVA as tiebreaker
-            bool isWhite = board->whiteToMove;
-            bool isBlack = !isWhite;
-            PieceTypeToken victim = getPieceTypeAtSquare(board, MOVE_TO(m), &isBlack);
-            PieceTypeToken attacker = getPieceTypeAtSquare(board, MOVE_FROM(m), &isWhite);
-            int mvv_lva = get_piece_value(victim) * 10 - get_piece_value(attacker);
-            
-            // Good captures first, then by MVV-LVA
-            if (see_value >= 0) {
-                scored[i].score = 1000000 + see_value * 100 + mvv_lva;
-            } else {
-                scored[i].score = see_value * 100 + mvv_lva;  // Bad captures at the end
+static void mp_fill_evasions(MovePicker* mp) {
+    MoveList all;
+    generateMoves(mp->board, &all);
+
+    int n = 0;
+    for (int i = 0; i < all.count; i++) {
+        Move m = all.moves[i];
+        if (m == mp->tt_move) continue;
+        int score = 0;
+        if (MOVE_IS_CAPTURE(m) || MOVE_IS_PROMOTION(m)) {
+            bool is_good;
+            score = mp_capture_score(mp, m, &is_good);
+        }
+        mp->list[n].move = m;
+        mp->list[n].score = score;
+        n++;
+    }
+    mp->total_count = n;
+}
+
+// Yield the next move, or 0 when exhausted. score_out (optional) receives the
+// ordering score - for quiets that is the combined history score used by LMR.
+static Move movepicker_next(MovePicker* mp, int* score_out) {
+    for (;;) {
+        switch (mp->stage) {
+        case MP_STAGE_TT:
+            mp->stage = (mp->mode == MP_EVASION) ? MP_STAGE_GEN_EVASIONS
+                                                 : MP_STAGE_GEN_CAPTURES;
+            if (mp->tt_move != 0) {
+                if (score_out) *score_out = TT_MOVE_SCORE;
+                return mp->tt_move;
             }
-        } else if (MOVE_IS_PROMOTION(m)) {
-            scored[i].score = get_promotion_value(MOVE_PROMOTION(m)) + 500000;
+            break;
+
+        case MP_STAGE_GEN_CAPTURES:
+            mp_fill_captures(mp);
+            mp->idx = 0;
+            mp->stage = MP_STAGE_GOOD_CAPTURES;
+            break;
+
+        case MP_STAGE_GOOD_CAPTURES:
+            if (mp->idx < mp->good_count) {
+                return mp_pick(mp, mp->good_count, score_out);
+            }
+            if (mp->mode == MP_QSEARCH || !mp->info->params.use_bad_capture_last) {
+                mp->idx = mp->good_count;
+                mp->stage = MP_STAGE_BAD_CAPTURES;
+            } else {
+                mp->stage = MP_STAGE_GEN_QUIETS;
+            }
+            break;
+
+        case MP_STAGE_BAD_CAPTURES:
+            if (mp->idx < mp->cap_count) {
+                return mp_pick(mp, mp->cap_count, score_out);
+            }
+            if (mp->mode == MP_NORMAL && !mp->info->params.use_bad_capture_last) {
+                mp->stage = MP_STAGE_GEN_QUIETS;
+            } else {
+                mp->stage = MP_STAGE_DONE;
+            }
+            break;
+
+        case MP_STAGE_GEN_QUIETS:
+            mp_fill_quiets(mp);
+            mp->idx = mp->cap_count;
+            mp->stage = MP_STAGE_QUIETS;
+            break;
+
+        case MP_STAGE_QUIETS:
+            if (mp->idx < mp->total_count) {
+                return mp_pick(mp, mp->total_count, score_out);
+            }
+            if (mp->info->params.use_bad_capture_last) {
+                mp->idx = mp->good_count;
+                mp->stage = MP_STAGE_BAD_CAPTURES;
+            } else {
+                mp->stage = MP_STAGE_DONE;
+            }
+            break;
+
+        case MP_STAGE_GEN_EVASIONS:
+            mp_fill_evasions(mp);
+            mp->idx = 0;
+            mp->stage = MP_STAGE_EVASIONS;
+            break;
+
+        case MP_STAGE_EVASIONS:
+            if (mp->idx < mp->total_count) {
+                return mp_pick(mp, mp->total_count, score_out);
+            }
+            mp->stage = MP_STAGE_DONE;
+            break;
+
+        default:
+            return 0;
         }
     }
-    
-    qsort(scored, moves->count, sizeof(ScoredMove), compare_moves);
 }
 
 // =============================================================================
@@ -825,44 +964,16 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     
     // If in check, we must search all moves (not just captures)
     if (in_check) {
-        // Generate all pseudo-legal moves when in check
-        MoveList all_moves;
-        generateMoves(board, &all_moves);
-
-        // Validate TT move
-        if (tt_move != 0 && !is_move_in_list(tt_move, &all_moves)) {
-            tt_move = 0;
-        }
-
-        ScoredMove scored[256];
-        score_captures(board, &all_moves, scored);
-
-        // Boost TT move if available
-        if (tt_move != 0) {
-            for (int i = 0; i < all_moves.count; i++) {
-                if (scored[i].move == tt_move) {
-                    scored[i].score += 10000000;
-                    break;
-                }
-            }
-            // Re-sort
-            for (int i = 1; i < all_moves.count; i++) {
-                ScoredMove key = scored[i];
-                int j = i - 1;
-                while (j >= 0 && scored[j].score < key.score) {
-                    scored[j + 1] = scored[j];
-                    j--;
-                }
-                scored[j + 1] = key;
-            }
-        }
+        // Staged picker in evasion mode: TT move first, then all moves
+        // (captures ordered by SEE, quiets after)
+        MovePicker mp;
+        movepicker_init(&mp, board, info, ply, tt_move, MP_EVASION);
 
         Move best_move = 0;
         int moves_searched = 0;
-        
-        for (int i = 0; i < all_moves.count; i++) {
-            Move m = scored[i].move;
-            
+
+        Move m;
+        while ((m = movepicker_next(&mp, NULL)) != 0) {
             #ifdef DEBUG_ZOBRIST_VERIFY
             uint64_t saved_zobrist = board->zobristKey;
             #endif
@@ -951,44 +1062,16 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         return alpha;
     }
     
-    // Generate only captures and promotions (much faster than generateMoves!)
-    MoveList capture_moves;
-    generateCaptureAndPromotionMoves(board, &capture_moves);
+    // Staged picker in qsearch mode: TT move first (only if it is a capture
+    // or promotion), then generated captures/promotions, losing captures last
+    MovePicker mp;
+    movepicker_init(&mp, board, info, ply, tt_move, MP_QSEARCH);
+    tt_move = mp.tt_move;  // validated - used for the SEE-pruning exemption below
 
-    // Validate TT move - must be in the capture list
-    if (tt_move != 0 && !is_move_in_list(tt_move, &capture_moves)) {
-        tt_move = 0;
-    }
-
-    // Score and sort captures, with TT move bonus
-    ScoredMove scored[256];
-    score_captures(board, &capture_moves, scored);
-
-    // Boost TT move score if it's in our capture list
-    if (tt_move != 0) {
-        for (int i = 0; i < capture_moves.count; i++) {
-            if (scored[i].move == tt_move) {
-                scored[i].score += 10000000;  // Ensure TT move is searched first
-                break;
-            }
-        }
-        // Re-sort after boosting TT move
-        for (int i = 1; i < capture_moves.count; i++) {
-            ScoredMove key = scored[i];
-            int j = i - 1;
-            while (j >= 0 && scored[j].score < key.score) {
-                scored[j + 1] = scored[j];
-                j--;
-            }
-            scored[j + 1] = key;
-        }
-    }
-    
     Move best_move = 0;
-    
-    for (int i = 0; i < capture_moves.count; i++) {
-        Move m = scored[i].move;
-        
+
+    Move m;
+    while ((m = movepicker_next(&mp, NULL)) != 0) {
         // Delta pruning: skip captures that can't possibly raise alpha
         if (info->params.use_delta_pruning && !MOVE_IS_PROMOTION(m)) {
             int gain;
@@ -1305,25 +1388,22 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         }
     }
     
-    // Generate moves (pseudo-legal - legality checked after applyMove)
-    MoveList moves;
-    generateMoves(board, &moves);
+    // Staged move picker: TT move first (validated pseudo-legal, no move
+    // generation needed), then captures/promotions, then quiet moves.
+    // Legality is still checked after applyMove.
+    MovePicker mp;
+    movepicker_init(&mp, board, info, ply, tt_move, MP_NORMAL);
 
-    // Validate TT move - must be in the move list (prevents TT collision bugs)
-    if (tt_move != 0 && !is_move_in_list(tt_move, &moves)) {
-        tt_move = 0;
-    }
-
-    // Score and sort moves
-    ScoredMove scored[256];
-    score_moves(board, &moves, scored, tt_move, info, ply);
-    
     Move best_move = 0;
     int moves_searched = 0;
-    
-    for (int i = 0; i < moves.count; i++) {
-        Move m = scored[i].move;
 
+    // Quiet moves yielded so far (for the history malus on a beta cutoff)
+    Move quiets_tried[MAX_MOVES];
+    int quiets_tried_count = 0;
+
+    Move m;
+    int move_score;
+    while ((m = movepicker_next(&mp, &move_score)) != 0) {
         // Syzygy root-move restriction: at the root, only search TB-optimal moves.
         if (ply == 0 && info->tbRootMoveCount > 0) {
             bool tb_allowed = false;
@@ -1336,7 +1416,11 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         bool is_capture = MOVE_IS_CAPTURE(m);
         bool is_promotion = MOVE_IS_PROMOTION(m);
         bool is_tactical = is_capture || is_promotion;
-        
+
+        if (!is_tactical && quiets_tried_count < MAX_MOVES) {
+            quiets_tried[quiets_tried_count++] = m;
+        }
+
         // =======================================================================
         // Futility Pruning: skip quiet moves that can't improve alpha
         // =======================================================================
@@ -1425,7 +1509,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                 // continuation history = this quiet's ordering score, computed
                 // before applyMove). Thresholds match the SF-scale update
                 // magnitudes in history_bonus()/history_malus().
-                int stat = scored[i].score;
+                int stat = move_score;
                 if (stat < info->params.lmr_stat_low2) {
                     reduction += 2;
                 } else if (stat < info->params.lmr_stat_low1) {
@@ -1564,13 +1648,12 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                 update_history(info, board, m, depth);
                 update_cont_histories(board, info, ply, m, history_bonus(info, depth));
 
-                // Apply malus to all previously considered quiet moves
-                for (int j = 0; j < i; j++) {
-                    Move prev = scored[j].move;
-                    if (!MOVE_IS_CAPTURE(prev) && !MOVE_IS_PROMOTION(prev)) {
-                        update_history_malus(info, board, prev, depth);
-                        update_cont_histories(board, info, ply, prev, -history_malus(info, depth));
-                    }
+                // Apply malus to all previously yielded quiet moves
+                for (int j = 0; j < quiets_tried_count; j++) {
+                    Move prev = quiets_tried[j];
+                    if (prev == m) continue;
+                    update_history_malus(info, board, prev, depth);
+                    update_cont_histories(board, info, ply, prev, -history_malus(info, depth));
                 }
             }
             break;

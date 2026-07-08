@@ -23,6 +23,15 @@ void generateCaptureMoves(const Board* board, MoveList* moveList);
 // Generate only pseudo-legal capture and promotion moves for the current player
 void generateCaptureAndPromotionMoves(const Board* board, MoveList* moveList);
 
+// Generate only pseudo-legal quiet moves (no captures, no promotions).
+// Together with generateCaptureAndPromotionMoves this covers exactly the
+// move set of generateMoves.
+void generateQuietMoves(const Board* board, MoveList* moveList);
+
+// Check whether a move is pseudo-legal in the given position, i.e. whether
+// generateMoves would emit exactly this move (used to validate TT moves)
+bool moveIsPseudoLegal(const Board* board, Move move);
+
 // Functions to get attacks for sliding pieces (using magic bitboards)
 Bitboard getRookAttacks(Square square, Bitboard occupancy);
 Bitboard getBishopAttacks(Square square, Bitboard occupancy);
