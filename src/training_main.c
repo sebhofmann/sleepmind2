@@ -62,7 +62,7 @@ static TrainingConfig config = {
 };
 
 // Global flag for graceful shutdown
-static volatile bool should_stop = false;
+static volatile sig_atomic_t should_stop = 0;
 static int games_completed = 0;
 
 // Statistics tracking
@@ -95,12 +95,12 @@ static void check_status_output(void) {
 // Signal Handler
 // =============================================================================
 
+// Only async-signal-safe operations are allowed here: printf/fflush/malloc
+// take locks the interrupted main thread may already hold -> deadlock.
+// Message and data flush happen in the main loop when the flag is seen.
 void signal_handler(int sig) {
     (void)sig;
-    printf("\nReceived signal, finishing current game and shutting down...\n");
-    // Flush training data immediately to prevent data loss
-    flush_training_data();
-    should_stop = true;
+    should_stop = 1;
 }
 
 // =============================================================================
@@ -672,7 +672,12 @@ int main(int argc, char* argv[]) {
         }
         check_status_output();
     }
-    
+
+    if (should_stop) {
+        printf("\nReceived signal, shut down after finishing current game.\n");
+        flush_training_data();
+    }
+
     // Final statistics
     time_t end_time = time(NULL);
     double total_elapsed = difftime(end_time, start_time);
