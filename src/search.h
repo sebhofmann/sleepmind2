@@ -25,6 +25,7 @@ typedef struct {
     bool use_qs_see_pruning;   // Skip losing captures (SEE<0) in quiescence (default: true, SPRT +30 Elo)
     bool use_bad_capture_last; // Order losing captures (SEE<0) below quiet moves (default: true, SPRT +11 Elo)
     bool use_lmp;              // Enable Late Move Pruning (default: true)
+    bool use_mdp;              // Enable Mate Distance Pruning (default: true)
 
     // Late Move Reduction parameters
     int lmr_full_depth_moves;  // Number of moves before LMR kicks in (default: 4)

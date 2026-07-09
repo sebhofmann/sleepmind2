@@ -117,6 +117,7 @@ void search_params_init(SearchParams* params) {
     params->use_qs_see_pruning = true;  // SPRT-confirmed +30 Elo (skip SEE<0 captures in qsearch)
     params->use_bad_capture_last = true; // SPRT-confirmed +11 Elo (losing captures ordered after quiets)
     params->use_lmp = true;
+    params->use_mdp = true;             // Mate Distance Pruning
 
     // Late Move Pruning: skip quiets after base + depth^2 searched moves
     params->lmp_base = 6;
@@ -1163,7 +1164,20 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                    int ply, bool do_null, bool is_null_move_search) {
     info->nodesSearched++;
     info->pv_length[ply] = 0;
-    
+
+    // Mate distance pruning: no line from here can be better than mating in
+    // ply+1 or worse than being mated in ply, so clamp the window to that
+    // range. Cuts every line that cannot beat an already-found shorter mate,
+    // which keeps mate-heavy subtrees from exploding. Must run before
+    // original_alpha is captured so TT bound classification stays consistent.
+    if (ply > 0 && info->params.use_mdp) {
+        int mate_lower = -MATE_SCORE + ply;
+        int mate_upper = MATE_SCORE - ply - 1;
+        if (alpha < mate_lower) alpha = mate_lower;
+        if (beta > mate_upper) beta = mate_upper;
+        if (alpha >= beta) return alpha;
+    }
+
     bool is_pv = (beta - alpha) > 1;  // Are we in a PV node?
     int original_alpha = alpha;
     

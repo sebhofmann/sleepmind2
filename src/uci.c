@@ -250,6 +250,7 @@ void uci_loop() {
             printf("option name Use_QSSeePruning type check default true\n");
             printf("option name Use_BadCaptureLast type check default true\n");
             printf("option name Use_LMP type check default true\n");
+            printf("option name Use_MDP type check default true\n");
             // Search parameter options
             printf("option name LMR_FullDepthMoves type spin default 3 min 1 max 10\n");
             printf("option name LMP_Base type spin default 6 min 1 max 20\n");
@@ -341,6 +342,9 @@ void uci_loop() {
                 } else if (strcmp(option_name, "Use_CheckExtension") == 0) {
                     search_params.use_check_extension = bool_value;
                     printf("info string Set Use_CheckExtension to %s\n", bool_value ? "true" : "false");
+                } else if (strcmp(option_name, "Use_MDP") == 0) {
+                    search_params.use_mdp = bool_value;
+                    printf("info string Set Use_MDP to %s\n", bool_value ? "true" : "false");
                 } else if (strcmp(option_name, "Use_QSSeePruning") == 0) {
                     search_params.use_qs_see_pruning = bool_value;
                     printf("info string Set Use_QSSeePruning to %s\n", bool_value ? "true" : "false");
