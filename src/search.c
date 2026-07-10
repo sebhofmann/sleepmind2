@@ -844,11 +844,19 @@ static bool check_time(SearchInfo* info) {
             return true;
         }
     }
+    // Hard node cap: the node limit itself is soft (checked between
+    // iterations), but without any time limit (training data generation)
+    // a single pathological iteration could otherwise run unbounded.
+    if (info->nodeLimit > 0 && info->nodesSearched >= 32 * info->nodeLimit) {
+        info->stopSearch = true;
+        return true;
+    }
     return false;
 }
 
-// Note: Node limit is now a SOFT limit, checked only between iterations
-// in iterative_deepening_search() to allow each iteration to complete fully.
+// Note: Node limit is a SOFT limit, checked between iterations in
+// iterative_deepening_search() so each iteration can complete fully.
+// check_time() additionally enforces a 32x hard cap as a safety net.
 
 // Hilfsfunktion: Verstrichene Zeit in ms
 static long get_elapsed_time(SearchInfo* info) {
