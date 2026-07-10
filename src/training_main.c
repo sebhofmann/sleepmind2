@@ -204,8 +204,12 @@ static GameResult check_game_result(Board* board, int half_move_clock, MoveList*
         return GAME_DRAW;
     }
     
-    // Threefold repetition
-    if (count_position_repetitions(board->zobristKey) >= 3) {
+    // Threefold repetition. The position just reached is recorded at the top
+    // of the NEXT game-loop iteration, so it is not in position_history yet
+    // and counts as one occurrence itself. Without the +1 this adjudicated
+    // only on the 4th occurrence - one full repetition cycle too late (a
+    // hung search on the 3rd occurrence is what stalled instances for hours).
+    if (count_position_repetitions(board->zobristKey) + 1 >= 3) {
         return GAME_DRAW;
     }
     
