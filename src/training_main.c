@@ -385,9 +385,13 @@ static bool play_game(int game_num, NNUENetwork* nnue_network) {
                 }
             }
             
-            // Filter tactical positions if enabled
-            bool should_record = true;
-            if (config.filter_tactics) {
+            // Never record opening-phase positions (ply < random_moves):
+            // those plies are only randomized with probability
+            // random_probability, the rest is searched normally - which
+            // oversampled the same few opening positions with noisy result
+            // labels (startpos alone: ~0.7 % of all entries).
+            bool should_record = (ply >= config.random_moves);
+            if (should_record && config.filter_tactics) {
                 // Check if side to move is in check
                 bool in_check = isKingAttacked(&board, board.whiteToMove);
                 // Check if best move is a capture
