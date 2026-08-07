@@ -9,7 +9,7 @@
 // NNUE Network Architecture
 #define NNUE_INPUT_SIZE      768   // 64 squares * 6 piece types * 2 colors
 #ifndef NNUE_HIDDEN_SIZE
-#define NNUE_HIDDEN_SIZE     256  // Hidden layer neurons per perspective
+#define NNUE_HIDDEN_SIZE     768  // Hidden layer neurons per perspective
 #endif
 #define NNUE_INPUT_BUCKETS   10    // King position buckets
 #define NNUE_OUTPUT_BUCKETS  8     // Output buckets
@@ -25,7 +25,9 @@
 // Quantization constants
 #define NNUE_QA              255   // Feature transformer weight quantization
 #define NNUE_QB              64    // Output layer weight quantization
-#define NNUE_SCALE           400   // Final output scale
+#ifndef NNUE_SCALE
+#define NNUE_SCALE           295   // Final output scale (must match bullet's eval_scale)
+#endif
 
 // Accumulator for efficient incremental updates (activation values only)
 // Aligned to 64 bytes for AVX-512 optimal access

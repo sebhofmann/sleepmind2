@@ -117,7 +117,8 @@ fn main() {
     let hl_size = 768;
     let initial_lr = 0.001;
     let final_lr = 0.001 * 0.3f32.powi(5);
-    let wdl_proportion = 0.00;
+    let wdl_proportion = 0.5;
+    const EVAL_SCALE: f32 = 295.0;
     const NUM_OUTPUT_BUCKETS: usize = 8;
     #[rustfmt::skip]
     const BUCKET_LAYOUT: [usize; 32] = [
@@ -186,7 +187,7 @@ fn main() {
 
     let schedule = TrainingSchedule {
         net_id,
-        eval_scale: 400.0,
+        eval_scale: EVAL_SCALE,
         steps: TrainingSteps {
             batch_size: 16_384,
             batches_per_superbatch: 6104,

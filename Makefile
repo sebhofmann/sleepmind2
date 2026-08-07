@@ -9,9 +9,17 @@ ifeq ($(shell uname -s),Darwin)
   DEBUG_EVAL_FLAGS += -D_DARWIN_C_SOURCE
 endif
 
-# Optional flags: make STATS=1, or make hl_256, or make hl_768, or make hl_1024
+# Optional flags: make STATS=1, or make hl_256, or make hl_512, or make hl_768, or make hl_1024
 ifeq ($(STATS),1)
   CFLAGS += -DSEARCH_STATS
+endif
+
+ifeq ($(hl_256),1)
+  CFLAGS += -DNNUE_HIDDEN_SIZE=256
+endif
+
+ifeq ($(hl_512),1)
+  CFLAGS += -DNNUE_HIDDEN_SIZE=512
 endif
 
 ifeq ($(hl_768),1)
