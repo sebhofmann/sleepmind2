@@ -125,8 +125,8 @@ void search_params_init(SearchParams* params) {
     params->lmp_base = 6;
     params->lmp_max_depth = 8;
 
-    params->main_capture_see_margin = 250;
-    params->main_capture_see_max_depth = 8;
+    params->main_capture_see_margin = 100;
+    params->main_capture_see_max_depth = 16;
 
     // Late Move Reduction parameters (tuned via tournament testing)
     params->lmr_full_depth_moves = 3;   // More aggressive LMR
@@ -577,6 +577,7 @@ static void update_cont_histories(const Board* board, SearchInfo* info, int ply,
 typedef struct {
     Move move;
     int score;
+    int see_value; // exact capture SEE already paid for by move ordering
 } ScoredMove;
 
 #define TT_MOVE_SCORE 10000000
@@ -630,7 +631,7 @@ static void movepicker_init(MovePicker* mp, Board* board, SearchInfo* info,
 }
 
 // Selection pick: swap the best-scored entry of [idx, end) to idx, return it
-static Move mp_pick(MovePicker* mp, int end, int* score_out) {
+static Move mp_pick(MovePicker* mp, int end, int* score_out, int* see_out) {
     int best = mp->idx;
     for (int i = mp->idx + 1; i < end; i++) {
         if (mp->list[i].score > mp->list[best].score) best = i;
@@ -640,15 +641,17 @@ static Move mp_pick(MovePicker* mp, int end, int* score_out) {
     mp->list[mp->idx] = picked;
     mp->idx++;
     if (score_out) *score_out = picked.score;
+    if (see_out) *see_out = picked.see_value;
     return picked.move;
 }
 
 // Score a capture or (non-capture) promotion; *is_good selects the partition
-static int mp_capture_score(MovePicker* mp, Move m, bool* is_good) {
+static int mp_capture_score(MovePicker* mp, Move m, bool* is_good, int* see_out) {
     Board* board = mp->board;
 
     if (MOVE_IS_CAPTURE(m)) {
         int see_value = see(board, m);
+        *see_out = see_value;
 
         // MVV-LVA as tiebreaker
         bool isWhite = board->whiteToMove;
@@ -669,6 +672,7 @@ static int mp_capture_score(MovePicker* mp, Move m, bool* is_good) {
     // Non-capture promotion (kept in the good partition; underpromotions
     // score below every good capture and therefore come after them)
     *is_good = true;
+    *see_out = 0;
     int promo = MOVE_PROMOTION(m);
     if (mp->mode == MP_NORMAL) {
         return promo == PROMOTION_Q ? 9000000 : 7000000 + get_promotion_value(promo);
@@ -686,9 +690,11 @@ static void mp_fill_captures(MovePicker* mp) {
         Move m = caps.moves[i];
         if (m == mp->tt_move) continue;
         bool is_good;
-        int score = mp_capture_score(mp, m, &is_good);
+        int see_value;
+        int score = mp_capture_score(mp, m, &is_good, &see_value);
         mp->list[n].move = m;
         mp->list[n].score = score;
+        mp->list[n].see_value = see_value;
         if (is_good) {
             ScoredMove tmp = mp->list[n];
             mp->list[n] = mp->list[good];
@@ -719,6 +725,7 @@ static void mp_fill_quiets(MovePicker* mp) {
         mp->list[n].score = info->history[side][MOVE_FROM(m)][MOVE_TO(m)]
                           + cont_score(cmh_table, board, info, mp->ply, 1, m)
                           + cont_score(fmh_table, board, info, mp->ply, 2, m);
+        mp->list[n].see_value = 0;
         n++;
     }
     mp->total_count = n;
@@ -735,7 +742,11 @@ static void mp_fill_evasions(MovePicker* mp) {
         int score = 0;
         if (MOVE_IS_CAPTURE(m) || MOVE_IS_PROMOTION(m)) {
             bool is_good;
-            score = mp_capture_score(mp, m, &is_good);
+            int see_value;
+            score = mp_capture_score(mp, m, &is_good, &see_value);
+            mp->list[n].see_value = see_value;
+        } else {
+            mp->list[n].see_value = 0;
         }
         mp->list[n].move = m;
         mp->list[n].score = score;
@@ -746,7 +757,7 @@ static void mp_fill_evasions(MovePicker* mp) {
 
 // Yield the next move, or 0 when exhausted. score_out (optional) receives the
 // ordering score - for quiets that is the combined history score used by LMR.
-static Move movepicker_next(MovePicker* mp, int* score_out) {
+static Move movepicker_next(MovePicker* mp, int* score_out, int* see_out) {
     for (;;) {
         switch (mp->stage) {
         case MP_STAGE_TT:
@@ -754,6 +765,7 @@ static Move movepicker_next(MovePicker* mp, int* score_out) {
                                                  : MP_STAGE_GEN_CAPTURES;
             if (mp->tt_move != 0) {
                 if (score_out) *score_out = TT_MOVE_SCORE;
+                if (see_out) *see_out = 0;
                 return mp->tt_move;
             }
             break;
@@ -766,7 +778,7 @@ static Move movepicker_next(MovePicker* mp, int* score_out) {
 
         case MP_STAGE_GOOD_CAPTURES:
             if (mp->idx < mp->good_count) {
-                return mp_pick(mp, mp->good_count, score_out);
+                return mp_pick(mp, mp->good_count, score_out, see_out);
             }
             if (mp->mode == MP_QSEARCH || !mp->info->params.use_bad_capture_last) {
                 mp->idx = mp->good_count;
@@ -778,7 +790,7 @@ static Move movepicker_next(MovePicker* mp, int* score_out) {
 
         case MP_STAGE_BAD_CAPTURES:
             if (mp->idx < mp->cap_count) {
-                return mp_pick(mp, mp->cap_count, score_out);
+                return mp_pick(mp, mp->cap_count, score_out, see_out);
             }
             if (mp->mode == MP_NORMAL && !mp->info->params.use_bad_capture_last) {
                 mp->stage = MP_STAGE_GEN_QUIETS;
@@ -795,7 +807,7 @@ static Move movepicker_next(MovePicker* mp, int* score_out) {
 
         case MP_STAGE_QUIETS:
             if (mp->idx < mp->total_count) {
-                return mp_pick(mp, mp->total_count, score_out);
+                return mp_pick(mp, mp->total_count, score_out, see_out);
             }
             if (mp->info->params.use_bad_capture_last) {
                 mp->idx = mp->good_count;
@@ -813,7 +825,7 @@ static Move movepicker_next(MovePicker* mp, int* score_out) {
 
         case MP_STAGE_EVASIONS:
             if (mp->idx < mp->total_count) {
-                return mp_pick(mp, mp->total_count, score_out);
+                return mp_pick(mp, mp->total_count, score_out, see_out);
             }
             mp->stage = MP_STAGE_DONE;
             break;
@@ -1054,7 +1066,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         int moves_searched = 0;
 
         Move m;
-        while ((m = movepicker_next(&mp, NULL)) != 0) {
+        while ((m = movepicker_next(&mp, NULL, NULL)) != 0) {
             #ifdef DEBUG_ZOBRIST_VERIFY
             uint64_t saved_zobrist = board->zobristKey;
             #endif
@@ -1152,7 +1164,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     Move best_move = 0;
 
     Move m;
-    while ((m = movepicker_next(&mp, NULL)) != 0) {
+    while ((m = movepicker_next(&mp, NULL, NULL)) != 0) {
         // Delta pruning: skip captures that can't possibly raise alpha
         if (info->params.use_delta_pruning && !MOVE_IS_PROMOTION(m)) {
             int gain;
@@ -1503,7 +1515,8 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
 
     Move m;
     int move_score;
-    while ((m = movepicker_next(&mp, &move_score)) != 0) {
+    int move_see;
+    while ((m = movepicker_next(&mp, &move_score, &move_see)) != 0) {
         // Syzygy root-move restriction: at the root, only search TB-optimal moves.
         if (ply == 0 && info->tbRootMoveCount > 0) {
             bool tb_allowed = false;
@@ -1544,7 +1557,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // checkmate by skipping every legal move before applyMove().
         if (can_main_capture_see && is_capture && !is_promotion &&
             m != mp.tt_move && moves_searched > 0 &&
-            !see_ge(board, m, -info->params.main_capture_see_margin * depth)) {
+            move_see < -info->params.main_capture_see_margin * depth) {
             PRUNING_STAT_INC(main_capture_see);
             continue;
         }

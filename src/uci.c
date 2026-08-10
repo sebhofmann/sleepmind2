@@ -256,8 +256,8 @@ void uci_loop() {
             printf("option name LMR_FullDepthMoves type spin default 3 min 1 max 10\n");
             printf("option name LMP_Base type spin default 6 min 1 max 20\n");
             printf("option name LMP_MaxDepth type spin default 8 min 1 max 12\n");
-            printf("option name MainCaptureSEE_Margin type spin default 250 min 0 max 500\n");
-            printf("option name MainCaptureSEE_MaxDepth type spin default 8 min 1 max 16\n");
+            printf("option name MainCaptureSEE_Margin type spin default 100 min 0 max 500\n");
+            printf("option name MainCaptureSEE_MaxDepth type spin default 16 min 1 max 32\n");
             printf("option name LMR_ReductionLimit type spin default 1 min 1 max 6\n");
             printf("option name NullMove_MinDepth type spin default 4 min 1 max 6\n");
             printf("option name Futility_Margin type spin default 243 min 50 max 400\n");

@@ -37,8 +37,8 @@ typedef struct {
     int lmp_max_depth;         // Maximum depth for LMP (default: 8)
 
     // Main-search capture SEE pruning
-    int main_capture_see_margin;    // Negative threshold per depth (default: 250)
-    int main_capture_see_max_depth; // Maximum depth (default: 8)
+    int main_capture_see_margin;    // Negative threshold per depth (default: 100)
+    int main_capture_see_max_depth; // Maximum depth (default: 16)
 
     // Null Move Pruning parameters (reduction itself is adaptive in negamax)
     int null_move_min_depth;   // Minimum depth for null move pruning (default: 3)
