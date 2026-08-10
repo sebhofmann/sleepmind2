@@ -1,5 +1,24 @@
 # SleepMind 2
 
+## Release binaries
+
+Pushing a tag matching `v*` builds and publishes self-contained binaries for
+Linux, macOS, and Windows. The workflow can also be started manually to produce
+downloadable build artifacts without creating a GitHub release.
+
+Choose the binary for your CPU:
+
+* `arm64` is for Apple Silicon or 64-bit ARM Linux.
+* `x64` is the portable choice for any 64-bit Intel/AMD processor.
+* `x64-avx2` is faster on processors with AVX2 (roughly Intel Haswell/AMD
+  Excavator or newer).
+* `x64-avx512` uses AVX-512F and AVX-512BW and only starts on processors that
+  support both extensions.
+
+SleepMind selects its NNUE SIMD implementation at compile time, not at runtime.
+Running an AVX build on an unsupported processor can terminate with an illegal
+instruction; use the portable `x64` archive when unsure.
+
 ## Issue workflow
 
 Every issue is implemented and evaluated separately:
