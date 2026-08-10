@@ -1,10 +1,15 @@
-// posix_memalign needs POSIX visibility under glibc's strict -std=c11 mode
+// posix_memalign needs POSIX visibility under glibc's strict -std=c11 mode.
+#ifndef _WIN32
 #define _POSIX_C_SOURCE 200112L
+#endif
 
 #include "tt.h"
 #include <stdlib.h>
 #include <string.h> // For memset
 #include <stdio.h>  // For info string output
+#ifdef _WIN32
+#include <malloc.h>
+#endif
 
 // =============================================================================
 // Bucketed transposition table with generation-based aging
@@ -51,6 +56,23 @@ static TTCluster* table = NULL;
 static uint64_t cluster_count = 0;
 static uint8_t generation8 = 0;  // current generation, pre-shifted by TT_GENERATION_BITS
 
+static void* tt_aligned_alloc(size_t size) {
+#ifdef _WIN32
+    return _aligned_malloc(size, 64);
+#else
+    void* mem = NULL;
+    return posix_memalign(&mem, 64, size) == 0 ? mem : NULL;
+#endif
+}
+
+static void tt_aligned_free(void* mem) {
+#ifdef _WIN32
+    _aligned_free(mem);
+#else
+    free(mem);
+#endif
+}
+
 // Age of an entry relative to the current search, in multiples of
 // TT_GENERATION_DELTA. The cycle constant keeps the subtraction correct
 // across uint8 wraparound.
@@ -78,8 +100,8 @@ void init_tt(size_t table_size_mb) {
     if (cluster_count == 0) {
         cluster_count = 1;
     }
-    void* mem = NULL;
-    if (posix_memalign(&mem, 64, cluster_count * sizeof(TTCluster)) != 0) {
+    void* mem = tt_aligned_alloc(cluster_count * sizeof(TTCluster));
+    if (mem == NULL) {
         fprintf(stderr, "Failed to allocate transposition table!\n");
         cluster_count = 0;
         return;
@@ -200,7 +222,7 @@ int tt_hashfull() {
 
 void free_tt() {
     if (table != NULL) {
-        free(table);
+        tt_aligned_free(table);
         table = NULL;
         cluster_count = 0;
     }

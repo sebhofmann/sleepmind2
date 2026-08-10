@@ -1,0 +1,176 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "Makefile"
+      - "quantised.bin"
+      - "src/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux
+            asset: sleepmind-linux-x64
+            cflags: -march=x86-64
+            executable: sleepmind
+          - runner: ubuntu-24.04
+            platform: linux
+            asset: sleepmind-linux-x64-avx2
+            cflags: -march=x86-64 -mavx2
+            executable: sleepmind
+          - runner: ubuntu-24.04
+            platform: linux
+            asset: sleepmind-linux-x64-avx512
+            cflags: -march=x86-64 -mavx512f -mavx512bw
+            executable: sleepmind
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            asset: sleepmind-linux-arm64
+            cflags: -march=armv8-a
+            executable: sleepmind
+          - runner: macos-15-intel
+            platform: macos
+            asset: sleepmind-macos-x64
+            cflags: -D_DARWIN_C_SOURCE -march=x86-64
+            executable: sleepmind
+          - runner: macos-15-intel
+            platform: macos
+            asset: sleepmind-macos-x64-avx2
+            cflags: -D_DARWIN_C_SOURCE -march=x86-64 -mavx2
+            executable: sleepmind
+          - runner: macos-15-intel
+            platform: macos
+            asset: sleepmind-macos-x64-avx512
+            cflags: -D_DARWIN_C_SOURCE -march=x86-64 -mavx512f -mavx512bw
+            executable: sleepmind
+          - runner: macos-15
+            platform: macos
+            asset: sleepmind-macos-arm64
+            cflags: -D_DARWIN_C_SOURCE -march=armv8-a
+            executable: sleepmind
+          - runner: windows-2025
+            platform: windows
+            asset: sleepmind-windows-x64
+            cflags: -march=x86-64
+            executable: sleepmind.exe
+          - runner: windows-2025
+            platform: windows
+            asset: sleepmind-windows-x64-avx2
+            cflags: -march=x86-64 -mavx2
+            executable: sleepmind.exe
+          - runner: windows-2025
+            platform: windows
+            asset: sleepmind-windows-x64-avx512
+            cflags: -march=x86-64 -mavx512f -mavx512bw
+            executable: sleepmind.exe
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up MinGW
+        if: matrix.platform == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make
+            mingw-w64-ucrt-x86_64-gcc
+            zip
+
+      - name: Build Unix release
+        if: matrix.platform != 'windows'
+        env:
+          ISA_FLAGS: ${{ matrix.cflags }}
+        run: |
+          make clean all CFLAGS="-Wall -Wextra -std=c11 -O3 -DNDEBUG ${ISA_FLAGS}"
+
+      - name: Build Windows release
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        env:
+          ISA_FLAGS: ${{ matrix.cflags }}
+        run: |
+          make clean all CFLAGS="-Wall -Wextra -std=c11 -O3 -DNDEBUG ${ISA_FLAGS}"
+
+      - name: Smoke-test portable Unix binary
+        if: ${{ matrix.platform != 'windows' && !contains(matrix.asset, 'avx') }}
+        run: |
+          printf 'uci\nquit\n' | build/sleepmind | grep -q uciok
+
+      - name: Smoke-test portable Windows binary
+        if: ${{ matrix.platform == 'windows' && !contains(matrix.asset, 'avx') }}
+        shell: msys2 {0}
+        run: |
+          printf 'uci\nquit\n' | build/sleepmind.exe | grep -q uciok
+
+      - name: Package Unix release
+        if: matrix.platform != 'windows'
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          mkdir -p dist/${ASSET}
+          cp build/sleepmind dist/${ASSET}/sleepmind
+          cp README.md dist/${ASSET}/README.md
+          tar -C dist -czf dist/${ASSET}.tar.gz ${ASSET}
+
+      - name: Package Windows release
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          mkdir -p dist/${ASSET}
+          cp build/sleepmind.exe dist/${ASSET}/sleepmind.exe
+          cp README.md dist/${ASSET}/README.md
+          cd dist
+          zip -r ${ASSET}.zip ${ASSET}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}.*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: sleepmind-*
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: dist
+        run: sha256sum sleepmind-* > SHA256SUMS
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "${TAG}" >/dev/null 2>&1 || \
+            gh release create "${TAG}" --verify-tag --generate-notes --title "SleepMind ${TAG}"
+          gh release upload "${TAG}" dist/* --clobber
