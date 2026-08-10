@@ -26,6 +26,9 @@
 #define ENGINE_NAME "SleepMind UCI"
 #define ENGINE_AUTHOR "Sebastian Hofmann (and Gemini, Claude and GPT-4)"
 
+extern const unsigned char sleepmind_nnue_start[];
+extern const unsigned char sleepmind_nnue_end[];
+
 static Board current_board;
 static MoveList move_list;
 static int current_ply = 0;
@@ -219,7 +222,13 @@ void uci_loop() {
     initMoveGenerator(); // Initialize move generator data
     printf("DEBUG: Move generator initialized\n"); fflush(stdout);
     
-    eval_init("quantised.bin", nnue_network);  // Load NNUE network
+    size_t embedded_nnue_size = (size_t)(sleepmind_nnue_end - sleepmind_nnue_start);
+    if (nnue_load_memory(sleepmind_nnue_start, embedded_nnue_size, nnue_network)) {
+        printf("info string NNUE source: embedded\n");
+    } else {
+        printf("info string Embedded NNUE unavailable, trying quantised.bin\n");
+        eval_init("quantised.bin", nnue_network);
+    }
     printf("DEBUG: NNUE initialized, loaded=%d\n", nnue_network->loaded); fflush(stdout);
 
     // Default to standard start position so commands like "perft" work

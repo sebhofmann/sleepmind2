@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include <inttypes.h>
 
 // SIMD support - compile-time detection (use -march=native)
 #if defined(__AVX512F__) && defined(__AVX512BW__)
@@ -99,13 +100,62 @@ int nnue_get_output_bucket(const Board* board) {
     return bucket_index;
 }
 
+static size_t nnue_parameter_size(void) {
+    return (size_t)NNUE_INPUT_BUCKETS * NNUE_INPUT_SIZE * NNUE_HIDDEN_SIZE * sizeof(int16_t) +
+           (size_t)NNUE_HIDDEN_SIZE * sizeof(int16_t) +
+           (size_t)NNUE_OUTPUT_BUCKETS * 2 * NNUE_HIDDEN_SIZE * sizeof(int16_t) +
+           (size_t)NNUE_OUTPUT_BUCKETS * sizeof(int16_t);
+}
+
+static uint64_t nnue_hash(const unsigned char* data, size_t size) {
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= data[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+bool nnue_load_memory(const unsigned char* data, size_t size, NNUENetwork* net) {
+    const size_t expected_size = nnue_parameter_size() + 48;
+    if (net) net->loaded = false;
+    if (!data || !net) {
+        fprintf(stderr, "info string NNUE memory buffer or network is NULL\n");
+        return false;
+    }
+    if (size != expected_size) {
+        fprintf(stderr, "info string NNUE data size mismatch! Got %zu, expected %zu\n",
+                size, expected_size);
+        return false;
+    }
+
+    const unsigned char* cursor = data;
+    const size_t ft_weights_size = sizeof(net->ft_weights);
+    const size_t ft_biases_size = sizeof(net->ft_biases);
+    const size_t output_weights_size = sizeof(net->output_weights);
+    const size_t output_biases_size = sizeof(net->output_biases);
+
+    memcpy(net->ft_weights, cursor, ft_weights_size);
+    cursor += ft_weights_size;
+    memcpy(net->ft_biases, cursor, ft_biases_size);
+    cursor += ft_biases_size;
+    memcpy(net->output_weights, cursor, output_weights_size);
+    cursor += output_weights_size;
+    memcpy(net->output_biases, cursor, output_biases_size);
+
+    net->loaded = true;
+    printf("info string NNUE loaded (size %zu, fnv1a64 %016" PRIx64 ")\n",
+           size, nnue_hash(data, size));
+    return true;
+}
+
 // Load NNUE weights from file into network
 bool nnue_load(const char* filename, NNUENetwork* net) {
     if (!filename || !net) {
         fprintf(stderr, "info string NNUE filename or network is NULL\n");
         return false;
     }
-    
+
     FILE* file = fopen(filename, "rb");
     if (!file) {
         fprintf(stderr, "info string Failed to open NNUE file: %s (errno: %d)\n", filename, errno);
@@ -121,60 +171,44 @@ bool nnue_load(const char* filename, NNUENetwork* net) {
         printf("info string Found NNUE file: %s\n", filename);
     }
     
-    fseek(file, 0, SEEK_END);
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return false;
+    }
     long file_size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    
-    long expected_data_size = 
-        (long)NNUE_INPUT_BUCKETS * NNUE_INPUT_SIZE * NNUE_HIDDEN_SIZE * sizeof(int16_t) +
-        (long)NNUE_HIDDEN_SIZE * sizeof(int16_t) +
-        (long)NNUE_OUTPUT_BUCKETS * 2 * NNUE_HIDDEN_SIZE * sizeof(int16_t) +
-        (long)NNUE_OUTPUT_BUCKETS * sizeof(int16_t);
-    long expected_size = expected_data_size + 48;
-    
-    printf("info string NNUE file size: %ld bytes, expected: %ld bytes\n", file_size, expected_size);
-    
-    if (file_size != expected_size) {
-        fprintf(stderr, "info string NNUE file size mismatch! Got %ld, expected %ld\n", file_size, expected_size);
+    if (file_size < 0 || fseek(file, 0, SEEK_SET) != 0) {
         fclose(file);
         return false;
     }
-    
-    // Read weights
-    for (int bucket = 0; bucket < NNUE_INPUT_BUCKETS; bucket++) {
-        for (int i = 0; i < NNUE_INPUT_SIZE; i++) {
-            if (fread(net->ft_weights[bucket][i], sizeof(int16_t), NNUE_HIDDEN_SIZE, file) != NNUE_HIDDEN_SIZE) {
-                fclose(file);
-                fprintf(stderr, "info string Failed to read NNUE feature transformer weights\n");
-                return false;
-            }
-        }
-    }
-    
-    if (fread(net->ft_biases, sizeof(int16_t), NNUE_HIDDEN_SIZE, file) != NNUE_HIDDEN_SIZE) {
+
+    size_t size = (size_t)file_size;
+    const size_t expected_size = nnue_parameter_size() + 48;
+    if (size != expected_size) {
+        fprintf(stderr, "info string NNUE file size mismatch! Got %zu, expected %zu\n",
+                size, expected_size);
         fclose(file);
-        fprintf(stderr, "info string Failed to read NNUE feature transformer biases\n");
+        net->loaded = false;
         return false;
     }
-    
-    for (int bucket = 0; bucket < NNUE_OUTPUT_BUCKETS; bucket++) {
-        if (fread(net->output_weights[bucket], sizeof(int16_t), 2 * NNUE_HIDDEN_SIZE, file) != 2 * NNUE_HIDDEN_SIZE) {
-            fclose(file);
-            fprintf(stderr, "info string Failed to read NNUE output weights for bucket %d\n", bucket);
-            return false;
-        }
-    }
-    
-    if (fread(net->output_biases, sizeof(int16_t), NNUE_OUTPUT_BUCKETS, file) != NNUE_OUTPUT_BUCKETS) {
+    unsigned char* data = malloc(size == 0 ? 1 : size);
+    if (!data) {
         fclose(file);
-        fprintf(stderr, "info string Failed to read NNUE output layer biases\n");
+        fprintf(stderr, "info string Failed to allocate NNUE input buffer\n");
         return false;
     }
-    
+
+    size_t bytes_read = fread(data, 1, size, file);
     fclose(file);
-    net->loaded = true;
-    printf("info string NNUE loaded successfully from %s\n", filename);
-    return true;
+    if (bytes_read != size) {
+        fprintf(stderr, "info string Failed to read complete NNUE file\n");
+        free(data);
+        return false;
+    }
+
+    bool loaded = nnue_load_memory(data, size, net);
+    free(data);
+    if (loaded) printf("info string NNUE source: %s\n", filename);
+    return loaded;
 }
 
 // Save NNUE weights to file
