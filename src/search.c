@@ -34,6 +34,8 @@ static uint64_t beta_cutoffs_first = 0;
 static struct {
     uint64_t null_move;
     uint64_t reverse_futility;
+    uint64_t rfp_improving;
+    uint64_t rfp_non_improving;
     uint64_t razoring;
     uint64_t futility;
     uint64_t lmp;
@@ -142,6 +144,7 @@ void search_params_init(SearchParams* params) {
 
     // Reverse Futility Pruning (SPSA-tuned)
     params->rfp_margin = 93;
+    params->rfp_improving_adjustment = 50;
     params->rfp_max_depth = 9;
 
     // Razoring (drop into qsearch if position looks hopeless)
@@ -1389,9 +1392,17 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     // If static eval is way above beta, we can assume a beta cutoff
     // ==========================================================================
     if (can_rfp) {
-        int rfp_margin = info->params.rfp_margin * depth;
+        // Improving positions get an additional margin, making RFP less
+        // aggressive while leaving the non-improving baseline unchanged.
+        int rfp_margin = info->params.rfp_margin * depth +
+            (improving ? info->params.rfp_improving_adjustment : 0);
         if (static_eval - rfp_margin >= beta) {
             PRUNING_STAT_INC(reverse_futility);
+            if (improving) {
+                PRUNING_STAT_INC(rfp_improving);
+            } else {
+                PRUNING_STAT_INC(rfp_non_improving);
+            }
             return static_eval - rfp_margin;
         }
     }
@@ -2016,6 +2027,9 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         printf("info string Pruning stats (total=%llu):\n", (unsigned long long)total_prunings);
         printf("info string   Null Move:    %llu\n", (unsigned long long)pruning_stats.null_move);
         printf("info string   Rev Futility: %llu\n", (unsigned long long)pruning_stats.reverse_futility);
+        printf("info string RFP cuts: improving=%llu non-improving=%llu\n",
+               (unsigned long long)pruning_stats.rfp_improving,
+               (unsigned long long)pruning_stats.rfp_non_improving);
         printf("info string   Razoring:     %llu\n", (unsigned long long)pruning_stats.razoring);
         printf("info string   Futility:     %llu\n", (unsigned long long)pruning_stats.futility);
         printf("info string   LMP:          %llu\n", (unsigned long long)pruning_stats.lmp);

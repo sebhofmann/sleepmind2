@@ -50,6 +50,7 @@ typedef struct {
 
     // Reverse Futility Pruning margins
     int rfp_margin;            // Per depth margin (default: 93)
+    int rfp_improving_adjustment; // Extra margin at improving nodes (default: 50)
     int rfp_max_depth;         // Maximum depth for RFP (default: 6)
 
     // Razoring parameters
