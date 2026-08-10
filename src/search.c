@@ -1164,7 +1164,8 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     Move best_move = 0;
 
     Move m;
-    while ((m = movepicker_next(&mp, NULL, NULL)) != 0) {
+    int move_see = 0;
+    while ((m = movepicker_next(&mp, NULL, &move_see)) != 0) {
         // Delta pruning: skip captures that can't possibly raise alpha
         if (info->params.use_delta_pruning && !MOVE_IS_PROMOTION(m)) {
             int gain;
@@ -1185,7 +1186,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         // SEE pruning: skip captures that lose material (not in check here by branch).
         // Keep the TT move and promotions, which may be tactically necessary.
         if (info->params.use_qs_see_pruning && !MOVE_IS_PROMOTION(m) && m != tt_move) {
-            if (see(board, m) < 0) {
+            if (move_see < 0) {
                 PRUNING_STAT_INC(see_pruning);
                 continue;
             }
@@ -1515,7 +1516,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
 
     Move m;
     int move_score;
-    int move_see;
+    int move_see = 0;
     while ((m = movepicker_next(&mp, &move_score, &move_see)) != 0) {
         // Syzygy root-move restriction: at the root, only search TB-optimal moves.
         if (ply == 0 && info->tbRootMoveCount > 0) {
