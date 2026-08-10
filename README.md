@@ -28,17 +28,18 @@ Every issue is implemented and evaluated separately:
 6. Run the mandatory LTC SPRT with the repository defaults:
 
    ```sh
-   TC=60+0.6 ./tournament.sh sprt <issue>_new <issue>_base
+   TC=60+0.6 ./tournament.sh sprt <issue>_new <issue>_base 2>&1 \
+     | tee <issue>_sprt.log
    ```
 
    The test uses `/home/paschty/Downloads/2moves_v2.pgn`, paired colors, and
    `-repeat`. Unless an issue explicitly says otherwise, use `H0=0`, `H1=+5`,
-   and `alpha=beta=0.05`.
+   and `alpha=beta=0.05`. Always start the SPRT with output logging as shown
+   above and keep the complete log file.
 
 7. Push the branch and create a pull request. Record the final W/L/D, Elo
    estimate and error, LLR decision, time control, base commit, and test commit
-   in the PR.
+   in the PR, and attach the SPRT log file to it.
 8. Merge only after a passing SPRT. If the SPRT fails, still create the PR with
    the implementation and complete result, then close it without merging. An
    inconclusive SPRT must not be reported as an accepted Elo gain.
-
