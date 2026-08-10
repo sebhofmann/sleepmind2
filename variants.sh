@@ -6,7 +6,7 @@ WORKSPACE="/home/paschty/workspace/sleepmind2"
 VARIANTS_DIR="$WORKSPACE/variants"
 BUILD_SLEEPMIND="$WORKSPACE/build/sleepmind"
 NNUE_FILE="$WORKSPACE/quantised.bin"
-OPENINGS_FILE="/home/paschty/Downloads/klo_eco_a00-e97v/klo_25_eco_a00-e97_variations.pgn"
+OPENINGS_FILE="/home/paschty/Downloads/2moves_v2.pgn"
 
 # Erstelle variants Ordner falls nicht vorhanden
 mkdir -p "$VARIANTS_DIR"

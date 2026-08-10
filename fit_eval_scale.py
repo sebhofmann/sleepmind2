@@ -9,7 +9,7 @@ and fits  P(score) = sigmoid((eval - a) / s)  by maximum likelihood
 (cross-entropy, draws count as soft target 0.5).
 
 The fitted scale s is directly comparable to bullet's `eval_scale`
-(currently 400.0 in training/training.rs). The offset a should come out
+(currently 295.0 in training/training.rs). The offset a should come out
 near 0 for symmetric data; the no-offset fit is what bullet actually uses.
 
 Usage:
@@ -29,7 +29,7 @@ import time
 
 import numpy as np
 
-REFERENCE_SCALE = 400.0  # bullet eval_scale the net was trained with
+REFERENCE_SCALE = 295.0  # bullet eval_scale the net was trained with
 PROGRESS_EVERY = 1_000_000  # lines between progress updates
 
 
