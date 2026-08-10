@@ -169,6 +169,7 @@ jobs:
       - name: Create release and upload assets
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           gh release view "${TAG}" >/dev/null 2>&1 || \
