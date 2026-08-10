@@ -293,6 +293,27 @@ void uci_loop() {
                 printf("see %s = %d\n", s, see_debug(&current_board, caps.moves[i]));
             }
             fflush(stdout);
+        } else if (strncmp(line, "seege ", 6) == 0) {
+            // Debug: evaluate one generated capture/promotion against a threshold.
+            char requested[6] = {0};
+            int threshold;
+            if (sscanf(line + 6, "%5s %d", requested, &threshold) == 2) {
+                MoveList caps;
+                generateCaptureAndPromotionMoves(&current_board, &caps);
+                bool found = false;
+                for (int i = 0; i < caps.count; i++) {
+                    char move_string[6];
+                    moveToString(caps.moves[i], move_string);
+                    if (strcmp(move_string, requested) == 0) {
+                        printf("seege %s %d = %d\n", requested, threshold,
+                               see_ge_debug(&current_board, caps.moves[i], threshold));
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) printf("seege %s %d = notfound\n", requested, threshold);
+            }
+            fflush(stdout);
         } else if (strncmp(line, "setoption", 9) == 0) {
             // Parse: setoption name <name> value <value>
             char* name_start = strstr(line, "name ");

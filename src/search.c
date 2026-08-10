@@ -426,15 +426,82 @@ static int see(const Board* board, Move move) {
     return gain[0];
 }
 
-// Quick SEE check: is the capture likely good (>= threshold)?
-__attribute__((unused))
+// Threshold-aware SEE. This follows the same swap sequence as see(), but folds
+// the threshold into the initial balance so the result can often be decided
+// before every recapture has been enumerated.
 static bool see_ge(const Board* board, Move move, int threshold) {
-    return see(board, move) >= threshold;
+    int from = MOVE_FROM(move);
+    int to = MOVE_TO(move);
+
+    bool attacker_white = board->whiteToMove;
+    bool attacker_side = attacker_white;
+    PieceTypeToken attacker_type = getPieceTypeAtSquare(board, from, &attacker_white);
+    int attacker_value = get_piece_value(attacker_type);
+
+    int piece_on_target_value = attacker_value;
+    int promo_gain = 0;
+    if (MOVE_IS_PROMOTION(move)) {
+        piece_on_target_value = get_promotion_value(MOVE_PROMOTION(move));
+        promo_gain = piece_on_target_value - SEE_VALUES[1];
+    }
+
+    bool victim_white = !board->whiteToMove;
+    PieceTypeToken victim_type = getPieceTypeAtSquare(board, to, &victim_white);
+    int victim_value = get_piece_value(victim_type);
+    if (MOVE_IS_EN_PASSANT(move)) victim_value = SEE_VALUES[1];
+
+    if (victim_value == 0 && !MOVE_IS_EN_PASSANT(move) && !MOVE_IS_PROMOTION(move))
+        return 0 >= threshold;
+
+    int64_t balance = (int64_t)victim_value + promo_gain - threshold;
+    if (balance < 0) return false;
+
+    // If losing the capturing piece still cannot take us below the threshold,
+    // no reply can change the answer.
+    balance = piece_on_target_value - balance;
+    if (balance <= 0) return true;
+
+    Bitboard occupied = board->whitePawns | board->whiteKnights | board->whiteBishops |
+                        board->whiteRooks | board->whiteQueens | board->whiteKings |
+                        board->blackPawns | board->blackKnights | board->blackBishops |
+                        board->blackRooks | board->blackQueens | board->blackKings;
+    occupied &= ~(1ULL << from);
+
+    Bitboard attackers = get_all_attackers(board, to, occupied);
+    attackers &= ~(1ULL << from);
+    bool side_to_move = !attacker_side;
+    bool result = true;
+
+    while (attackers) {
+        int piece_square;
+        int next_attacker_value = get_smallest_attacker(board, attackers, side_to_move,
+                                                        &piece_square);
+        if (next_attacker_value == 0) break;
+
+        occupied &= ~(1ULL << piece_square);
+        attackers &= ~(1ULL << piece_square);
+        attackers |= get_all_attackers(board, to, occupied) & occupied;
+
+        balance = next_attacker_value - balance;
+        result = !result;
+
+        // At this point the side that just captured may stop the exchange. The
+        // strict comparison is intentional: a zero balance meets the threshold.
+        if (balance < (int)result) break;
+
+        side_to_move = !side_to_move;
+    }
+
+    return result;
 }
 
 // Debug wrapper to expose SEE for testing
 int see_debug(const Board* board, Move move) {
     return see(board, move);
+}
+
+bool see_ge_debug(const Board* board, Move move, int threshold) {
+    return see_ge(board, move, threshold);
 }
 
 // =============================================================================

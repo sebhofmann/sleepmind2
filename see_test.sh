@@ -42,6 +42,19 @@ for c in "${CASES[@]}"; do
   else
     fail=$((fail+1)); echo "FAIL $mv : erwartet $exp, bekommen '${got:-<kein Zug gefunden>}'  [$fen]"
   fi
+
+  # Threshold-aware SEE must agree at both sides of the exact score boundary.
+  for delta in -1 0 1; do
+    threshold=$((exp + delta))
+    if [ "$delta" -le 0 ]; then expected_ge=1; else expected_ge=0; fi
+    ge_out=$(printf 'position fen %s\nseege %s %d\nquit\n' "$fen" "$mv" "$threshold" | $ENG 2>/dev/null | grep "^seege $mv $threshold ")
+    got_ge=$(echo "$ge_out" | sed 's/.*= //')
+    if [ "$got_ge" = "$expected_ge" ]; then
+      pass=$((pass+1))
+    else
+      fail=$((fail+1)); echo "FAIL see_ge $mv threshold $threshold : erwartet $expected_ge, bekommen '${got_ge:-<kein Ergebnis>}'  [$fen]"
+    fi
+  done
 done
 echo "----"
 echo "PASS=$pass FAIL=$fail"

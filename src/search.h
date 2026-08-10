@@ -149,6 +149,7 @@ int quiescence_search(Board* board, int alpha, int beta, bool maximizingPlayer, 
 void clear_search_history(SearchInfo* info);
 void clear_volatile_history(SearchInfo* info);
 int see_debug(const Board* board, Move move); // Debug: expose SEE
+bool see_ge_debug(const Board* board, Move move, int threshold); // Debug: threshold SEE
 
 #define MATE_SCORE 1000000 // Arbitrary large score for checkmate
 
