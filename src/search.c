@@ -40,6 +40,7 @@ static struct {
     uint64_t lmr;
     uint64_t delta;
     uint64_t see_pruning;
+    uint64_t main_capture_see;
 } pruning_stats;
 
 #define TT_STAT_INC(var) ((var)++)
@@ -118,10 +119,14 @@ void search_params_init(SearchParams* params) {
     params->use_bad_capture_last = true; // SPRT-confirmed +11 Elo (losing captures ordered after quiets)
     params->use_lmp = true;
     params->use_mdp = true;             // Mate Distance Pruning
+    params->use_main_capture_see = true;
 
     // Late Move Pruning: skip quiets after base + depth^2 searched moves
     params->lmp_base = 6;
     params->lmp_max_depth = 8;
+
+    params->main_capture_see_margin = 250;
+    params->main_capture_see_max_depth = 8;
 
     // Late Move Reduction parameters (tuned via tournament testing)
     params->lmr_full_depth_moves = 3;   // More aggressive LMR
@@ -1365,6 +1370,12 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         depth <= 3 && abs(alpha) < TB_SCORE_MIN && abs(beta) < TB_SCORE_MIN;
     bool can_lmp = info->params.use_lmp && !is_pv && !in_check &&
         depth <= info->params.lmp_max_depth && abs(alpha) < TB_SCORE_MIN;
+    // Conservative main-search capture SEE pruning. Root/PV/check nodes and
+    // mate/TB windows are exempt because speculative material pruning must not
+    // hide principal variations, evasions, or proven high-magnitude scores.
+    bool can_main_capture_see = info->params.use_main_capture_see && ply > 0 &&
+        !is_pv && !in_check && depth <= info->params.main_capture_see_max_depth &&
+        abs(alpha) < TB_SCORE_MIN && abs(beta) < TB_SCORE_MIN;
     int lmp_threshold = info->params.lmp_base + depth * depth;
 
     // Static eval only where pruning needs it, reusing the TT copy when
@@ -1524,6 +1535,17 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // =======================================================================
         if (can_lmp && !is_tactical && moves_searched >= lmp_threshold) {
             PRUNING_STAT_INC(lmp);
+            continue;
+        }
+
+        // Main-search capture SEE pruning. Keep the validated TT move,
+        // promotions, and the first searched move. The latter guarantees that
+        // pseudo-legal generation plus pruning cannot manufacture stalemate or
+        // checkmate by skipping every legal move before applyMove().
+        if (can_main_capture_see && is_capture && !is_promotion &&
+            m != mp.tt_move && moves_searched > 0 &&
+            !see_ge(board, m, -info->params.main_capture_see_margin * depth)) {
+            PRUNING_STAT_INC(main_capture_see);
             continue;
         }
 
@@ -2056,6 +2078,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                                   pruning_stats.razoring + pruning_stats.futility +
                                   pruning_stats.lmp + pruning_stats.lmr +
                                   pruning_stats.delta + pruning_stats.see_pruning;
+        total_prunings += pruning_stats.main_capture_see;
         printf("info string Pruning stats (total=%llu):\n", (unsigned long long)total_prunings);
         printf("info string   Null Move:    %llu\n", (unsigned long long)pruning_stats.null_move);
         printf("info string   Rev Futility: %llu\n", (unsigned long long)pruning_stats.reverse_futility);
@@ -2065,6 +2088,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         printf("info string   LMR:          %llu\n", (unsigned long long)pruning_stats.lmr);
         printf("info string   Delta:        %llu\n", (unsigned long long)pruning_stats.delta);
         printf("info string   SEE Pruning:  %llu\n", (unsigned long long)pruning_stats.see_pruning);
+        printf("info string   Main Cap SEE: %llu\n", (unsigned long long)pruning_stats.main_capture_see);
 #endif
         fflush(stdout);
     }

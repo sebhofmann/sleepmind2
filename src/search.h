@@ -26,6 +26,7 @@ typedef struct {
     bool use_bad_capture_last; // Order losing captures (SEE<0) below quiet moves (default: true, SPRT +11 Elo)
     bool use_lmp;              // Enable Late Move Pruning (default: true)
     bool use_mdp;              // Enable Mate Distance Pruning (default: true)
+    bool use_main_capture_see; // Enable main-search SEE pruning for captures
 
     // Late Move Reduction parameters
     int lmr_full_depth_moves;  // Number of moves before LMR kicks in (default: 4)
@@ -34,6 +35,10 @@ typedef struct {
     // Late Move Pruning parameters (skip quiets after base + depth^2 moves)
     int lmp_base;              // Movecount threshold base (default: 3)
     int lmp_max_depth;         // Maximum depth for LMP (default: 8)
+
+    // Main-search capture SEE pruning
+    int main_capture_see_margin;    // Negative threshold per depth (default: 250)
+    int main_capture_see_max_depth; // Maximum depth (default: 8)
 
     // Null Move Pruning parameters (reduction itself is adaptive in negamax)
     int null_move_min_depth;   // Minimum depth for null move pruning (default: 3)
