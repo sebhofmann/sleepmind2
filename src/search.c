@@ -46,17 +46,23 @@ static struct {
     uint64_t see_pruning;
     uint64_t main_capture_see;
     uint64_t iir;
+    uint64_t probcut_probes;
+    uint64_t probcut_qs_hits;
+    uint64_t probcut_cuts;
+    uint64_t probcut_nodes;
 } pruning_stats;
 
 #define TT_STAT_INC(var) ((var)++)
 #define TT_STATS_RESET() do { tt_probes = 0; tt_hits = 0; tt_cutoffs = 0; \
                               beta_cutoffs = 0; beta_cutoffs_first = 0; } while(0)
 #define PRUNING_STAT_INC(field) (pruning_stats.field++)
+#define PRUNING_STAT_ADD(field, value) (pruning_stats.field += (value))
 #define PRUNING_STATS_RESET() memset(&pruning_stats, 0, sizeof(pruning_stats))
 #else
 #define TT_STAT_INC(var) ((void)0)
 #define TT_STATS_RESET() ((void)0)
 #define PRUNING_STAT_INC(field) ((void)0)
+#define PRUNING_STAT_ADD(field, value) ((void)(value))
 #define PRUNING_STATS_RESET() ((void)0)
 #endif
 
@@ -126,6 +132,7 @@ void search_params_init(SearchParams* params) {
     params->use_mdp = true;             // Mate Distance Pruning
     params->use_main_capture_see = true;
     params->use_iir = true;
+    params->use_probcut = true;
 
     // Late Move Pruning: skip quiets after base + depth^2 searched moves
     params->lmp_base = 6;
@@ -137,6 +144,10 @@ void search_params_init(SearchParams* params) {
     // Internal Iterative Reduction: reduce one ply when move ordering has no
     // transposition-table move to guide a sufficiently deep non-root node.
     params->iir_min_depth = 4;
+
+    params->probcut_min_depth = 5;
+    params->probcut_margin = 184;
+    params->probcut_reduction = 4;
 
     // Late Move Reduction parameters (tuned via tournament testing)
     params->lmr_full_depth_moves = 3;   // More aggressive LMR
@@ -1519,6 +1530,75 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     }
 
     // ==========================================================================
+    // Capture-only ProbCut. A capture which first clears a raised-beta qsearch
+    // is confirmed at reduced main-search depth before normal move generation.
+    // The raised bound ensures a confirmed result is also a valid lower bound
+    // for this node's original beta window.
+    // ==========================================================================
+    bool can_probcut = info->params.use_probcut && ply > 0 && !is_pv && !in_check &&
+        depth >= info->params.probcut_min_depth && abs(beta) < TB_SCORE_MIN &&
+        beta < TB_SCORE_MIN - info->params.probcut_margin;
+    if (can_probcut) {
+        int probcut_beta = beta + info->params.probcut_margin;
+        int see_threshold = probcut_beta - static_eval;
+        int probcut_depth = depth - info->params.probcut_reduction;
+        if (probcut_depth < 1) probcut_depth = 1;
+
+        MoveList captures;
+        generateCaptureAndPromotionMoves(board, &captures);
+        for (int i = 0; i < captures.count; i++) {
+            Move m = captures.moves[i];
+            if (!see_ge(board, m, see_threshold)) continue;
+
+            uint64_t nodes_before = info->nodesSearched;
+            NNUEAccumulator* parent_acc = info->nnue_acc;
+            NNUEAccumulator* child_acc = search_prepare_nnue_child(info, ply);
+            MoveUndoInfo undo;
+            applyMove(board, m, &undo, child_acc, info->nnue_net);
+            if (isKingAttacked(board, !board->whiteToMove)) {
+                undoMove(board, m, &undo, child_acc, info->nnue_net);
+                continue;
+            }
+            PRUNING_STAT_INC(probcut_probes);
+            info->nnue_acc = child_acc;
+            info->prev_moves[ply] = m;
+            info->prev_pieces[ply] = cmh_piece_index(board, MOVE_TO(m));
+
+            info->nodesSearched++;
+            int score = -quiescence(board, -probcut_beta, -probcut_beta + 1,
+                                    info, ply + 1);
+            if (!info->stopSearch && score >= probcut_beta) {
+                PRUNING_STAT_INC(probcut_qs_hits);
+                // `probcut_depth` is the child search depth. Keeping it at one
+                // for the default minimum depth guarantees a real main-search
+                // verification instead of repeating qsearch at depth zero.
+                score = -negamax(board, probcut_depth, -probcut_beta,
+                                 -probcut_beta + 1, info, ply + 1, true, false);
+            }
+
+            info->nnue_acc = parent_acc;
+            undoMove(board, m, &undo, child_acc, info->nnue_net);
+            PRUNING_STAT_ADD(probcut_nodes, info->nodesSearched - nodes_before);
+            if (info->stopSearch) return 0;
+
+            if (score >= probcut_beta) {
+                PRUNING_STAT_INC(probcut_cuts);
+                int store_score = score;
+                if (store_score >= TB_SCORE_MIN) store_score += ply;
+                else if (store_score <= -TB_SCORE_MIN) store_score -= ply;
+                if (!is_null_move_search) {
+                    tt_store(board->zobristKey, probcut_depth, store_score,
+                             TT_LOWERBOUND, m, tt_pv, static_eval);
+                }
+                // Unlike null-move pruning this is backed by a legal capture
+                // and a real verification search, so a mate/TB lower bound is
+                // safe to return without clamping it to beta.
+                return score;
+            }
+        }
+    }
+
+    // ==========================================================================
     // Futility Pruning (now enabled with NNUE)
     // ==========================================================================
     bool futility_pruning = false;
@@ -2131,7 +2211,8 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         uint64_t total_prunings = pruning_stats.null_move + pruning_stats.reverse_futility +
                                   pruning_stats.razoring + pruning_stats.futility +
                                   pruning_stats.lmp + pruning_stats.lmr +
-                                  pruning_stats.delta + pruning_stats.see_pruning;
+                                  pruning_stats.delta + pruning_stats.see_pruning +
+                                  pruning_stats.probcut_cuts;
         total_prunings += pruning_stats.main_capture_see;
         total_prunings += pruning_stats.iir;
         printf("info string Pruning stats (total=%llu):\n", (unsigned long long)total_prunings);
@@ -2149,6 +2230,11 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         printf("info string   LMR:          %llu\n", (unsigned long long)pruning_stats.lmr);
         printf("info string   Delta:        %llu\n", (unsigned long long)pruning_stats.delta);
         printf("info string   SEE Pruning:  %llu\n", (unsigned long long)pruning_stats.see_pruning);
+        printf("info string   ProbCut: probes=%llu qs_hits=%llu cuts=%llu nodes=%llu\n",
+               (unsigned long long)pruning_stats.probcut_probes,
+               (unsigned long long)pruning_stats.probcut_qs_hits,
+               (unsigned long long)pruning_stats.probcut_cuts,
+               (unsigned long long)pruning_stats.probcut_nodes);
         printf("info string   Main Cap SEE: %llu\n", (unsigned long long)pruning_stats.main_capture_see);
         printf("info string   IIR:          %llu\n", (unsigned long long)pruning_stats.iir);
 #endif
