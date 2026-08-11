@@ -1550,7 +1550,6 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             Move m = captures.moves[i];
             if (!see_ge(board, m, see_threshold)) continue;
 
-            PRUNING_STAT_INC(probcut_probes);
             uint64_t nodes_before = info->nodesSearched;
             NNUEAccumulator* parent_acc = info->nnue_acc;
             NNUEAccumulator* child_acc = search_prepare_nnue_child(info, ply);
@@ -1560,6 +1559,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                 undoMove(board, m, &undo, child_acc, info->nnue_net);
                 continue;
             }
+            PRUNING_STAT_INC(probcut_probes);
             info->nnue_acc = child_acc;
             info->prev_moves[ply] = m;
             info->prev_pieces[ply] = cmh_piece_index(board, MOVE_TO(m));
@@ -1569,7 +1569,10 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                                     info, ply + 1);
             if (!info->stopSearch && score >= probcut_beta) {
                 PRUNING_STAT_INC(probcut_qs_hits);
-                score = -negamax(board, probcut_depth - 1, -probcut_beta,
+                // `probcut_depth` is the child search depth. Keeping it at one
+                // for the default minimum depth guarantees a real main-search
+                // verification instead of repeating qsearch at depth zero.
+                score = -negamax(board, probcut_depth, -probcut_beta,
                                  -probcut_beta + 1, info, ply + 1, true, false);
             }
 
@@ -1583,8 +1586,13 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                 int store_score = score;
                 if (store_score >= TB_SCORE_MIN) store_score += ply;
                 else if (store_score <= -TB_SCORE_MIN) store_score -= ply;
-                tt_store(board->zobristKey, probcut_depth, store_score,
-                         TT_LOWERBOUND, m, tt_pv, static_eval);
+                if (!is_null_move_search) {
+                    tt_store(board->zobristKey, probcut_depth, store_score,
+                             TT_LOWERBOUND, m, tt_pv, static_eval);
+                }
+                // Unlike null-move pruning this is backed by a legal capture
+                // and a real verification search, so a mate/TB lower bound is
+                // safe to return without clamping it to beta.
                 return score;
             }
         }
