@@ -45,6 +45,7 @@ static struct {
     uint64_t delta;
     uint64_t see_pruning;
     uint64_t main_capture_see;
+    uint64_t iir;
 } pruning_stats;
 
 #define TT_STAT_INC(var) ((var)++)
@@ -124,6 +125,7 @@ void search_params_init(SearchParams* params) {
     params->use_lmp = true;
     params->use_mdp = true;             // Mate Distance Pruning
     params->use_main_capture_see = true;
+    params->use_iir = true;
 
     // Late Move Pruning: skip quiets after base + depth^2 searched moves
     params->lmp_base = 6;
@@ -131,6 +133,10 @@ void search_params_init(SearchParams* params) {
 
     params->main_capture_see_margin = 100;
     params->main_capture_see_max_depth = 16;
+
+    // Internal Iterative Reduction: reduce one ply when move ordering has no
+    // transposition-table move to guide a sufficiently deep non-root node.
+    params->iir_min_depth = 4;
 
     // Late Move Reduction parameters (tuned via tournament testing)
     params->lmr_full_depth_moves = 3;   // More aggressive LMR
@@ -1373,6 +1379,16 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         }
     }
 
+    // Internal Iterative Reduction. Apply the same conservative one-ply
+    // reduction at PV and non-PV nodes: both lack useful move-ordering guidance
+    // when the TT supplies no move. Root nodes remain full depth so iterative
+    // deepening always completes the requested root depth.
+    if (info->params.use_iir && ply > 0 &&
+        depth >= info->params.iir_min_depth && tt_move == 0) {
+        depth--;
+        PRUNING_STAT_INC(iir);
+    }
+
     // Quiescence search at leaf nodes
     if (depth <= 0) {
         return quiescence(board, alpha, beta, info, ply);
@@ -2117,6 +2133,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                                   pruning_stats.lmp + pruning_stats.lmr +
                                   pruning_stats.delta + pruning_stats.see_pruning;
         total_prunings += pruning_stats.main_capture_see;
+        total_prunings += pruning_stats.iir;
         printf("info string Pruning stats (total=%llu):\n", (unsigned long long)total_prunings);
         printf("info string   Null Move:    %llu\n", (unsigned long long)pruning_stats.null_move);
         printf("info string   Rev Futility: %llu\n", (unsigned long long)pruning_stats.reverse_futility);
@@ -2133,6 +2150,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         printf("info string   Delta:        %llu\n", (unsigned long long)pruning_stats.delta);
         printf("info string   SEE Pruning:  %llu\n", (unsigned long long)pruning_stats.see_pruning);
         printf("info string   Main Cap SEE: %llu\n", (unsigned long long)pruning_stats.main_capture_see);
+        printf("info string   IIR:          %llu\n", (unsigned long long)pruning_stats.iir);
 #endif
         fflush(stdout);
     }

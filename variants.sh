@@ -32,6 +32,7 @@ create_variant() {
         echo "  Use_DeltaPruning=true/false"
         echo "  Use_Aspiration=true/false"
         echo "  Use_Razoring=true/false"
+        echo "  Use_IIR=true/false"
         echo "  LMR_FullDepthMoves=<1-10>"
         echo "  LMR_ReductionLimit=<1-6>"
         echo "  LMP_Base=<1-20>"
@@ -45,6 +46,7 @@ create_variant() {
         echo "  Razor_Margin=<100-600>"
         echo "  Delta_Margin=<50-500>"
         echo "  Aspiration_Window=<10-200>"
+        echo "  IIR_MinDepth=<2-16>"
         exit 1
     fi
     
@@ -236,7 +238,7 @@ case "${1:-}" in
         echo ""
         echo "Verfügbare UCI-Optionen:"
         echo "  Feature Flags:    Use_LMR, Use_LMP, Use_NullMove, Use_Futility, Use_RFP,"
-        echo "                    Use_DeltaPruning, Use_Aspiration, Use_Razoring (=true/false)"
+        echo "                    Use_DeltaPruning, Use_Aspiration, Use_Razoring, Use_IIR (=true/false)"
         echo "  LMR:              LMR_FullDepthMoves (1-10), LMR_ReductionLimit (1-6)"
         echo "  LMP:              LMP_Base (1-20), LMP_MaxDepth (1-12)"
         echo "  Null Move:        NullMove_MinDepth (1-6)"

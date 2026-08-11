@@ -261,12 +261,14 @@ void uci_loop() {
             printf("option name Use_LMP type check default true\n");
             printf("option name Use_MDP type check default true\n");
             printf("option name Use_MainCaptureSEE type check default true\n");
+            printf("option name Use_IIR type check default true\n");
             // Search parameter options
             printf("option name LMR_FullDepthMoves type spin default 3 min 1 max 10\n");
             printf("option name LMP_Base type spin default 6 min 1 max 20\n");
             printf("option name LMP_MaxDepth type spin default 8 min 1 max 12\n");
             printf("option name MainCaptureSEE_Margin type spin default 100 min 0 max 500\n");
             printf("option name MainCaptureSEE_MaxDepth type spin default 16 min 1 max 32\n");
+            printf("option name IIR_MinDepth type spin default 4 min 2 max 16\n");
             printf("option name LMR_ReductionLimit type spin default 1 min 1 max 6\n");
             printf("option name NullMove_MinDepth type spin default 4 min 1 max 6\n");
             printf("option name Futility_Margin type spin default 243 min 50 max 400\n");
@@ -390,6 +392,9 @@ void uci_loop() {
                 } else if (strcmp(option_name, "Use_MainCaptureSEE") == 0) {
                     search_params.use_main_capture_see = bool_value;
                     printf("info string Set Use_MainCaptureSEE to %s\n", bool_value ? "true" : "false");
+                } else if (strcmp(option_name, "Use_IIR") == 0) {
+                    search_params.use_iir = bool_value;
+                    printf("info string Set Use_IIR to %s\n", bool_value ? "true" : "false");
                 // Numeric parameters
                 } else if (strcmp(option_name, "LMP_Base") == 0) {
                     search_params.lmp_base = value;
@@ -403,6 +408,9 @@ void uci_loop() {
                 } else if (strcmp(option_name, "MainCaptureSEE_MaxDepth") == 0) {
                     search_params.main_capture_see_max_depth = value;
                     printf("info string Set MainCaptureSEE_MaxDepth to %d\n", value);
+                } else if (strcmp(option_name, "IIR_MinDepth") == 0) {
+                    search_params.iir_min_depth = value;
+                    printf("info string Set IIR_MinDepth to %d\n", value);
                 } else if (strcmp(option_name, "LMR_FullDepthMoves") == 0) {
                     search_params.lmr_full_depth_moves = value;
                     printf("info string Set LMR_FullDepthMoves to %d\n", value);
