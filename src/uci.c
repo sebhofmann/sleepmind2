@@ -270,7 +270,7 @@ void uci_loop() {
             printf("option name Futility_MarginD2 type spin default 287 min 100 max 600\n");
             printf("option name Futility_MarginD3 type spin default 440 min 150 max 800\n");
             printf("option name RFP_Margin type spin default 93 min 50 max 300\n");
-            printf("option name RFP_ImprovingAdjustment type spin default 93 min 0 max 300\n");
+            printf("option name RFP_ImprovingAdjustment type spin default 62 min 0 max 300\n");
             printf("option name RFP_MaxDepth type spin default 9 min 2 max 10\n");
             printf("option name Razor_Margin type spin default 299 min 100 max 600\n");
             printf("option name Delta_Margin type spin default 200 min 50 max 500\n");

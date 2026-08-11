@@ -144,7 +144,7 @@ void search_params_init(SearchParams* params) {
 
     // Reverse Futility Pruning (SPSA-tuned)
     params->rfp_margin = 93;
-    params->rfp_improving_adjustment = 93;
+    params->rfp_improving_adjustment = 62;
     params->rfp_max_depth = 9;
 
     // Razoring (drop into qsearch if position looks hopeless)
