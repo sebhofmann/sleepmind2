@@ -56,8 +56,8 @@ typedef struct {
     int main_capture_see_margin;    // Negative threshold per depth (default: 100)
     int main_capture_see_max_depth; // Maximum depth (default: 16)
 
-    // Main-search quiet SEE pruning (quadratic depth threshold)
-    int main_quiet_see_margin;      // Negative threshold per depth squared (default: 20)
+    // Main-search quiet SEE pruning (quadratic reduced-depth threshold)
+    int main_quiet_see_margin;      // Negative threshold per LMR depth squared (default: 20)
     int main_quiet_see_max_depth;   // Maximum depth (default: 8)
 
     // Internal Iterative Reduction

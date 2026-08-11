@@ -314,13 +314,13 @@ void uci_loop() {
             printf("readyok\n");
             fflush(stdout);
         } else if (strncmp(line, "seedump", 7) == 0) {
-            // Debug: print SEE for every capture/promotion in current position
-            MoveList caps;
-            generateCaptureAndPromotionMoves(&current_board, &caps);
-            for (int i = 0; i < caps.count; i++) {
+            // Debug: print SEE for every generated move in current position.
+            MoveList moves;
+            generateMoves(&current_board, &moves);
+            for (int i = 0; i < moves.count; i++) {
                 char s[6];
-                moveToString(caps.moves[i], s);
-                printf("see %s = %d\n", s, see_debug(&current_board, caps.moves[i]));
+                moveToString(moves.moves[i], s);
+                printf("see %s = %d\n", s, see_debug(&current_board, moves.moves[i]));
             }
             fflush(stdout);
         } else if (strncmp(line, "seege ", 6) == 0) {
