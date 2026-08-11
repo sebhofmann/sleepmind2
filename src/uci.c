@@ -261,12 +261,15 @@ void uci_loop() {
             printf("option name Use_LMP type check default true\n");
             printf("option name Use_MDP type check default true\n");
             printf("option name Use_MainCaptureSEE type check default true\n");
+            printf("option name Use_MainQuietSEE type check default true\n");
             // Search parameter options
             printf("option name LMR_FullDepthMoves type spin default 3 min 1 max 10\n");
             printf("option name LMP_Base type spin default 6 min 1 max 20\n");
             printf("option name LMP_MaxDepth type spin default 8 min 1 max 12\n");
             printf("option name MainCaptureSEE_Margin type spin default 100 min 0 max 500\n");
             printf("option name MainCaptureSEE_MaxDepth type spin default 16 min 1 max 32\n");
+            printf("option name MainQuietSEE_Margin type spin default 20 min 0 max 500\n");
+            printf("option name MainQuietSEE_MaxDepth type spin default 8 min 1 max 16\n");
             printf("option name LMR_ReductionLimit type spin default 1 min 1 max 6\n");
             printf("option name NullMove_MinDepth type spin default 4 min 1 max 6\n");
             printf("option name Futility_Margin type spin default 243 min 50 max 400\n");
@@ -306,19 +309,19 @@ void uci_loop() {
             }
             fflush(stdout);
         } else if (strncmp(line, "seege ", 6) == 0) {
-            // Debug: evaluate one generated capture/promotion against a threshold.
+            // Debug: evaluate one generated move against a threshold.
             char requested[6] = {0};
             int threshold;
             if (sscanf(line + 6, "%5s %d", requested, &threshold) == 2) {
-                MoveList caps;
-                generateCaptureAndPromotionMoves(&current_board, &caps);
+                MoveList moves;
+                generateMoves(&current_board, &moves);
                 bool found = false;
-                for (int i = 0; i < caps.count; i++) {
+                for (int i = 0; i < moves.count; i++) {
                     char move_string[6];
-                    moveToString(caps.moves[i], move_string);
+                    moveToString(moves.moves[i], move_string);
                     if (strcmp(move_string, requested) == 0) {
                         printf("seege %s %d = %d\n", requested, threshold,
-                               see_ge_debug(&current_board, caps.moves[i], threshold));
+                               see_ge_debug(&current_board, moves.moves[i], threshold));
                         found = true;
                         break;
                     }
@@ -390,6 +393,9 @@ void uci_loop() {
                 } else if (strcmp(option_name, "Use_MainCaptureSEE") == 0) {
                     search_params.use_main_capture_see = bool_value;
                     printf("info string Set Use_MainCaptureSEE to %s\n", bool_value ? "true" : "false");
+                } else if (strcmp(option_name, "Use_MainQuietSEE") == 0) {
+                    search_params.use_main_quiet_see = bool_value;
+                    printf("info string Set Use_MainQuietSEE to %s\n", bool_value ? "true" : "false");
                 // Numeric parameters
                 } else if (strcmp(option_name, "LMP_Base") == 0) {
                     search_params.lmp_base = value;
@@ -403,6 +409,12 @@ void uci_loop() {
                 } else if (strcmp(option_name, "MainCaptureSEE_MaxDepth") == 0) {
                     search_params.main_capture_see_max_depth = value;
                     printf("info string Set MainCaptureSEE_MaxDepth to %d\n", value);
+                } else if (strcmp(option_name, "MainQuietSEE_Margin") == 0) {
+                    search_params.main_quiet_see_margin = value;
+                    printf("info string Set MainQuietSEE_Margin to %d\n", value);
+                } else if (strcmp(option_name, "MainQuietSEE_MaxDepth") == 0) {
+                    search_params.main_quiet_see_max_depth = value;
+                    printf("info string Set MainQuietSEE_MaxDepth to %d\n", value);
                 } else if (strcmp(option_name, "LMR_FullDepthMoves") == 0) {
                     search_params.lmr_full_depth_moves = value;
                     printf("info string Set LMR_FullDepthMoves to %d\n", value);

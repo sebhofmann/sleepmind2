@@ -45,6 +45,7 @@ static struct {
     uint64_t delta;
     uint64_t see_pruning;
     uint64_t main_capture_see;
+    uint64_t main_quiet_see;
 } pruning_stats;
 
 #define TT_STAT_INC(var) ((var)++)
@@ -124,6 +125,7 @@ void search_params_init(SearchParams* params) {
     params->use_lmp = true;
     params->use_mdp = true;             // Mate Distance Pruning
     params->use_main_capture_see = true;
+    params->use_main_quiet_see = true;
 
     // Late Move Pruning: skip quiets after base + depth^2 searched moves
     params->lmp_base = 6;
@@ -131,6 +133,8 @@ void search_params_init(SearchParams* params) {
 
     params->main_capture_see_margin = 100;
     params->main_capture_see_max_depth = 16;
+    params->main_quiet_see_margin = 20;
+    params->main_quiet_see_max_depth = 8;
 
     // Late Move Reduction parameters (tuned via tournament testing)
     params->lmr_full_depth_moves = 3;   // More aggressive LMR
@@ -359,11 +363,6 @@ static int see(const Board* board, Move move) {
         victim_value = SEE_VALUES[1]; // Pawn
     }
     
-    // If capturing nothing (and not promoting), there is no exchange to evaluate
-    if (victim_value == 0 && !MOVE_IS_EN_PASSANT(move) && !MOVE_IS_PROMOTION(move)) {
-        return 0;
-    }
-
     // Gain array to track material balance at each step
     int gain[32];
     int depth = 0;
@@ -458,9 +457,6 @@ static bool see_ge(const Board* board, Move move, int threshold) {
     PieceTypeToken victim_type = getPieceTypeAtSquare(board, to, &victim_white);
     int victim_value = get_piece_value(victim_type);
     if (MOVE_IS_EN_PASSANT(move)) victim_value = SEE_VALUES[1];
-
-    if (victim_value == 0 && !MOVE_IS_EN_PASSANT(move) && !MOVE_IS_PROMOTION(move))
-        return 0 >= threshold;
 
     int64_t balance = (int64_t)victim_value + promo_gain - threshold;
     if (balance < 0) return false;
@@ -1394,6 +1390,12 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     bool can_main_capture_see = info->params.use_main_capture_see && ply > 0 &&
         !is_pv && !in_check && depth <= info->params.main_capture_see_max_depth &&
         abs(alpha) < TB_SCORE_MIN && abs(beta) < TB_SCORE_MIN;
+    // Quiet SEE pruning is independent from capture SEE pruning and uses a
+    // quadratic depth margin: shallow moves that immediately hang material
+    // are discarded, while deeper nodes receive a rapidly widening allowance.
+    bool can_main_quiet_see = info->params.use_main_quiet_see && ply > 0 &&
+        !is_pv && !in_check && depth <= info->params.main_quiet_see_max_depth &&
+        abs(alpha) < TB_SCORE_MIN && abs(beta) < TB_SCORE_MIN;
     // Static eval at every eligible non-check node, reusing the TT copy when
     // available. This also feeds the per-ply stack used by improving-aware LMP.
     int static_eval = TT_EVAL_NONE;
@@ -1584,6 +1586,15 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             m != mp.tt_move && moves_searched > 0 &&
             move_see < -info->params.main_capture_see_margin * depth) {
             PRUNING_STAT_INC(main_capture_see);
+            continue;
+        }
+
+        // Main-search quiet SEE pruning. Preserve the TT move and the first
+        // legal candidate for the same correctness reasons as capture SEE.
+        if (can_main_quiet_see && !is_tactical && m != mp.tt_move &&
+            moves_searched > 0 &&
+            !see_ge(board, m, -info->params.main_quiet_see_margin * depth * depth)) {
+            PRUNING_STAT_INC(main_quiet_see);
             continue;
         }
 
@@ -2116,7 +2127,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                                   pruning_stats.razoring + pruning_stats.futility +
                                   pruning_stats.lmp + pruning_stats.lmr +
                                   pruning_stats.delta + pruning_stats.see_pruning;
-        total_prunings += pruning_stats.main_capture_see;
+        total_prunings += pruning_stats.main_capture_see + pruning_stats.main_quiet_see;
         printf("info string Pruning stats (total=%llu):\n", (unsigned long long)total_prunings);
         printf("info string   Null Move:    %llu\n", (unsigned long long)pruning_stats.null_move);
         printf("info string   Rev Futility: %llu\n", (unsigned long long)pruning_stats.reverse_futility);
@@ -2133,6 +2144,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         printf("info string   Delta:        %llu\n", (unsigned long long)pruning_stats.delta);
         printf("info string   SEE Pruning:  %llu\n", (unsigned long long)pruning_stats.see_pruning);
         printf("info string   Main Cap SEE: %llu\n", (unsigned long long)pruning_stats.main_capture_see);
+        printf("info string   Main Quiet SEE: %llu\n", (unsigned long long)pruning_stats.main_quiet_see);
 #endif
         fflush(stdout);
     }
