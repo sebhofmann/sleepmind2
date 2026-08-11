@@ -119,6 +119,10 @@ typedef struct {
     // History heuristic (indexed by [side][from][to])
     int history[2][64][64];
 
+    // Capture history indexed by [moving piece][destination][captured type].
+    // Moving piece includes color (0-11); captured type is PAWN..KING (0-5).
+    int16_t capture_history[12][64][6];
+
     // Previous move at each ply (for continuation history)
     Move prev_moves[MAX_PLY];
 

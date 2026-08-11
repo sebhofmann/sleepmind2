@@ -538,6 +538,8 @@ bool see_ge_debug(const Board* board, Move move, int threshold) {
 // persists (un-decayed) across searches within a game, like Stockfish.
 // =============================================================================
 #define CMH_MAX 16384
+#define CAPTURE_HISTORY_MAX 24576
+#define CAPTURE_HISTORY_ORDER_LIMIT 2048
 static int16_t cmh_table[12][64][12][64]; // 1 ply back (countermove history)
 static int16_t fmh_table[12][64][12][64]; // 2 plies back (follow-up history)
 
@@ -580,6 +582,39 @@ static void update_cont_histories(const Board* board, SearchInfo* info, int ply,
                                   Move m, int bonus) {
     update_cont(cmh_table, board, info, ply, 1, m, bonus);
     update_cont(fmh_table, board, info, ply, 2, m, bonus * info->params.fmh_weight / 96);
+}
+
+static inline int capture_piece_index(const Board* board, Move m) {
+    int piece = board->piece[MOVE_FROM(m)];
+    return PIECE_IS_VALID(piece) ? piece - 1 : -1;
+}
+
+static inline int captured_type_index(const Board* board, Move m) {
+    if (MOVE_IS_EN_PASSANT(m)) return PAWN;
+    int piece = board->piece[MOVE_TO(m)];
+    return PIECE_IS_VALID(piece) ? PIECE_TYPE_OF(piece) : -1;
+}
+
+static inline int capture_history_score(const Board* board,
+                                        const SearchInfo* info, Move m) {
+    int piece = capture_piece_index(board, m);
+    int captured = captured_type_index(board, m);
+    if (piece < 0 || captured < 0) return 0;
+    int score = info->capture_history[piece][MOVE_TO(m)][captured];
+    if (score > CAPTURE_HISTORY_ORDER_LIMIT) return CAPTURE_HISTORY_ORDER_LIMIT;
+    if (score < -CAPTURE_HISTORY_ORDER_LIMIT) return -CAPTURE_HISTORY_ORDER_LIMIT;
+    return score;
+}
+
+static void update_capture_history(SearchInfo* info, const Board* board,
+                                   Move m, int bonus) {
+    int piece = capture_piece_index(board, m);
+    int captured = captured_type_index(board, m);
+    if (piece < 0 || captured < 0) return;
+    int16_t* entry = &info->capture_history[piece][MOVE_TO(m)][captured];
+    int value = *entry;
+    *entry = (int16_t)(value + bonus
+                     - value * abs(bonus) / CAPTURE_HISTORY_MAX);
 }
 
 // =============================================================================
@@ -680,14 +715,16 @@ static int mp_capture_score(MovePicker* mp, Move m, bool* is_good, int* see_out)
         PieceTypeToken victim = getPieceTypeAtSquare(board, MOVE_TO(m), &isBlack);
         PieceTypeToken attacker = getPieceTypeAtSquare(board, MOVE_FROM(m), &isWhite);
         int mvv_lva = get_piece_value(victim) * 10 - get_piece_value(attacker);
+        int capture_history = mp->mode == MP_EVASION
+                            ? 0 : capture_history_score(board, mp->info, m);
 
         *is_good = see_value >= 0;
         if (mp->mode == MP_NORMAL) {
-            return *is_good ? 8000000 + see_value * 100 + mvv_lva
-                            : -1000000 + see_value * 100 + mvv_lva;
+            return *is_good ? 8000000 + see_value * 100 + mvv_lva + capture_history
+                            : -1000000 + see_value * 100 + mvv_lva + capture_history;
         }
-        return *is_good ? 1000000 + see_value * 100 + mvv_lva
-                        : see_value * 100 + mvv_lva;
+        return *is_good ? 1000000 + see_value * 100 + mvv_lva + capture_history
+                        : see_value * 100 + mvv_lva + capture_history;
     }
 
     // Non-capture promotion (kept in the good partition; underpromotions
@@ -909,6 +946,7 @@ static void update_history_malus(SearchInfo* info, Board* board, Move m, int dep
 // Clear all search heuristics (new game / startup)
 void clear_search_history(SearchInfo* info) {
     memset(info->history, 0, sizeof(info->history));
+    memset(info->capture_history, 0, sizeof(info->capture_history));
     memset(info->prev_moves, 0, sizeof(info->prev_moves));
     memset(info->prev_pieces, 0, sizeof(info->prev_pieces));
     memset(cmh_table, 0, sizeof(cmh_table));
@@ -925,6 +963,10 @@ void clear_volatile_history(SearchInfo* info) {
         for (int f = 0; f < 64; f++)
             for (int t = 0; t < 64; t++)
                 info->history[s][f][t] /= 2;
+    for (int p = 0; p < 12; p++)
+        for (int t = 0; t < 64; t++)
+            for (int c = 0; c < 6; c++)
+                info->capture_history[p][t][c] /= 2;
 }
 
 // Forward declaration
@@ -1629,6 +1671,10 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     Move quiets_tried[MAX_MOVES];
     int quiets_tried_count = 0;
 
+    // Legal captures actually searched before a capture cutoff receive maluses.
+    Move captures_tried[MAX_MOVES];
+    int captures_tried_count = 0;
+
     Move m;
     int move_score;
     int move_see = 0;
@@ -1723,6 +1769,10 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // post-applyMove: the mover (or promoted piece) on `to`.
         info->prev_moves[ply] = m;
         info->prev_pieces[ply] = cmh_piece_index(board, MOVE_TO(m));
+
+        if (is_capture && captures_tried_count < MAX_MOVES) {
+            captures_tried[captures_tried_count++] = m;
+        }
 
         int score;
 
@@ -1899,6 +1949,15 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                     if (prev == m) continue;
                     update_history_malus(info, board, prev, depth);
                     update_cont_histories(board, info, ply, prev, -history_malus(info, depth));
+                }
+            } else {
+                update_capture_history(info, board, m, history_bonus(info, depth));
+
+                for (int j = 0; j < captures_tried_count; j++) {
+                    Move prev = captures_tried[j];
+                    if (prev == m) continue;
+                    update_capture_history(info, board, prev,
+                                           -history_malus(info, depth));
                 }
             }
             break;
@@ -2190,6 +2249,20 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                 }
         printf("info string HISTORY range=[%d,%d] below_cap=%lld nonzero=%lld lmr_neg=%lld lmr_pos=%lld\n",
                hmin, hmax, below_cap, nonzero, lmr_neg, lmr_pos);
+        int cmin = 0, cmax = 0;
+        long long cnonzero = 0, csaturated = 0;
+        for (int p = 0; p < 12; p++)
+            for (int t = 0; t < 64; t++)
+                for (int c = 0; c < 6; c++) {
+                    int h = info->capture_history[p][t][c];
+                    if (h < cmin) cmin = h;
+                    if (h > cmax) cmax = h;
+                    if (h != 0) cnonzero++;
+                    if (h <= -CAPTURE_HISTORY_MAX || h >= CAPTURE_HISTORY_MAX)
+                        csaturated++;
+                }
+        printf("info string CAPTURE_HISTORY range=[%d,%d] nonzero=%lld saturated=%lld\n",
+               cmin, cmax, cnonzero, csaturated);
         fflush(stdout);
     }
 #endif
