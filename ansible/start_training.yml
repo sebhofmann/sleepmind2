@@ -23,6 +23,20 @@
         state: present
         update_cache: yes
 
+    - name: Enable CPU boost
+      shell: |
+        if [ -f /sys/devices/system/cpu/cpufreq/boost ]; then
+          echo 1 > /sys/devices/system/cpu/cpufreq/boost
+        fi
+      changed_when: false
+
+    - name: Set CPU governor to performance
+      shell: |
+        for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+          echo performance > "$g"
+        done
+      changed_when: false
+
     - name: Create work directory
       file:
         path: "{{ work_dir }}"
@@ -58,6 +72,12 @@
     - name: Check if training is already running
       shell: pgrep -x training || true
       register: training_running
+      changed_when: false
+
+    # Klammer-Muster, damit pkill nicht die eigene Shell matcht
+    - name: Stop leftover wrapper scripts
+      shell: pkill -9 -f "[g]enerate_training_data" || true
+      ignore_errors: yes
       changed_when: false
 
     - name: Stop existing training processes
@@ -101,6 +121,27 @@
       shell: pgrep -x training | wc -l
       register: training_count
       changed_when: false
+
+    - name: Verify NNUE network loaded in all instances
+      shell: |
+        logs=$(ls {{ output_dir }}/training_temp_*.log 2>/dev/null | wc -l)
+        ok=$(grep -l "NNUE evaluation enabled" {{ output_dir }}/training_temp_*.log 2>/dev/null | wc -l)
+        echo "NNUE geladen in ${ok}/${logs} Instanzen"
+        if [ "$logs" -eq 0 ] || [ "$ok" -ne "$logs" ]; then
+          grep -h "NNUE\|quantised" {{ output_dir }}/training_temp_*.log 2>/dev/null | sort -u
+          exit 1
+        fi
+      register: nnue_check
+      changed_when: false
+      # stdout der Instanzen ist gepuffert - Logzeilen erscheinen z.T. erst
+      # nach Sekunden. Deshalb mehrfach probieren statt sofort zu failen.
+      retries: 6
+      delay: 10
+      until: nnue_check.rc == 0
+
+    - name: Show NNUE status
+      debug:
+        var: nnue_check.stdout_lines
 
     - name: Show training status
       debug:

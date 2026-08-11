@@ -6,8 +6,13 @@
 #include "nnue.h"
 #include "syzygy.h"
 #include <stdbool.h>
+#include <limits.h>
 
 #define MAX_PLY 64 // Maximum search depth
+
+// Explicit sentinel for plies where no side-to-move static evaluation exists
+// (most notably check nodes). Kept distinct from every legal engine score.
+#define STATIC_EVAL_UNAVAILABLE INT_MIN
 
 // =============================================================================
 // Tunable Search Parameters (UCI Options)
@@ -106,6 +111,10 @@ typedef struct {
 
     // Previous move at each ply (for continuation history)
     Move prev_moves[MAX_PLY];
+
+    // Side-to-move static evaluation at each ply. Entries are reset on node
+    // entry, so check nodes and other ineligible nodes cannot leak stale data.
+    int static_eval_stack[MAX_PLY + 1];
 
     // Piece index (0-11) that made prev_moves[ply], recorded at make time
     // (the piece may be captured later, so a board lookup would be wrong)

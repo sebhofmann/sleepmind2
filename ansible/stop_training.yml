@@ -20,6 +20,13 @@
       debug:
         msg: "{{ training_running.stdout_lines | length }} Training-Prozesse laufen"
 
+    # Wrapper zuerst hart beenden (SIGKILL): sein SIGTERM-Trap würde sonst
+    # parallel zu uns die Temp-Dateien kombinieren -> doppelte Positionen
+    - name: Kill wrapper script before touching training processes
+      shell: pkill -9 -f "[g]enerate_training_data" || true
+      ignore_errors: yes
+      changed_when: false
+
     - name: Send SIGTERM to training processes (graceful shutdown)
       shell: killall -q training || true
       when: training_running.stdout != ""

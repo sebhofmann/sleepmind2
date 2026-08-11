@@ -37,6 +37,10 @@ static struct {
     uint64_t razoring;
     uint64_t futility;
     uint64_t lmp;
+    uint64_t improving_nodes;
+    uint64_t non_improving_nodes;
+    uint64_t lmp_improving;
+    uint64_t lmp_non_improving;
     uint64_t lmr;
     uint64_t delta;
     uint64_t see_pruning;
@@ -1257,6 +1261,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                    int ply, bool do_null, bool is_null_move_search) {
     info->nodesSearched++;
     info->pv_length[ply] = 0;
+    info->static_eval_stack[ply] = STATIC_EVAL_UNAVAILABLE;
 
     // Mate distance pruning: no line from here can be better than mating in
     // ply+1 or worse than being mated in ply, so clamp the window to that
@@ -1389,12 +1394,10 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     bool can_main_capture_see = info->params.use_main_capture_see && ply > 0 &&
         !is_pv && !in_check && depth <= info->params.main_capture_see_max_depth &&
         abs(alpha) < TB_SCORE_MIN && abs(beta) < TB_SCORE_MIN;
-    int lmp_threshold = info->params.lmp_base + depth * depth;
-
-    // Static eval only where pruning needs it, reusing the TT copy when
-    // available; stays TT_EVAL_NONE otherwise (in check / PV nodes)
+    // Static eval at every eligible non-check node, reusing the TT copy when
+    // available. This also feeds the per-ply stack used by improving-aware LMP.
     int static_eval = TT_EVAL_NONE;
-    if (can_null || can_rfp || can_razor || can_futility) {
+    if (!in_check) {
         if (tte.found && tte.eval != TT_EVAL_NONE) {
             static_eval = tte.eval;
         } else {
@@ -1402,6 +1405,22 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             if (!board->whiteToMove) {
                 static_eval = -static_eval;
             }
+        }
+        info->static_eval_stack[ply] = static_eval;
+    }
+
+    // A node is improving when its side-to-move evaluation is better than the
+    // same side's evaluation two plies earlier. If either value is unavailable
+    // (including ply < 2 or a check node), fall back to non-improving.
+    bool improving = ply >= 2 && static_eval != TT_EVAL_NONE &&
+        info->static_eval_stack[ply - 2] != STATIC_EVAL_UNAVAILABLE &&
+        static_eval > info->static_eval_stack[ply - 2];
+    int lmp_threshold = (info->params.lmp_base + depth * depth) / (2 - improving);
+    if (can_lmp) {
+        if (improving) {
+            PRUNING_STAT_INC(improving_nodes);
+        } else {
+            PRUNING_STAT_INC(non_improving_nodes);
         }
     }
 
@@ -1549,6 +1568,11 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // =======================================================================
         if (can_lmp && !is_tactical && moves_searched >= lmp_threshold) {
             PRUNING_STAT_INC(lmp);
+            if (improving) {
+                PRUNING_STAT_INC(lmp_improving);
+            } else {
+                PRUNING_STAT_INC(lmp_non_improving);
+            }
             continue;
         }
 
@@ -2099,6 +2123,12 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         printf("info string   Razoring:     %llu\n", (unsigned long long)pruning_stats.razoring);
         printf("info string   Futility:     %llu\n", (unsigned long long)pruning_stats.futility);
         printf("info string   LMP:          %llu\n", (unsigned long long)pruning_stats.lmp);
+        printf("info string Improving nodes: yes=%llu no=%llu\n",
+               (unsigned long long)pruning_stats.improving_nodes,
+               (unsigned long long)pruning_stats.non_improving_nodes);
+        printf("info string LMP cuts: improving=%llu non-improving=%llu\n",
+               (unsigned long long)pruning_stats.lmp_improving,
+               (unsigned long long)pruning_stats.lmp_non_improving);
         printf("info string   LMR:          %llu\n", (unsigned long long)pruning_stats.lmr);
         printf("info string   Delta:        %llu\n", (unsigned long long)pruning_stats.delta);
         printf("info string   SEE Pruning:  %llu\n", (unsigned long long)pruning_stats.see_pruning);

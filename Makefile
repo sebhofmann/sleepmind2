@@ -40,6 +40,7 @@ COMMON_SRCS = board_io.c move_generator.c move.c bitboard_utils.c search.c tt.c 
 # Engine source files
 ENGINE_SRCS = main.c uci.c $(COMMON_SRCS)
 ENGINE_OBJS = $(addprefix $(BUILD_DIR)/, $(ENGINE_SRCS:.c=.o))
+ENGINE_OBJS += $(BUILD_DIR)/embedded_nnue.o
 ENGINE_EXEC = $(BUILD_DIR)/sleepmind
 
 # Training data generator source files
@@ -56,6 +57,9 @@ training: $(BUILD_DIR) $(TRAINING_EXEC)
 # Both targets
 both: all training
 
+test-nnue: $(BUILD_DIR) $(BUILD_DIR)/nnue_load_test
+	$(BUILD_DIR)/nnue_load_test
+
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
@@ -69,6 +73,14 @@ $(TRAINING_EXEC): $(TRAINING_OBJS)
 # warnings are not actionable for us, so they are suppressed.
 $(BUILD_DIR)/tbprobe.o: $(SRC_DIR)/tbprobe.c
 	$(CC) $(CFLAGS) -D_GNU_SOURCE -w -MMD -MP -I$(SRC_DIR) -c $< -o $@
+
+# Keep the release engine self-contained. The explicit dependency ensures that
+# replacing the trained net always relinks the executable.
+$(BUILD_DIR)/embedded_nnue.o: $(SRC_DIR)/embedded_nnue.S quantised.bin
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/nnue_load_test: tests/nnue_load_test.c $(BUILD_DIR)/nnue.o $(BUILD_DIR)/embedded_nnue.o
+	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $^ -lm
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) -MMD -MP -I$(SRC_DIR) -c $< -o $@
@@ -85,4 +97,4 @@ debug: clean all
 debug_eval: CFLAGS = $(DEBUG_EVAL_FLAGS)
 debug_eval: clean all
 
-.PHONY: all training both clean debug debug_eval
+.PHONY: all training both test-nnue clean debug debug_eval

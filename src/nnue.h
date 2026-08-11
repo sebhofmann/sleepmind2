@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdalign.h>
+#include <stddef.h>
 
 // NNUE Network Architecture
 #define NNUE_INPUT_SIZE      768   // 64 squares * 6 piece types * 2 colors
@@ -75,13 +76,10 @@ void nnue_init_random(void);
 // Load NNUE weights from file into network
 bool nnue_load(const char* filename, NNUENetwork* net);
 
+// Load NNUE weights from an in-memory copy of the quantised network file.
+bool nnue_load_memory(const unsigned char* data, size_t size, NNUENetwork* net);
+
 // Save NNUE weights to file
-bool nnue_save(const char* filename, const NNUENetwork* net);
-
-// Load NNUE weights from file into network
-bool nnue_load(const char* filename, NNUENetwork* net);
-
-// Save NNUE weights to file from network
 bool nnue_save(const char* filename, const NNUENetwork* net);
 
 // Compute full accumulator from scratch - needs network for initial computation
