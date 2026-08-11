@@ -31,6 +31,7 @@ typedef struct {
     bool use_bad_capture_last; // Order losing captures (SEE<0) below quiet moves (default: true, SPRT +11 Elo)
     bool use_lmp;              // Enable Late Move Pruning (default: true)
     bool use_mdp;              // Enable Mate Distance Pruning (default: true)
+    bool use_main_capture_see; // Enable main-search SEE pruning for captures
 
     // Late Move Reduction parameters
     int lmr_full_depth_moves;  // Number of moves before LMR kicks in (default: 4)
@@ -39,6 +40,10 @@ typedef struct {
     // Late Move Pruning parameters (skip quiets after base + depth^2 moves)
     int lmp_base;              // Movecount threshold base (default: 3)
     int lmp_max_depth;         // Maximum depth for LMP (default: 8)
+
+    // Main-search capture SEE pruning
+    int main_capture_see_margin;    // Negative threshold per depth (default: 100)
+    int main_capture_see_max_depth; // Maximum depth (default: 16)
 
     // Null Move Pruning parameters (reduction itself is adaptive in negamax)
     int null_move_min_depth;   // Minimum depth for null move pruning (default: 3)
@@ -158,6 +163,7 @@ int quiescence_search(Board* board, int alpha, int beta, bool maximizingPlayer, 
 void clear_search_history(SearchInfo* info);
 void clear_volatile_history(SearchInfo* info);
 int see_debug(const Board* board, Move move); // Debug: expose SEE
+bool see_ge_debug(const Board* board, Move move, int threshold); // Debug: threshold SEE
 
 #define MATE_SCORE 1000000 // Arbitrary large score for checkmate
 
