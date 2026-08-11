@@ -34,6 +34,7 @@ typedef struct {
     bool use_main_capture_see; // Enable main-search SEE pruning for captures
     bool use_iir;              // Enable Internal Iterative Reduction
     bool use_probcut;          // Enable capture-only ProbCut
+    bool use_history_pruning;  // Prune very low-history quiet moves
 
     // Late Move Reduction parameters
     int lmr_full_depth_moves;  // Number of moves before LMR kicks in (default: 4)
@@ -42,6 +43,10 @@ typedef struct {
     // Late Move Pruning parameters (skip quiets after base + depth^2 moves)
     int lmp_base;              // Movecount threshold base (default: 3)
     int lmp_max_depth;         // Maximum depth for LMP (default: 8)
+
+    // Quiet history pruning
+    int history_pruning_max_depth; // Maximum depth (default: 4)
+    int history_pruning_margin;    // Negative combined-history margin per depth
 
     // Main-search capture SEE pruning
     int main_capture_see_margin;    // Negative threshold per depth (default: 100)
