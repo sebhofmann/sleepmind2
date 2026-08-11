@@ -32,6 +32,7 @@ typedef struct {
     bool use_lmp;              // Enable Late Move Pruning (default: true)
     bool use_mdp;              // Enable Mate Distance Pruning (default: true)
     bool use_main_capture_see; // Enable main-search SEE pruning for captures
+    bool use_iir;              // Enable Internal Iterative Reduction
 
     // Late Move Reduction parameters
     int lmr_full_depth_moves;  // Number of moves before LMR kicks in (default: 4)
@@ -44,6 +45,9 @@ typedef struct {
     // Main-search capture SEE pruning
     int main_capture_see_margin;    // Negative threshold per depth (default: 100)
     int main_capture_see_max_depth; // Maximum depth (default: 16)
+
+    // Internal Iterative Reduction
+    int iir_min_depth;         // Minimum depth at a non-root node without a TT move
 
     // Null Move Pruning parameters (reduction itself is adaptive in negamax)
     int null_move_min_depth;   // Minimum depth for null move pruning (default: 3)
