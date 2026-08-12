@@ -29,7 +29,6 @@ typedef struct {
     Move    move;
 } TTData;
 
-void init_zobrist_keys();
 void init_tt(size_t table_size_mb);
 void clear_tt();
 void tt_new_search();  // Call at start of each search to bump the generation

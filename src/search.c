@@ -939,7 +939,9 @@ static void update_pawn_correction(const Board* board, SearchInfo* info,
     if (bonus < -cap) bonus = -cap;
     int weight = depth + 2;
     if (weight > 16) weight = 16;
-    int next = *entry + bonus * weight / 16 - (*entry * weight / 256);
+    // Both terms use the same EWMA scale, so a stable error converges to the
+    // bounded bonus instead of amplifying it by a factor of sixteen.
+    int next = *entry + bonus * weight / 256 - (*entry * weight / 256);
     if (next > CORRECTION_HISTORY_LIMIT) next = CORRECTION_HISTORY_LIMIT;
     if (next < -CORRECTION_HISTORY_LIMIT) next = -CORRECTION_HISTORY_LIMIT;
     *entry = (int16_t)next;
