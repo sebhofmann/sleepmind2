@@ -75,3 +75,19 @@ uint64_t calculate_zobrist_key(const Board* board) {
     return key;
 }
 
+uint64_t calculate_pawn_key(const Board* board) {
+    uint64_t key = 0ULL;
+    Bitboard pawns = board->whitePawns;
+    while (pawns) {
+        int sq = __builtin_ctzll(pawns);
+        key ^= ZOBRIST_PIECE_KEY(PAWN_T, WHITE, sq);
+        pawns &= pawns - 1;
+    }
+    pawns = board->blackPawns;
+    while (pawns) {
+        int sq = __builtin_ctzll(pawns);
+        key ^= ZOBRIST_PIECE_KEY(PAWN_T, BLACK, sq);
+        pawns &= pawns - 1;
+    }
+    return key;
+}

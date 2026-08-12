@@ -13,6 +13,7 @@
 // Explicit sentinel for plies where no side-to-move static evaluation exists
 // (most notably check nodes). Kept distinct from every legal engine score.
 #define STATIC_EVAL_UNAVAILABLE INT_MIN
+#define PAWN_CORRECTION_SIZE 16384
 
 // =============================================================================
 // Tunable Search Parameters (UCI Options)
@@ -125,6 +126,9 @@ typedef struct {
     // Side-to-move static evaluation at each ply. Entries are reset on node
     // entry, so check nodes and other ineligible nodes cannot leak stale data.
     int static_eval_stack[MAX_PLY + 1];
+
+    // Persistent within a game, indexed by side-to-move and pawn hash.
+    int16_t pawn_correction_history[2][PAWN_CORRECTION_SIZE];
 
     // Piece index (0-11) that made prev_moves[ply], recorded at make time
     // (the piece may be captured later, so a board lookup would be wrong)
