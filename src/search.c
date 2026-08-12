@@ -53,6 +53,7 @@ static struct {
     uint64_t singular_probes;
     uint64_t singular_hits;
     uint64_t singular_extensions;
+    uint64_t singular_multicuts;
 } pruning_stats;
 
 #define TT_STAT_INC(var) ((var)++)
@@ -136,6 +137,7 @@ void search_params_init(SearchParams* params) {
     params->use_main_capture_see = true;
     params->use_iir = true;
     params->use_probcut = true;
+    params->use_singular = true;
 
     // Late Move Pruning: skip quiets after base + depth^2 searched moves
     params->lmp_base = 6;
@@ -151,6 +153,10 @@ void search_params_init(SearchParams* params) {
     params->probcut_min_depth = 5;
     params->probcut_margin = 184;
     params->probcut_reduction = 4;
+
+    params->singular_min_depth = 8;
+    params->singular_margin = 2;
+    params->singular_tt_depth_slack = 3;
 
     // Late Move Reduction parameters (tuned via tournament testing)
     params->lmr_full_depth_moves = 3;   // More aggressive LMR
@@ -1715,25 +1721,31 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // A sufficiently deep lower/exact TT move is singular when every
         // alternative fails below a reduced bound. This verification is made
         // before applying the candidate, at the current position.
-        if (excluded_move == 0 && ply > 0 && depth >= 8 && m == tt_move &&
+        if (info->params.use_singular && excluded_move == 0 && ply > 0 &&
+            depth >= info->params.singular_min_depth && m == tt_move &&
             tte.found && (tte.bound == TT_LOWERBOUND || tte.bound == TT_EXACT) &&
-            tte.depth >= depth - 3) {
+            tte.depth >= depth - info->params.singular_tt_depth_slack) {
             int tt_score = tte.score;
             if (tt_score >= TB_SCORE_MIN) tt_score -= ply;
             else if (tt_score <= -TB_SCORE_MIN) tt_score += ply;
 
             if (abs(tt_score) < TB_SCORE_MIN) {
-                int singular_beta = tt_score - 2 * depth;
+                int singular_beta = tt_score - info->params.singular_margin * depth;
                 int singular_depth = (depth - 1) / 2;
                 PRUNING_STAT_INC(singular_probes);
+                int saved_pv_length = info->pv_length[ply];
                 int singular_score = negamax(board, singular_depth,
                                              singular_beta - 1, singular_beta,
                                              info, ply, false, false, tt_move);
+                info->pv_length[ply] = saved_pv_length;
                 if (info->stopSearch) return 0;
                 if (singular_score < singular_beta) {
                     extension = 1;
                     PRUNING_STAT_INC(singular_hits);
                     PRUNING_STAT_INC(singular_extensions);
+                } else if (singular_score >= beta) {
+                    PRUNING_STAT_INC(singular_multicuts);
+                    return singular_score;
                 }
             }
         }
@@ -2279,10 +2291,11 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                (unsigned long long)pruning_stats.probcut_nodes);
         printf("info string   Main Cap SEE: %llu\n", (unsigned long long)pruning_stats.main_capture_see);
         printf("info string   IIR:          %llu\n", (unsigned long long)pruning_stats.iir);
-        printf("info string   Singular: probes=%llu hits=%llu extension_nodes=%llu\n",
+        printf("info string   Singular: probes=%llu hits=%llu extension_nodes=%llu multicuts=%llu\n",
                (unsigned long long)pruning_stats.singular_probes,
                (unsigned long long)pruning_stats.singular_hits,
-               (unsigned long long)pruning_stats.singular_extensions);
+               (unsigned long long)pruning_stats.singular_extensions,
+               (unsigned long long)pruning_stats.singular_multicuts);
 #endif
         fflush(stdout);
     }
