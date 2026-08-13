@@ -1789,11 +1789,12 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         }
         int lmr_search_depth = depth - 1 - reduction;
 
-        // Main-search quiet SEE pruning. Preserve the TT move and the first
-        // well-ordered candidates so a cut node does not lose its likely
-        // cutoff move before SEE is considered.
+        // Main-search quiet SEE pruning. Preserve the TT move, the first
+        // well-ordered candidates, and quiets with non-negative history so a
+        // cut node does not lose its likely cutoff move before SEE is considered.
         if (can_main_quiet_see && !is_tactical && m != mp.tt_move &&
             moves_searched >= info->params.lmr_full_depth_moves &&
+            move_score < 0 &&
             !see_ge(board, m, -info->params.main_quiet_see_margin *
                               lmr_search_depth * lmr_search_depth)) {
             PRUNING_STAT_INC(main_quiet_see);
