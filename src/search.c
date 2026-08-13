@@ -724,22 +724,25 @@ static int mp_capture_score(MovePicker* mp, Move m, bool* is_good, int* see_out)
         int see_value = see(board, m);
         *see_out = see_value;
 
-        // MVV-LVA as tiebreaker
-        bool isWhite = board->whiteToMove;
-        bool isBlack = !isWhite;
-        PieceTypeToken victim = getPieceTypeAtSquare(board, MOVE_TO(m), &isBlack);
-        PieceTypeToken attacker = getPieceTypeAtSquare(board, MOVE_FROM(m), &isWhite);
-        int mvv_lva = get_piece_value(victim) * 10 - get_piece_value(attacker);
+        // SEE determines only the good/bad partition.  Within a partition,
+        // prefer valuable victims and captures which have caused cutoffs in
+        // similar positions.  Multiplying exact SEE by 100 here used to drown
+        // out the bounded history term and effectively disabled the learning.
+        bool isBlack = !board->whiteToMove;
+        PieceTypeToken victim = MOVE_IS_EN_PASSANT(m)
+                              ? PAWN
+                              : getPieceTypeAtSquare(board, MOVE_TO(m), &isBlack);
+        int victim_score = get_piece_value(victim) * 10;
         int capture_history = mp->mode == MP_EVASION
                             ? 0 : capture_history_score(board, mp->info, m);
 
         *is_good = see_value >= 0;
         if (mp->mode == MP_NORMAL) {
-            return *is_good ? 8000000 + see_value * 100 + mvv_lva + capture_history
-                            : -1000000 + see_value * 100 + mvv_lva + capture_history;
+            return *is_good ? 8000000 + victim_score + capture_history
+                            : -1000000 + victim_score + capture_history;
         }
-        return *is_good ? 1000000 + see_value * 100 + mvv_lva + capture_history
-                        : see_value * 100 + mvv_lva + capture_history;
+        return *is_good ? 1000000 + victim_score + capture_history
+                        : victim_score + capture_history;
     }
 
     // Non-capture promotion (kept in the good partition; underpromotions
