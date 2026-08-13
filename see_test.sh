@@ -56,5 +56,36 @@ for c in "${CASES[@]}"; do
     fi
   done
 done
+
+# Quiet moves must also traverse the exchange sequence. Qa1-a2 walks onto an
+# undefended rook attack and therefore has SEE -900; Kh1-g1 is safe (SEE 0).
+QUIET_CASES=(
+"r6k/8/8/8/8/8/8/Q6K w - - 0 1|a1a2|-900"
+"7k/8/8/8/8/8/8/7K w - - 0 1|h1g1|0"
+"7k/8/8/8/4p3/8/6P1/6NK w - - 0 1|g1f3|-220"
+"4k3/8/8/8/8/8/8/4K2R w K - 0 1|e1g1|0"
+"4r2k/8/8/8/8/8/8/4K3 w - - 0 1|e1e2|-20000"
+)
+for c in "${QUIET_CASES[@]}"; do
+  fen="${c%%|*}"; rest="${c#*|}"; mv="${rest%%|*}"; exp="${rest##*|}"
+  see_out=$(printf 'position fen %s\nseedump\nquit\n' "$fen" | $ENG 2>/dev/null | grep "^see $mv ")
+  got_see=$(echo "$see_out" | sed 's/.*= //')
+  if [ "$got_see" = "$exp" ]; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1)); echo "FAIL quiet SEE $mv : erwartet $exp, bekommen '${got_see:-<kein Ergebnis>}'  [$fen]"
+  fi
+  for delta in -1 0 1; do
+    threshold=$((exp + delta))
+    if [ "$delta" -le 0 ]; then expected_ge=1; else expected_ge=0; fi
+    ge_out=$(printf 'position fen %s\nseege %s %d\nquit\n' "$fen" "$mv" "$threshold" | $ENG 2>/dev/null | grep "^seege $mv $threshold ")
+    got_ge=$(echo "$ge_out" | sed 's/.*= //')
+    if [ "$got_ge" = "$expected_ge" ]; then
+      pass=$((pass+1))
+    else
+      fail=$((fail+1)); echo "FAIL quiet see_ge $mv threshold $threshold : erwartet $expected_ge, bekommen '${got_ge:-<kein Ergebnis>}'  [$fen]"
+    fi
+  done
+done
 echo "----"
 echo "PASS=$pass FAIL=$fail"
