@@ -282,6 +282,7 @@ class SPSATuner:
             json.dump(PARAMETERS, f, indent=2)
 
         self.load_state()
+        self.save_dashboard_data()
 
     def get_int_params(self) -> Dict[str, int]:
         """Convert float params to integers for engine"""
@@ -320,6 +321,14 @@ class SPSATuner:
 
         with (self.state_dir / "spsa_history.json").open("w") as f:
             json.dump(self.history, f, indent=2)
+
+    def save_dashboard_data(self):
+        """Write a small live snapshot without rewriting the full history."""
+        with (self.state_dir / "spsa_dashboard_data.json").open("w") as f:
+            json.dump({
+                "iteration": self.iteration,
+                "history": self.history[-1000:],
+            }, f)
 
     def get_perturbation(self) -> Dict[str, int]:
         """Generate ±1 direction for each tuned parameter, 0 for fixed ones"""
@@ -431,6 +440,7 @@ class SPSATuner:
                 "score": score,
                 "params": self.get_int_params()
             })
+            self.save_dashboard_data()
 
             print(f"[{it}/{MAX_ITERATIONS}] pair score θ+: {score:.2f}")
 

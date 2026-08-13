@@ -441,14 +441,15 @@
         async function loadData() {
             try {
                 const cacheBust = '?' + Date.now();
-                const [historyResponse, parametersResponse] = await Promise.all([
-                    fetch('spsa_history.json' + cacheBust),
+                const [dashboardResponse, parametersResponse] = await Promise.all([
+                    fetch('spsa_dashboard_data.json' + cacheBust),
                     fetch('spsa_parameters.json' + cacheBust)
                 ]);
-                if (!historyResponse.ok || !parametersResponse.ok) {
+                if (!dashboardResponse.ok || !parametersResponse.ok) {
                     throw new Error('SPSA data not found');
                 }
-                const data = await historyResponse.json();
+                const dashboardData = await dashboardResponse.json();
+                const data = dashboardData.history;
                 PARAMETERS = await parametersResponse.json();
 
                 updateStats(data);
