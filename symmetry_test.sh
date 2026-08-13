@@ -136,18 +136,20 @@ test_search_symmetry() {
         return
     fi
     
-    # Search scores should be negated (score1 = -score2, approximately)
-    local sum=$((score1 + score2))
-    local abs_sum=${sum#-}
+    # UCI search scores are side-to-move relative. Mirroring swaps both colors
+    # and side to move, so the two scores should be equal (unlike `eval`, whose
+    # diagnostic is White-relative and therefore changes sign).
+    local difference=$((score1 - score2))
+    local abs_sum=${difference#-}
     
     if [ "$abs_sum" -le "$SEARCH_TOLERANCE" ]; then
-        echo -e "${GREEN}PASS${NC} Search Symmetry (d$depth): $description (orig=$score1 cp, mirror=$score2 cp, diff=$sum cp)"
+        echo -e "${GREEN}PASS${NC} Search Symmetry (d$depth): $description (orig=$score1 cp, mirror=$score2 cp, diff=$difference cp)"
         ((PASSED++))
     elif [ "$abs_sum" -le "$((SEARCH_TOLERANCE * 3))" ]; then
-        echo -e "${YELLOW}WARN${NC} Search Symmetry (d$depth): $description (orig=$score1 cp, mirror=$score2 cp, diff=$sum cp)"
+        echo -e "${YELLOW}WARN${NC} Search Symmetry (d$depth): $description (orig=$score1 cp, mirror=$score2 cp, diff=$difference cp)"
         ((WARNINGS++))
     else
-        echo -e "${RED}FAIL${NC} Search Symmetry (d$depth): $description (orig=$score1 cp, mirror=$score2 cp, diff=$sum cp)"
+        echo -e "${RED}FAIL${NC} Search Symmetry (d$depth): $description (orig=$score1 cp, mirror=$score2 cp, diff=$difference cp)"
         echo -e "       Original FEN: $fen"
         echo -e "       Mirrored FEN: $mirrored_fen"
         ((FAILED++))

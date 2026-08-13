@@ -13,6 +13,13 @@
 // Explicit sentinel for plies where no side-to-move static evaluation exists
 // (most notably check nodes). Kept distinct from every legal engine score.
 #define STATIC_EVAL_UNAVAILABLE INT_MIN
+#define PAWN_CORRECTION_SIZE 16384
+
+// EWMA step used by pawn correction history. Kept here so the arithmetic can
+// be regression-tested without constructing a complete search.
+static inline int pawn_correction_ewma(int current, int bonus, int weight) {
+    return current + bonus * weight / 256 - current * weight / 256;
+}
 
 // =============================================================================
 // Tunable Search Parameters (UCI Options)
@@ -77,6 +84,13 @@ typedef struct {
     bool use_razoring;         // Enable Razoring (default: true)
     int razor_margin;          // Base margin for razoring (default: 220)
 
+    // Pawn correction history. Limit is in centipawns; the two scales use
+    // 128 as 100% for learning and application strength respectively.
+    int pawn_corr_limit;
+    int pawn_corr_bonus_scale;
+    int pawn_corr_eval_scale;
+    int pawn_corr_min_depth;
+
     // Delta pruning margin for quiescence
     int delta_margin;          // (default: 200)
 
@@ -131,6 +145,9 @@ typedef struct {
     // Side-to-move static evaluation at each ply. Entries are reset on node
     // entry, so check nodes and other ineligible nodes cannot leak stale data.
     int static_eval_stack[MAX_PLY + 1];
+
+    // Persistent within a game, indexed by side-to-move and pawn hash.
+    int16_t pawn_correction_history[2][PAWN_CORRECTION_SIZE];
 
     // Piece index (0-11) that made prev_moves[ply], recorded at make time
     // (the piece may be captured later, so a board lookup would be wrong)

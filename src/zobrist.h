@@ -12,6 +12,7 @@ extern uint64_t zobrist_piece_keys_flat[768];
 extern uint64_t zobrist_castling_keys[16];
 extern uint64_t zobrist_enpassant_keys[64];
 extern uint64_t zobrist_side_to_move_key;
+void init_zobrist_keys(void);
 
 // Optimized index: only 2 shifts
 // (pieceType-1) * 128 + colorIdx * 64 + square
@@ -22,6 +23,7 @@ extern uint64_t zobrist_side_to_move_key;
     zobrist_piece_keys_flat[ZOBRIST_PIECE_INDEX(pieceType, colorIdx, square)]
 
 uint64_t calculate_zobrist_key(const Board* board);
+uint64_t calculate_pawn_key(const Board* board);
 
 
 #endif

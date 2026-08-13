@@ -13,6 +13,7 @@ typedef struct {
     uint8_t oldCastlingRights;
     int oldHalfMoveClock;
     uint64_t oldZobristKey;
+    uint64_t oldPawnKey;
 } MoveUndoInfo;
 
 // --- Function Prototypes ---

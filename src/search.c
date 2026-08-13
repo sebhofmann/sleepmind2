@@ -50,6 +50,7 @@ static struct {
     uint64_t probcut_qs_hits;
     uint64_t probcut_cuts;
     uint64_t probcut_nodes;
+    uint64_t correction_updates;
     uint64_t singular_probes;
     uint64_t singular_hits;
     uint64_t singular_extensions;
@@ -178,6 +179,11 @@ void search_params_init(SearchParams* params) {
     // Razoring (drop into qsearch if position looks hopeless)
     params->use_razoring = true;
     params->razor_margin = 299;         // Base margin (scaled by depth)
+
+    params->pawn_corr_limit = 48;
+    params->pawn_corr_bonus_scale = 128;
+    params->pawn_corr_eval_scale = 128;
+    params->pawn_corr_min_depth = 2;
 
     // Delta pruning margin for quiescence
     params->delta_margin = 200;         // Tighter with reliable eval
@@ -920,8 +926,47 @@ void clear_search_history(SearchInfo* info) {
     memset(info->history, 0, sizeof(info->history));
     memset(info->prev_moves, 0, sizeof(info->prev_moves));
     memset(info->prev_pieces, 0, sizeof(info->prev_pieces));
+    memset(info->pawn_correction_history, 0, sizeof(info->pawn_correction_history));
     memset(cmh_table, 0, sizeof(cmh_table));
     memset(fmh_table, 0, sizeof(fmh_table));
+}
+
+#define CORRECTION_GRAIN 256
+
+static inline int pawn_correction_value(const Board* board, const SearchInfo* info) {
+    if ((board->whitePawns | board->blackPawns) == 0)
+        return 0;
+    int side = board->whiteToMove ? WHITE : BLACK;
+    int value = info->pawn_correction_history[side]
+        [board->pawnKey & (PAWN_CORRECTION_SIZE - 1)];
+    return value * info->params.pawn_corr_eval_scale /
+        (CORRECTION_GRAIN * 128);
+}
+
+static void update_pawn_correction(const Board* board, SearchInfo* info,
+                                   int depth, int score, int corrected_eval) {
+    if ((board->whitePawns | board->blackPawns) == 0)
+        return;
+    int side = board->whiteToMove ? WHITE : BLACK;
+    int16_t* entry = &info->pawn_correction_history[side]
+        [board->pawnKey & (PAWN_CORRECTION_SIZE - 1)];
+    // Entries and bonuses use a grain-scaled centipawn domain. Depth controls
+    // only the learning rate; it must not change the value being learned.
+    int limit = info->params.pawn_corr_limit * CORRECTION_GRAIN;
+    int64_t scaled_bonus = (int64_t)(score - corrected_eval) *
+        CORRECTION_GRAIN * info->params.pawn_corr_bonus_scale / 128;
+    if (scaled_bonus > limit) scaled_bonus = limit;
+    if (scaled_bonus < -limit) scaled_bonus = -limit;
+    int bonus = (int)scaled_bonus;
+    int weight = depth + 2;
+    if (weight > 16) weight = 16;
+    // A true EWMA: for a stable measured error the entry converges to that
+    // error, rather than to the sign or signal-to-noise ratio of the error.
+    int next = pawn_correction_ewma(*entry, bonus, weight);
+    if (next > limit) next = limit;
+    if (next < -limit) next = -limit;
+    *entry = (int16_t)next;
+    PRUNING_STAT_INC(correction_updates);
 }
 
 // Clear only ply-indexed state before each search; histories persist
@@ -1162,15 +1207,16 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     }
     
     // Not in check: stand pat, reusing the TT static eval when available
-    int stand_pat;
+    int raw_stand_pat;
     if (tte.found && tte.eval != TT_EVAL_NONE) {
-        stand_pat = tte.eval;
+        raw_stand_pat = tte.eval;
     } else {
-        stand_pat = evaluate(board, info->nnue_acc, info->nnue_net);
+        raw_stand_pat = evaluate(board, info->nnue_acc, info->nnue_net);
         if (!board->whiteToMove) {
-            stand_pat = -stand_pat;
+            raw_stand_pat = -raw_stand_pat;
         }
     }
+    int stand_pat = raw_stand_pat + pawn_correction_value(board, info);
     
     if (stand_pat >= beta) {
         return beta;
@@ -1261,7 +1307,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         
         if (score >= beta) {
             // TT Store for beta cutoff
-            tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m, tt_pv, stand_pat);
+            tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m, tt_pv, raw_stand_pat);
             return beta;
         }
         if (score > alpha) {
@@ -1273,7 +1319,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     // TT Store at end of QS
     if (!info->stopSearch) {
         uint8_t tt_flag = (alpha <= original_alpha) ? TT_UPPERBOUND : TT_EXACT;
-        tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move, tt_pv, stand_pat);
+        tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move, tt_pv, raw_stand_pat);
     }
     
     return alpha;
@@ -1438,16 +1484,20 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         abs(alpha) < TB_SCORE_MIN && abs(beta) < TB_SCORE_MIN;
     // Static eval at every eligible non-check node, reusing the TT copy when
     // available. This also feeds the per-ply stack used by improving-aware LMP.
+    int raw_static_eval = TT_EVAL_NONE;
     int static_eval = TT_EVAL_NONE;
     if (!in_check) {
         if (tte.found && tte.eval != TT_EVAL_NONE) {
-            static_eval = tte.eval;
+            raw_static_eval = tte.eval;
         } else {
-            static_eval = evaluate(board, info->nnue_acc, info->nnue_net);
+            raw_static_eval = evaluate(board, info->nnue_acc, info->nnue_net);
             if (!board->whiteToMove) {
-                static_eval = -static_eval;
+                raw_static_eval = -raw_static_eval;
             }
         }
+        static_eval = raw_static_eval + pawn_correction_value(board, info);
+        if (static_eval >= TB_SCORE_MIN) static_eval = TB_SCORE_MIN - 1;
+        if (static_eval <= -TB_SCORE_MIN) static_eval = -TB_SCORE_MIN + 1;
         info->static_eval_stack[ply] = static_eval;
     }
 
@@ -1603,7 +1653,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                 else if (store_score <= -TB_SCORE_MIN) store_score -= ply;
                 if (!is_null_move_search && excluded_move == 0) {
                     tt_store(board->zobristKey, probcut_depth, store_score,
-                             TT_LOWERBOUND, m, tt_pv, static_eval);
+                             TT_LOWERBOUND, m, tt_pv, raw_static_eval);
                 }
                 // Unlike null-move pruning this is backed by a legal capture
                 // and a real verification search, so a mate/TB lower bound is
@@ -1987,7 +2037,20 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             store_score -= ply;
         }
         
-        tt_store(board->zobristKey, depth, store_score, tt_flag, best_move, tt_pv, static_eval);
+        // Learn only from completed non-tactical results, and only when the
+        // returned bound supports the direction of the correction.
+        bool quiet_result = best_move == 0 ||
+            (!MOVE_IS_CAPTURE(best_move) && !MOVE_IS_PROMOTION(best_move));
+        bool bound_safe = (alpha > original_alpha && alpha < beta) ||
+            (alpha >= beta && alpha > static_eval) ||
+            (alpha <= original_alpha && alpha < static_eval);
+        if (depth >= info->params.pawn_corr_min_depth &&
+            raw_static_eval != TT_EVAL_NONE && quiet_result && bound_safe &&
+            abs(alpha) < TB_SCORE_MIN) {
+            update_pawn_correction(board, info, depth, alpha, static_eval);
+        }
+
+        tt_store(board->zobristKey, depth, store_score, tt_flag, best_move, tt_pv, raw_static_eval);
     }
     
     return alpha;
@@ -2291,6 +2354,18 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                (unsigned long long)pruning_stats.probcut_nodes);
         printf("info string   Main Cap SEE: %llu\n", (unsigned long long)pruning_stats.main_capture_see);
         printf("info string   IIR:          %llu\n", (unsigned long long)pruning_stats.iir);
+        int cmin = 0, cmax = 0, nonzero = 0, saturated = 0;
+        for (int s = 0; s < 2; s++)
+            for (int i = 0; i < PAWN_CORRECTION_SIZE; i++) {
+                int v = info->pawn_correction_history[s][i];
+                if (v < cmin) cmin = v;
+                if (v > cmax) cmax = v;
+                if (v != 0) nonzero++;
+                if (abs(v) == info->params.pawn_corr_limit * CORRECTION_GRAIN) saturated++;
+            }
+        printf("info string Pawn correction: updates=%llu nonzero=%d range=[%d,%d] saturated=%d\n",
+               (unsigned long long)pruning_stats.correction_updates,
+               nonzero, cmin, cmax, saturated);
         printf("info string   Singular: probes=%llu hits=%llu extension_nodes=%llu multicuts=%llu\n",
                (unsigned long long)pruning_stats.singular_probes,
                (unsigned long long)pruning_stats.singular_hits,

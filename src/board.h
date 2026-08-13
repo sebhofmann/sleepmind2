@@ -80,7 +80,8 @@ typedef struct {
     int halfMoveClock;
     int fullMoveNumber;
     int enPassantSquare;
-    uint64_t zobristKey; 
+    uint64_t zobristKey;
+    uint64_t pawnKey; // Pawn-only Zobrist key for correction history
     uint64_t history[1000]; 
     int historyIndex; 
 } Board;
@@ -222,4 +223,3 @@ static inline void sync_piece_array_from_bitboards(Board* board) {
 }
 
 #endif // BOARD_H
-

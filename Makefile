@@ -60,6 +60,14 @@ both: all training
 test-nnue: $(BUILD_DIR) $(BUILD_DIR)/nnue_load_test
 	$(BUILD_DIR)/nnue_load_test
 
+test-pawn-hash: $(BUILD_DIR) $(BUILD_DIR)/pawn_hash_test
+	$(BUILD_DIR)/pawn_hash_test
+
+test-pawn-correction: $(BUILD_DIR) $(BUILD_DIR)/pawn_correction_test
+	$(BUILD_DIR)/pawn_correction_test
+
+test: test-nnue test-pawn-hash test-pawn-correction
+
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
@@ -82,6 +90,12 @@ $(BUILD_DIR)/embedded_nnue.o: $(SRC_DIR)/embedded_nnue.S quantised.bin
 $(BUILD_DIR)/nnue_load_test: tests/nnue_load_test.c $(BUILD_DIR)/nnue.o $(BUILD_DIR)/embedded_nnue.o
 	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $^ -lm
 
+$(BUILD_DIR)/pawn_hash_test: tests/pawn_hash_test.c $(addprefix $(BUILD_DIR)/, board_io.o board_modifiers.o zobrist.o nnue.o bitboard_utils.o) $(BUILD_DIR)/embedded_nnue.o
+	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $^ -lm
+
+$(BUILD_DIR)/pawn_correction_test: tests/pawn_correction_test.c
+	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $<
+
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) -MMD -MP -I$(SRC_DIR) -c $< -o $@
 
@@ -97,4 +111,4 @@ debug: clean all
 debug_eval: CFLAGS = $(DEBUG_EVAL_FLAGS)
 debug_eval: clean all
 
-.PHONY: all training both test-nnue clean debug debug_eval
+.PHONY: all training both test test-nnue test-pawn-hash test-pawn-correction clean debug debug_eval
