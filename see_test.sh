@@ -35,7 +35,7 @@ CASES=(
 pass=0; fail=0
 for c in "${CASES[@]}"; do
   fen="${c%%|*}"; rest="${c#*|}"; mv="${rest%%|*}"; exp="${rest##*|}"
-  out=$(printf 'position fen %s\nseedump\nquit\n' "$fen" | $ENG 2>/dev/null | grep "^see $mv ")
+  out=$(printf 'uci\nisready\nposition fen %s\nseedump\nquit\n' "$fen" | "$ENG" 2>/dev/null | grep "^see $mv ")
   got=$(echo "$out" | sed 's/.*= //')
   if [ "$got" = "$exp" ]; then
     pass=$((pass+1)); # echo "OK   $mv = $got"
@@ -47,7 +47,7 @@ for c in "${CASES[@]}"; do
   for delta in -1 0 1; do
     threshold=$((exp + delta))
     if [ "$delta" -le 0 ]; then expected_ge=1; else expected_ge=0; fi
-    ge_out=$(printf 'position fen %s\nseege %s %d\nquit\n' "$fen" "$mv" "$threshold" | $ENG 2>/dev/null | grep "^seege $mv $threshold ")
+    ge_out=$(printf 'uci\nisready\nposition fen %s\nseege %s %d\nquit\n' "$fen" "$mv" "$threshold" | "$ENG" 2>/dev/null | grep "^seege $mv $threshold ")
     got_ge=$(echo "$ge_out" | sed 's/.*= //')
     if [ "$got_ge" = "$expected_ge" ]; then
       pass=$((pass+1))

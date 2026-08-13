@@ -10,15 +10,14 @@ This implements the SPSA variant used by Fishtest and OpenBench:
 This is simpler and more effective for chess engine tuning than classical SPSA.
 """
 
-import time
 import random
-import math
 import json
 import os
-import sys
 import logging
 import threading
-from typing import Dict, List
+import argparse
+from pathlib import Path
+from typing import Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import chess
 import chess.engine
@@ -28,14 +27,19 @@ import chess.pgn
 # Configuration
 # =============================================================================
 
-ENGINE_PATH = "../build/sleepmind"
-OPENING_BOOK_PATH = "/home/paschty/Downloads/2moves_v2.pgn"
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = SCRIPT_DIR.parent
+ENGINE_PATH = os.environ.get("SPSA_ENGINE", str(PROJECT_DIR / "build" / "sleepmind"))
+OPENING_BOOK_PATH = os.environ.get(
+    "SPSA_OPENINGS", "/home/paschty/Downloads/2moves_v2.pgn"
+)
+STATE_DIR = Path(os.environ.get("SPSA_STATE_DIR", str(SCRIPT_DIR))).resolve()
 
 TIME_PER_MOVE_MS = int(os.environ.get("SPSA_MOVETIME_MS", "1000"))
-MAX_ITERATIONS = 36000   # one iteration = one opening pair (2 games), fishtest-style
-SAVE_INTERVAL = 50       # save state every N completed pairs
-PRINT_INTERVAL = 50      # print full parameter state every N completed pairs
-MAX_PARALLEL_GAMES = 24  # = physical cores on the 14900K
+MAX_ITERATIONS = int(os.environ.get("SPSA_ITERATIONS", "36000"))
+SAVE_INTERVAL = int(os.environ.get("SPSA_SAVE_INTERVAL", "50"))
+PRINT_INTERVAL = int(os.environ.get("SPSA_PRINT_INTERVAL", "50"))
+MAX_PARALLEL_PAIRS = int(os.environ.get("SPSA_PARALLEL_PAIRS", "24"))
 
 # Spall decay schedules (fishtest-style): the c/r values in PARAMETERS are
 # END values; early iterations use larger perturbations and learning rates.
@@ -65,7 +69,7 @@ logging.getLogger("chess.engine").setLevel(logging.ERROR)
 #   r ≈ c / 4             (smaller steps for stability)
 # =============================================================================
 
-PARAMETERS = {
+PARAMETER_OVERRIDES = {
     # LMR parameters (range ~10)
     "LMR_FullDepthMoves": {
         "default": 3, "min": 1, "max": 10,
@@ -177,6 +181,41 @@ PARAMETERS = {
     },
 }
 
+# Operational spin options are valid UCI options, but not search parameters.
+# Every other spin option advertised by the engine is picked up automatically.
+SPSA_EXCLUDED_OPTIONS = {"Hash", "Threads", "MultiPV", "SyzygyProbeLimit"}
+
+
+def discover_parameters(engine_path: str) -> Dict[str, dict]:
+    """Build SPSA metadata from the engine's live UCI option declaration."""
+    engine = chess.engine.SimpleEngine.popen_uci(engine_path)
+    try:
+        discovered = {}
+        for name, option in engine.options.items():
+            if option.type != "spin" or name in SPSA_EXCLUDED_OPTIONS:
+                continue
+            if option.default is None or option.min is None or option.max is None:
+                continue
+            span = option.max - option.min
+            automatic = {
+                "default": int(option.default),
+                "min": int(option.min),
+                "max": int(option.max),
+                "c": max(1, round(span / 20)),
+                "r": max(0.5, round(span / 80, 2)),
+            }
+            # Keep deliberately calibrated c/r values, but always trust the
+            # running engine for default and legal range.
+            override = PARAMETER_OVERRIDES.get(name, {})
+            automatic.update({k: override[k] for k in ("c", "r") if k in override})
+            discovered[name] = automatic
+        return discovered
+    finally:
+        engine.quit()
+
+
+PARAMETERS: Dict[str, dict] = {}
+
 
 # =============================================================================
 # Opening Book
@@ -224,7 +263,12 @@ class OpeningBook:
 # =============================================================================
 
 class SPSATuner:
-    def __init__(self, tune_only=None):
+    def __init__(self, parameters: Dict[str, dict], tune_only=None,
+                 state_dir: Optional[Path] = None):
+        global PARAMETERS
+        PARAMETERS = parameters
+        self.state_dir = state_dir or SCRIPT_DIR
+        self.state_dir.mkdir(parents=True, exist_ok=True)
         # Store params as floats internally for smooth updates
         self.params = {name: float(info["default"]) for name, info in PARAMETERS.items()}
         self.best_params = self.get_int_params()
@@ -233,6 +277,9 @@ class SPSATuner:
         self.opening_book = OpeningBook(OPENING_BOOK_PATH)
         # Which parameters to actually tune (None = all)
         self.tune_only = tune_only
+
+        with (self.state_dir / "spsa_parameters.json").open("w") as f:
+            json.dump(PARAMETERS, f, indent=2)
 
         self.load_state()
 
@@ -245,8 +292,10 @@ class SPSATuner:
         return max(info["min"], min(info["max"], value))
 
     def load_state(self):
-        if os.path.exists("spsa_state.json"):
-            with open("spsa_state.json", "r") as f:
+        state_path = self.state_dir / "spsa_state.json"
+        history_path = self.state_dir / "spsa_history.json"
+        if state_path.exists():
+            with state_path.open("r") as f:
                 state = json.load(f)
                 # Merge: keep defaults for params added after the state was saved
                 for k, v in state.get("params", {}).items():
@@ -256,8 +305,8 @@ class SPSATuner:
                 self.iteration = state.get("iteration", 0)
             print(f"Resumed from iteration {self.iteration}")
 
-        if os.path.exists("spsa_history.json"):
-            with open("spsa_history.json", "r") as f:
+        if history_path.exists():
+            with history_path.open("r") as f:
                 self.history = json.load(f)
 
     def save_state(self):
@@ -266,10 +315,10 @@ class SPSATuner:
             "best_params": self.best_params,
             "iteration": self.iteration
         }
-        with open("spsa_state.json", "w") as f:
+        with (self.state_dir / "spsa_state.json").open("w") as f:
             json.dump(state, f, indent=2)
 
-        with open("spsa_history.json", "w") as f:
+        with (self.state_dir / "spsa_history.json").open("w") as f:
             json.dump(self.history, f, indent=2)
 
     def get_perturbation(self) -> Dict[str, int]:
@@ -310,55 +359,42 @@ class SPSATuner:
                   opening: List[chess.Move]) -> float:
         """Play one opening pair (color swap), sequentially on this worker slot.
         Returns score for θ+ in [0, 1]."""
-        r1 = self.play_game(theta_plus, theta_minus, opening)   # θ+ is White
-        r2 = self.play_game(theta_minus, theta_plus, opening)   # θ+ is Black
-        return ((r1 + 1) / 2 + (1 - r2) / 2) / 2
-
-    def play_game(self, white_params: Dict[str, int], black_params: Dict[str, int],
-                  opening: List[chess.Move]) -> int:
-        """Play single game. Returns 1=white wins, -1=black wins, 0=draw"""
         engine_w = None
         engine_b = None
-
         try:
             engine_w = chess.engine.SimpleEngine.popen_uci(ENGINE_PATH)
             engine_b = chess.engine.SimpleEngine.popen_uci(ENGINE_PATH)
-
-            for name, val in white_params.items():
-                try:
-                    engine_w.configure({name: val})
-                except:
-                    pass
-            for name, val in black_params.items():
-                try:
-                    engine_b.configure({name: val})
-                except:
-                    pass
-
-            board = chess.Board()
-            for move in opening:
-                if move in board.legal_moves:
-                    board.push(move)
-
-            while not board.is_game_over():
-                engine = engine_w if board.turn == chess.WHITE else engine_b
-                result = engine.play(board, chess.engine.Limit(time=TIME_PER_MOVE_MS / 1000))
-                board.push(result.move)
-
-            if board.is_checkmate():
-                return -1 if board.turn == chess.WHITE else 1
-            return 0
-
-        except:
-            return 0
-
+            r1 = self.play_game(engine_w, engine_b, theta_plus, theta_minus, opening)
+            r2 = self.play_game(engine_w, engine_b, theta_minus, theta_plus, opening)
+            return ((r1 + 1) / 2 + (1 - r2) / 2) / 2
         finally:
-            for eng in [engine_w, engine_b]:
-                if eng:
-                    try:
-                        eng.quit()
-                    except:
-                        pass
+            for engine in (engine_w, engine_b):
+                if engine is None:
+                    continue
+                try:
+                    engine.quit()
+                except (chess.engine.EngineError, TimeoutError, OSError):
+                    pass
+
+    def play_game(self, engine_w, engine_b, white_params: Dict[str, int], black_params: Dict[str, int],
+                  opening: List[chess.Move]) -> int:
+        """Play single game. Returns 1=white wins, -1=black wins, 0=draw"""
+        engine_w.configure(white_params)
+        engine_b.configure(black_params)
+
+        board = chess.Board()
+        for move in opening:
+            if move in board.legal_moves:
+                board.push(move)
+
+        while not board.is_game_over():
+            engine = engine_w if board.turn == chess.WHITE else engine_b
+            result = engine.play(board, chess.engine.Limit(time=TIME_PER_MOVE_MS / 1000))
+            board.push(result.move)
+
+        if board.is_checkmate():
+            return -1 if board.turn == chess.WHITE else 1
+        return 0
 
     def apply_update(self, direction: Dict[str, int], score: float):
         """Fishtest-style update from one pair result. Caller holds the lock.
@@ -411,7 +447,7 @@ class SPSATuner:
                 self.save_state()
 
     def run_async(self):
-        """Continuous fishtest-style loop: MAX_PARALLEL_GAMES worker slots,
+        """Continuous fishtest-style loop: MAX_PARALLEL_PAIRS worker slots,
         each plays one opening pair and applies its update immediately —
         no iteration barrier, no idle cores waiting for stragglers."""
         self.lock = threading.Lock()
@@ -420,7 +456,7 @@ class SPSATuner:
             print("MAX_ITERATIONS already reached.")
             return
 
-        executor = ThreadPoolExecutor(max_workers=MAX_PARALLEL_GAMES)
+        executor = ThreadPoolExecutor(max_workers=MAX_PARALLEL_PAIRS)
         futures = [executor.submit(self.worker) for _ in range(remaining)]
         try:
             for future in as_completed(futures):
@@ -435,17 +471,36 @@ class SPSATuner:
 
 
 def main():
-    # Parse optional parameter names from command line
-    tune_only = None
-    if len(sys.argv) > 1:
-        tune_only = []
-        for arg in sys.argv[1:]:
-            if arg in PARAMETERS:
-                tune_only.append(arg)
-            else:
-                print(f"Error: Unknown parameter '{arg}'")
-                print(f"Available parameters: {', '.join(PARAMETERS.keys())}")
-                sys.exit(1)
+    parser = argparse.ArgumentParser(description="Tune SleepMind UCI spin options with SPSA")
+    parser.add_argument("parameters", nargs="*", help="only tune these UCI options")
+    parser.add_argument("--list", action="store_true", help="list discovered tunable options")
+    parser.add_argument("--reset", action="store_true", help="ignore existing SPSA state")
+    args = parser.parse_args()
+
+    global PARAMETERS
+    try:
+        PARAMETERS = discover_parameters(ENGINE_PATH)
+    except (chess.engine.EngineError, FileNotFoundError, PermissionError, OSError) as exc:
+        parser.error(f"cannot query UCI engine {ENGINE_PATH}: {exc}")
+    if not PARAMETERS:
+        parser.error("engine advertises no tunable UCI spin options")
+
+    if args.list:
+        for name, info in PARAMETERS.items():
+            print(f"{name}: default={info['default']} min={info['min']} "
+                  f"max={info['max']} c={info['c']} r={info['r']}")
+        return
+
+    unknown = sorted(set(args.parameters) - set(PARAMETERS))
+    if unknown:
+        parser.error(f"unknown/non-tunable option(s): {', '.join(unknown)}")
+    tune_only = args.parameters or None
+
+    if args.reset:
+        for filename in ("spsa_state.json", "spsa_history.json"):
+            path = STATE_DIR / filename
+            if path.exists():
+                path.rename(path.with_suffix(path.suffix + ".bak"))
 
     print("=" * 60)
     print("SleepMind SPSA Tuning (Fishtest/OpenBench Style)")
@@ -459,14 +514,15 @@ def main():
     print(f"Update granularity: 1 opening pair (2 games), asynchronous")
     print(f"Max pairs: {MAX_ITERATIONS} ({MAX_ITERATIONS * 2} games)")
     print(f"Time per move: {TIME_PER_MOVE_MS}ms")
-    print(f"Parallel pair slots: {MAX_PARALLEL_GAMES}")
+    print(f"Discovered tunable UCI options: {len(PARAMETERS)}")
+    print(f"Parallel pair slots: {MAX_PARALLEL_PAIRS}")
     print()
 
     if not os.path.exists(ENGINE_PATH):
         print(f"Error: Engine not found at {ENGINE_PATH}")
         sys.exit(1)
 
-    tuner = SPSATuner(tune_only=tune_only)
+    tuner = SPSATuner(PARAMETERS, tune_only=tune_only, state_dir=STATE_DIR)
 
     try:
         tuner.run_async()
@@ -485,7 +541,7 @@ def main():
         sign = "+" if diff > 0 else ""
         print(f"  {name}: {val} ({sign}{diff})")
 
-    with open("best_params.json", "w") as f:
+    with (STATE_DIR / "best_params.json").open("w") as f:
         json.dump(final_params, f, indent=2)
     print("\nSaved to best_params.json")
 

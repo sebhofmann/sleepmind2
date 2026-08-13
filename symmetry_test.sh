@@ -32,7 +32,7 @@ fi
 get_eval() {
     local fen="$1"
     # Extract the number before "cp" from "info string Evaluation: 40 cp ..."
-    local eval_output=$(echo -e "position fen $fen\neval\nquit" | $ENGINE 2>/dev/null | grep "^info string Evaluation:" | awk '{print $4}')
+    local eval_output=$(echo -e "uci\nisready\nposition fen $fen\neval\nquit" | "$ENGINE" 2>/dev/null | grep "^info string Evaluation:" | awk '{print $4}')
     echo "$eval_output"
 }
 
@@ -40,7 +40,7 @@ get_eval() {
 get_mirrored_position() {
     local fen="$1"
     # Extract everything after "info string FEN: "
-    local mirrored_fen=$(echo -e "position fen $fen\nflip\nquit" | $ENGINE 2>/dev/null | grep "^info string FEN:" | tail -1 | sed 's/^info string FEN: //')
+    local mirrored_fen=$(echo -e "uci\nisready\nposition fen $fen\nflip\nquit" | "$ENGINE" 2>/dev/null | grep "^info string FEN:" | tail -1 | sed 's/^info string FEN: //')
     echo "$mirrored_fen"
 }
 
@@ -49,7 +49,7 @@ search_position() {
     local fen="$1"
     local depth="$2"
     # Get the score from the last depth iteration
-    local search_output=$(echo -e "position fen $fen\ngo depth $depth\nquit" | $ENGINE 2>/dev/null | grep "^info.*depth $depth " | grep "score cp" | tail -1 | sed 's/.*score cp \(-\?[0-9]\+\).*/\1/')
+    local search_output=$(echo -e "uci\nisready\nucinewgame\nposition fen $fen\ngo depth $depth\nquit" | "$ENGINE" 2>/dev/null | grep "^info.*depth $depth " | grep "score cp" | tail -1 | sed 's/.*score cp \(-\?[0-9]\+\).*/\1/')
     echo "$search_output"
 }
 

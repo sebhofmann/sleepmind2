@@ -7,6 +7,7 @@ VARIANTS_DIR="$WORKSPACE/variants"
 BUILD_SLEEPMIND="$WORKSPACE/build/sleepmind"
 NNUE_FILE="$WORKSPACE/quantised.bin"
 OPENINGS_FILE="/home/paschty/Downloads/2moves_v2.pgn"
+UCI_OPTIONS_TOOL="$WORKSPACE/uci_options.py"
 
 # Erstelle variants Ordner falls nicht vorhanden
 mkdir -p "$VARIANTS_DIR"
@@ -23,42 +24,7 @@ create_variant() {
         echo "Fehler: Kein Name angegeben!"
         echo "Usage: $0 create <name> [option1=value1] [option2=value2] ..."
         echo ""
-        echo "Verfügbare UCI-Optionen:"
-        echo "  Use_LMR=true/false"
-        echo "  Use_LMP=true/false"
-        echo "  Use_NullMove=true/false"
-        echo "  Use_Futility=true/false"
-        echo "  Use_RFP=true/false"
-        echo "  Use_ProbCut=true/false"
-        echo "  Use_DeltaPruning=true/false"
-        echo "  Use_Aspiration=true/false"
-        echo "  Use_Razoring=true/false"
-        echo "  Use_IIR=true/false"
-        echo "  Use_Singular=true/false"
-        echo "  LMR_FullDepthMoves=<1-10>"
-        echo "  LMR_ReductionLimit=<1-6>"
-        echo "  LMP_Base=<1-20>"
-        echo "  LMP_MaxDepth=<1-12>"
-        echo "  NullMove_MinDepth=<1-6>"
-        echo "  Futility_Margin=<50-400>"
-        echo "  Futility_MarginD2=<100-600>"
-        echo "  Futility_MarginD3=<150-800>"
-        echo "  RFP_Margin=<50-300>"
-        echo "  RFP_MaxDepth=<2-10>"
-        echo "  ProbCut_MinDepth=<3-12>"
-        echo "  ProbCut_Margin=<0-500>"
-        echo "  ProbCut_Reduction=<2-8>"
-        echo "  Razor_Margin=<100-600>"
-        echo "  PawnCorr_Limit=<8-127>"
-        echo "  PawnCorr_BonusScale=<16-256>"
-        echo "  PawnCorr_EvalScale=<16-256>"
-        echo "  PawnCorr_MinDepth=<1-8>"
-        echo "  Delta_Margin=<50-500>"
-        echo "  Aspiration_Window=<10-200>"
-        echo "  IIR_MinDepth=<2-16>"
-        echo "  Singular_MinDepth=<4-32>"
-        echo "  Singular_Margin=<0-16>"
-        echo "  Singular_TTDepthSlack=<0-16>"
+        [ -x "$BUILD_SLEEPMIND" ] && python3 "$UCI_OPTIONS_TOOL" "$BUILD_SLEEPMIND"
         exit 1
     fi
     
@@ -74,6 +40,11 @@ create_variant() {
     if [ ! -f "$BUILD_SLEEPMIND" ]; then
         echo "Fehler: $BUILD_SLEEPMIND nicht gefunden! Bitte erst 'make' ausführen."
         exit 1
+    fi
+
+    # Reject typos, invalid types and values outside the engine's live ranges.
+    if [ "$#" -gt 0 ]; then
+        python3 "$UCI_OPTIONS_TOOL" "$BUILD_SLEEPMIND" "$@"
     fi
     
     # Erstelle Zielordner
@@ -144,6 +115,7 @@ run_tournament() {
                     local opt_value="${line#*=}"
                     
                     if [ -n "$opt_name" ] && [ -n "$opt_value" ]; then
+                        python3 "$UCI_OPTIONS_TOOL" "$variant_dir/sleepmind" "$opt_name=$opt_value"
                         uci_options="$uci_options option.$opt_name=$opt_value"
                     fi
                 done < "$variant_dir/uci_options.txt"
@@ -248,17 +220,7 @@ case "${1:-}" in
         echo "  $0 create tuned LMR_FullDepthMoves=3 LMP_Base=4"
         echo "  $0 tournament 20"
         echo ""
-        echo "Verfügbare UCI-Optionen:"
-        echo "  Feature Flags:    Use_LMR, Use_LMP, Use_NullMove, Use_Futility, Use_RFP,"
-        echo "                    Use_DeltaPruning, Use_Aspiration, Use_Razoring, Use_IIR (=true/false)"
-        echo "  LMR:              LMR_FullDepthMoves (1-10), LMR_ReductionLimit (1-6)"
-        echo "  LMP:              LMP_Base (1-20), LMP_MaxDepth (1-12)"
-        echo "  Null Move:        NullMove_MinDepth (1-6)"
-        echo "  Futility:         Futility_Margin (50-400), Futility_MarginD2 (100-600),"
-        echo "                    Futility_MarginD3 (150-800)"
-        echo "  RFP:              RFP_Margin (50-300), RFP_MaxDepth (2-10)"
-        echo "  Razoring:         Razor_Margin (100-600)"
-        echo "  QSearch:          Delta_Margin (50-500)"
-        echo "  Aspiration:       Aspiration_Window (10-200)"
+        echo "Verfügbare UCI-Optionen (direkt aus der Engine):"
+        [ -x "$BUILD_SLEEPMIND" ] && python3 "$UCI_OPTIONS_TOOL" "$BUILD_SLEEPMIND"
         ;;
 esac

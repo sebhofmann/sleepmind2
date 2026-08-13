@@ -271,7 +271,6 @@ void uci_loop() {
             printf("option name MainCaptureSEE_Margin type spin default 100 min 0 max 500\n");
             printf("option name MainCaptureSEE_MaxDepth type spin default 16 min 1 max 32\n");
             printf("option name IIR_MinDepth type spin default 4 min 2 max 16\n");
-            printf("option name IIR_MinDepth type spin default 4 min 2 max 16\n");
             printf("option name ProbCut_MinDepth type spin default 5 min 3 max 12\n");
             printf("option name ProbCut_Margin type spin default 184 min 0 max 500\n");
             printf("option name ProbCut_Reduction type spin default 4 min 2 max 8\n");

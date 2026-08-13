@@ -18,7 +18,10 @@ load_uci_opts() {
             [[ "$line" =~ ^#.*$ ]] && continue
             [[ -z "$line" ]] && continue
             n="${line%%=*}"; v="${line#*=}"
-            [ -n "$n" ] && [ -n "$v" ] && opts="$opts option.$n=$v"
+            if [ -n "$n" ] && [ -n "$v" ]; then
+                python3 "$WORKSPACE/uci_options.py" "$dir/sleepmind" "$n=$v" || return 2
+                opts="$opts option.$n=$v"
+            fi
         done < "$dir/uci_options.txt"
     fi
     echo "$opts"

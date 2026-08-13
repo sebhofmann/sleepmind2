@@ -71,7 +71,7 @@ run_perft() {
     
     # Führe Perft aus
     local start_time=$(date +%s%3N)
-    local result=$(echo -e "position fen $fen\nperft $depth\nquit" | $ENGINE 2>/dev/null | grep "^perft" | awk '{print $3}')
+    local result=$(echo -e "uci\nisready\nposition fen $fen\nperft $depth\nquit" | "$ENGINE" 2>/dev/null | grep "^perft" | awk '{print $3}')
     local end_time=$(date +%s%3N)
     
     # Berechne Zeit in Millisekunden
