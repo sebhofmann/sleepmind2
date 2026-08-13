@@ -171,6 +171,11 @@ void search_params_init(SearchParams* params) {
     params->use_razoring = true;
     params->razor_margin = 299;         // Base margin (scaled by depth)
 
+    params->pawn_corr_limit = 48;
+    params->pawn_corr_bonus_scale = 128;
+    params->pawn_corr_eval_scale = 128;
+    params->pawn_corr_min_depth = 2;
+
     // Delta pruning margin for quiescence
     params->delta_margin = 200;         // Tighter with reliable eval
 
@@ -917,33 +922,40 @@ void clear_search_history(SearchInfo* info) {
     memset(fmh_table, 0, sizeof(fmh_table));
 }
 
-#define CORRECTION_HISTORY_LIMIT 8192
 #define CORRECTION_GRAIN 256
-#define CORRECTION_EVAL_SCALE 64
 
 static inline int pawn_correction_value(const Board* board, const SearchInfo* info) {
+    if ((board->whitePawns | board->blackPawns) == 0)
+        return 0;
     int side = board->whiteToMove ? WHITE : BLACK;
     int value = info->pawn_correction_history[side]
         [board->pawnKey & (PAWN_CORRECTION_SIZE - 1)];
-    return value * CORRECTION_EVAL_SCALE / CORRECTION_GRAIN;
+    return value * info->params.pawn_corr_eval_scale /
+        (CORRECTION_GRAIN * 128);
 }
 
 static void update_pawn_correction(const Board* board, SearchInfo* info,
                                    int depth, int score, int corrected_eval) {
+    if ((board->whitePawns | board->blackPawns) == 0)
+        return;
     int side = board->whiteToMove ? WHITE : BLACK;
     int16_t* entry = &info->pawn_correction_history[side]
         [board->pawnKey & (PAWN_CORRECTION_SIZE - 1)];
-    int bonus = (score - corrected_eval) * depth / 8;
-    int cap = CORRECTION_HISTORY_LIMIT / 4;
-    if (bonus > cap) bonus = cap;
-    if (bonus < -cap) bonus = -cap;
+    // Entries and bonuses use a grain-scaled centipawn domain. Depth controls
+    // only the learning rate; it must not change the value being learned.
+    int limit = info->params.pawn_corr_limit * CORRECTION_GRAIN;
+    int64_t scaled_bonus = (int64_t)(score - corrected_eval) *
+        CORRECTION_GRAIN * info->params.pawn_corr_bonus_scale / 128;
+    if (scaled_bonus > limit) scaled_bonus = limit;
+    if (scaled_bonus < -limit) scaled_bonus = -limit;
+    int bonus = (int)scaled_bonus;
     int weight = depth + 2;
     if (weight > 16) weight = 16;
-    // Both terms use the same EWMA scale, so a stable error converges to the
-    // bounded bonus instead of amplifying it by a factor of sixteen.
-    int next = *entry + bonus * weight / 256 - (*entry * weight / 256);
-    if (next > CORRECTION_HISTORY_LIMIT) next = CORRECTION_HISTORY_LIMIT;
-    if (next < -CORRECTION_HISTORY_LIMIT) next = -CORRECTION_HISTORY_LIMIT;
+    // A true EWMA: for a stable measured error the entry converges to that
+    // error, rather than to the sign or signal-to-noise ratio of the error.
+    int next = pawn_correction_ewma(*entry, bonus, weight);
+    if (next > limit) next = limit;
+    if (next < -limit) next = -limit;
     *entry = (int16_t)next;
     PRUNING_STAT_INC(correction_updates);
 }
@@ -1186,15 +1198,16 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     }
     
     // Not in check: stand pat, reusing the TT static eval when available
-    int stand_pat;
+    int raw_stand_pat;
     if (tte.found && tte.eval != TT_EVAL_NONE) {
-        stand_pat = tte.eval;
+        raw_stand_pat = tte.eval;
     } else {
-        stand_pat = evaluate(board, info->nnue_acc, info->nnue_net);
+        raw_stand_pat = evaluate(board, info->nnue_acc, info->nnue_net);
         if (!board->whiteToMove) {
-            stand_pat = -stand_pat;
+            raw_stand_pat = -raw_stand_pat;
         }
     }
+    int stand_pat = raw_stand_pat + pawn_correction_value(board, info);
     
     if (stand_pat >= beta) {
         return beta;
@@ -1285,7 +1298,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
         
         if (score >= beta) {
             // TT Store for beta cutoff
-            tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m, tt_pv, stand_pat);
+            tt_store(board->zobristKey, QS_TT_DEPTH, beta, TT_LOWERBOUND, m, tt_pv, raw_stand_pat);
             return beta;
         }
         if (score > alpha) {
@@ -1297,7 +1310,7 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
     // TT Store at end of QS
     if (!info->stopSearch) {
         uint8_t tt_flag = (alpha <= original_alpha) ? TT_UPPERBOUND : TT_EXACT;
-        tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move, tt_pv, stand_pat);
+        tt_store(board->zobristKey, QS_TT_DEPTH, alpha, tt_flag, best_move, tt_pv, raw_stand_pat);
     }
     
     return alpha;
@@ -1977,7 +1990,8 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         bool bound_safe = (alpha > original_alpha && alpha < beta) ||
             (alpha >= beta && alpha > static_eval) ||
             (alpha <= original_alpha && alpha < static_eval);
-        if (raw_static_eval != TT_EVAL_NONE && quiet_result && bound_safe &&
+        if (depth >= info->params.pawn_corr_min_depth &&
+            raw_static_eval != TT_EVAL_NONE && quiet_result && bound_safe &&
             abs(alpha) < TB_SCORE_MIN) {
             update_pawn_correction(board, info, depth, alpha, static_eval);
         }
@@ -2293,7 +2307,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                 if (v < cmin) cmin = v;
                 if (v > cmax) cmax = v;
                 if (v != 0) nonzero++;
-                if (abs(v) == CORRECTION_HISTORY_LIMIT) saturated++;
+                if (abs(v) == info->params.pawn_corr_limit * CORRECTION_GRAIN) saturated++;
             }
         printf("info string Pawn correction: updates=%llu nonzero=%d range=[%d,%d] saturated=%d\n",
                (unsigned long long)pruning_stats.correction_updates,

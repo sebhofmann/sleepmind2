@@ -15,6 +15,12 @@
 #define STATIC_EVAL_UNAVAILABLE INT_MIN
 #define PAWN_CORRECTION_SIZE 16384
 
+// EWMA step used by pawn correction history. Kept here so the arithmetic can
+// be regression-tested without constructing a complete search.
+static inline int pawn_correction_ewma(int current, int bonus, int weight) {
+    return current + bonus * weight / 256 - current * weight / 256;
+}
+
 // =============================================================================
 // Tunable Search Parameters (UCI Options)
 // =============================================================================
@@ -71,6 +77,13 @@ typedef struct {
     // Razoring parameters
     bool use_razoring;         // Enable Razoring (default: true)
     int razor_margin;          // Base margin for razoring (default: 220)
+
+    // Pawn correction history. Limit is in centipawns; the two scales use
+    // 128 as 100% for learning and application strength respectively.
+    int pawn_corr_limit;
+    int pawn_corr_bonus_scale;
+    int pawn_corr_eval_scale;
+    int pawn_corr_min_depth;
 
     // Delta pruning margin for quiescence
     int delta_margin;          // (default: 200)
