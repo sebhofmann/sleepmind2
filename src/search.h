@@ -34,6 +34,7 @@ typedef struct {
     bool use_main_capture_see; // Enable main-search SEE pruning for captures
     bool use_iir;              // Enable Internal Iterative Reduction
     bool use_probcut;          // Enable capture-only ProbCut
+    bool use_singular;         // Enable singular extension verification
 
     // Late Move Reduction parameters
     int lmr_full_depth_moves;  // Number of moves before LMR kicks in (default: 4)
@@ -54,6 +55,11 @@ typedef struct {
     int probcut_min_depth;     // Minimum search depth (default: 5)
     int probcut_margin;        // Raised beta margin in centipawns (default: 184)
     int probcut_reduction;     // Depth reduction for confirmation (default: 4)
+
+    // Singular extension
+    int singular_min_depth;     // Minimum depth for verification (default: 8)
+    int singular_margin;        // Singular beta margin per depth (default: 2)
+    int singular_tt_depth_slack;// Allowed TT depth deficit (default: 3)
 
     // Null Move Pruning parameters (reduction itself is adaptive in negamax)
     int null_move_min_depth;   // Minimum depth for null move pruning (default: 3)

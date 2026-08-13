@@ -50,6 +50,10 @@ static struct {
     uint64_t probcut_qs_hits;
     uint64_t probcut_cuts;
     uint64_t probcut_nodes;
+    uint64_t singular_probes;
+    uint64_t singular_hits;
+    uint64_t singular_extensions;
+    uint64_t singular_multicuts;
 } pruning_stats;
 
 #define TT_STAT_INC(var) ((var)++)
@@ -133,6 +137,7 @@ void search_params_init(SearchParams* params) {
     params->use_main_capture_see = true;
     params->use_iir = true;
     params->use_probcut = true;
+    params->use_singular = true;
 
     // Late Move Pruning: skip quiets after base + depth^2 searched moves
     params->lmp_base = 6;
@@ -148,6 +153,10 @@ void search_params_init(SearchParams* params) {
     params->probcut_min_depth = 5;
     params->probcut_margin = 184;
     params->probcut_reduction = 4;
+
+    params->singular_min_depth = 8;
+    params->singular_margin = 2;
+    params->singular_tt_depth_slack = 3;
 
     // Late Move Reduction parameters (tuned via tournament testing)
     params->lmr_full_depth_moves = 3;   // More aggressive LMR
@@ -1274,8 +1283,9 @@ static int quiescence(Board* board, int alpha, int beta, SearchInfo* info, int p
 // Negamax with Alpha-Beta Pruning
 // =============================================================================
 
-static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* info, 
-                   int ply, bool do_null, bool is_null_move_search) {
+static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* info,
+                   int ply, bool do_null, bool is_null_move_search,
+                   Move excluded_move) {
     info->nodesSearched++;
     info->pv_length[ply] = 0;
     info->static_eval_stack[ply] = STATIC_EVAL_UNAVAILABLE;
@@ -1330,8 +1340,10 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         TT_STAT_INC(tt_hits);
         tt_move = tte.move;
 
-        // Only use TT cutoff in non-PV nodes
-        if (!is_pv && tte.depth >= depth && ply > 0) {
+        // An excluded-move search deliberately searches a different move set
+        // under the same position key, so its TT entry is useful for ordering
+        // and singular eligibility only, never as a cutoff.
+        if (excluded_move == 0 && !is_pv && tte.depth >= depth && ply > 0) {
             int tt_score = tte.score;
             uint8_t tt_flag = tte.bound;
             
@@ -1364,7 +1376,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     // WDL probe requires rule50 == 0). Gives an exact win/draw/loss verdict that
     // overrides the speculative pruning below.
     // ==========================================================================
-    if (ply > 0 && info->tbProbeLimit > 0 &&
+    if (excluded_move == 0 && ply > 0 && info->tbProbeLimit > 0 &&
         board->castlingRights == NO_CASTLING && board->halfMoveClock == 0) {
         Bitboard tb_occ =
             board->byTypeBB[WHITE][PAWN]   | board->byTypeBB[BLACK][PAWN]   |
@@ -1385,7 +1397,10 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             int store_score = tb_score;
             if (store_score >= TB_SCORE_MIN)       store_score += ply;
             else if (store_score <= -TB_SCORE_MIN) store_score -= ply;
-            tt_store(board->zobristKey, depth, store_score, TT_EXACT, 0, tt_pv, TT_EVAL_NONE);
+            if (excluded_move == 0) {
+                tt_store(board->zobristKey, depth, store_score, TT_EXACT, 0,
+                         tt_pv, TT_EVAL_NONE);
+            }
             return tb_score;
         }
     }
@@ -1482,7 +1497,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
 
         // Search with reduced depth - mark as null move search to skip TT store for this node
         int null_score = -negamax(board, depth - 1 - null_reduction, -beta, -beta + 1,
-                                  info, ply + 1, false, true);
+                                  info, ply + 1, false, true, 0);
         
         // Unmake null move - restore zobrist key
         board->enPassantSquare = old_ep;
@@ -1573,7 +1588,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                 // for the default minimum depth guarantees a real main-search
                 // verification instead of repeating qsearch at depth zero.
                 score = -negamax(board, probcut_depth, -probcut_beta,
-                                 -probcut_beta + 1, info, ply + 1, true, false);
+                                 -probcut_beta + 1, info, ply + 1, true, false, 0);
             }
 
             info->nnue_acc = parent_acc;
@@ -1586,7 +1601,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                 int store_score = score;
                 if (store_score >= TB_SCORE_MIN) store_score += ply;
                 else if (store_score <= -TB_SCORE_MIN) store_score -= ply;
-                if (!is_null_move_search) {
+                if (!is_null_move_search && excluded_move == 0) {
                     tt_store(board->zobristKey, probcut_depth, store_score,
                              TT_LOWERBOUND, m, tt_pv, static_eval);
                 }
@@ -1633,6 +1648,8 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     int move_score;
     int move_see = 0;
     while ((m = movepicker_next(&mp, &move_score, &move_see)) != 0) {
+        if (m == excluded_move) continue;
+
         // Syzygy root-move restriction: at the root, only search TB-optimal moves.
         if (ply == 0 && info->tbRootMoveCount > 0) {
             bool tb_allowed = false;
@@ -1698,6 +1715,40 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             memcpy(&saved_acc, info->nnue_acc, sizeof(NNUEAccumulator));
         }
         #endif
+
+        int extension = 0;
+
+        // A sufficiently deep lower/exact TT move is singular when every
+        // alternative fails below a reduced bound. This verification is made
+        // before applying the candidate, at the current position.
+        if (info->params.use_singular && excluded_move == 0 && ply > 0 &&
+            depth >= info->params.singular_min_depth && m == tt_move &&
+            tte.found && (tte.bound == TT_LOWERBOUND || tte.bound == TT_EXACT) &&
+            tte.depth >= depth - info->params.singular_tt_depth_slack) {
+            int tt_score = tte.score;
+            if (tt_score >= TB_SCORE_MIN) tt_score -= ply;
+            else if (tt_score <= -TB_SCORE_MIN) tt_score += ply;
+
+            if (abs(tt_score) < TB_SCORE_MIN) {
+                int singular_beta = tt_score - info->params.singular_margin * depth;
+                int singular_depth = (depth - 1) / 2;
+                PRUNING_STAT_INC(singular_probes);
+                int saved_pv_length = info->pv_length[ply];
+                int singular_score = negamax(board, singular_depth,
+                                             singular_beta - 1, singular_beta,
+                                             info, ply, false, false, tt_move);
+                info->pv_length[ply] = saved_pv_length;
+                if (info->stopSearch) return 0;
+                if (singular_score < singular_beta) {
+                    extension = 1;
+                    PRUNING_STAT_INC(singular_hits);
+                    PRUNING_STAT_INC(singular_extensions);
+                } else if (singular_score >= beta) {
+                    PRUNING_STAT_INC(singular_multicuts);
+                    return singular_score;
+                }
+            }
+        }
         
         NNUEAccumulator* parent_acc = info->nnue_acc;
         NNUEAccumulator* child_acc = search_prepare_nnue_child(info, ply);
@@ -1731,7 +1782,8 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         // =======================================================================
         if (moves_searched == 0) {
             // First move: full window search
-            score = -negamax(board, depth - 1, -beta, -alpha, info, ply + 1, true, false);
+            score = -negamax(board, depth - 1 + extension, -beta, -alpha,
+                             info, ply + 1, true, false, 0);
         } else {
             // Late Move Reductions - logarithmic formula like Stockfish
             int reduction = 0;
@@ -1777,17 +1829,19 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             if (reduction > 0) {
                 PRUNING_STAT_INC(lmr);
             }
-            score = -negamax(board, depth - 1 - reduction, -alpha - 1, -alpha, 
-                            info, ply + 1, true, false);
+            score = -negamax(board, depth - 1 + extension - reduction,
+                             -alpha - 1, -alpha, info, ply + 1, true, false, 0);
             
             // Re-search if LMR failed high
             if (reduction > 0 && score > alpha) {
-                score = -negamax(board, depth - 1, -alpha - 1, -alpha, info, ply + 1, true, false);
+                score = -negamax(board, depth - 1 + extension, -alpha - 1,
+                                 -alpha, info, ply + 1, true, false, 0);
             }
             
             // Re-search with full window if null window failed high
             if (score > alpha && score < beta) {
-                score = -negamax(board, depth - 1, -beta, -alpha, info, ply + 1, true, false);
+                score = -negamax(board, depth - 1 + extension, -beta, -alpha,
+                                 info, ply + 1, true, false, 0);
             }
         }
         
@@ -1915,7 +1969,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     }
     
     // TT Store - skip for null move search positions (they can never be reached legally)
-    if (!info->stopSearch && !is_null_move_search) {
+    if (!info->stopSearch && !is_null_move_search && excluded_move == 0) {
         uint8_t tt_flag;
         if (alpha <= original_alpha) {
             tt_flag = TT_UPPERBOUND;
@@ -1999,7 +2053,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
             beta = prev_score + info->params.aspiration_window;
             
             while (true) {
-                score = negamax(board, depth, alpha, beta, info, 0, true, false);
+                score = negamax(board, depth, alpha, beta, info, 0, true, false, 0);
                 
                 if (info->stopSearch) break;
                 
@@ -2017,7 +2071,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                 }
             }
         } else {
-            score = negamax(board, depth, alpha, beta, info, 0, true, false);
+            score = negamax(board, depth, alpha, beta, info, 0, true, false, 0);
         }
         
         long iteration_end = get_elapsed_time(info);
@@ -2237,6 +2291,11 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                (unsigned long long)pruning_stats.probcut_nodes);
         printf("info string   Main Cap SEE: %llu\n", (unsigned long long)pruning_stats.main_capture_see);
         printf("info string   IIR:          %llu\n", (unsigned long long)pruning_stats.iir);
+        printf("info string   Singular: probes=%llu hits=%llu extension_nodes=%llu multicuts=%llu\n",
+               (unsigned long long)pruning_stats.singular_probes,
+               (unsigned long long)pruning_stats.singular_hits,
+               (unsigned long long)pruning_stats.singular_extensions,
+               (unsigned long long)pruning_stats.singular_multicuts);
 #endif
         fflush(stdout);
     }
@@ -2253,7 +2312,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
 int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximizingPlayer, 
                       SearchInfo* info, int ply) {
     (void)maximizingPlayer;
-    return negamax(board, depth, alpha, beta, info, ply, true, false);
+    return negamax(board, depth, alpha, beta, info, ply, true, false, 0);
 }
 
 int quiescence_search(Board* board, int alpha, int beta, bool maximizingPlayer,

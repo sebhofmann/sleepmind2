@@ -34,6 +34,7 @@ create_variant() {
         echo "  Use_Aspiration=true/false"
         echo "  Use_Razoring=true/false"
         echo "  Use_IIR=true/false"
+        echo "  Use_Singular=true/false"
         echo "  LMR_FullDepthMoves=<1-10>"
         echo "  LMR_ReductionLimit=<1-6>"
         echo "  LMP_Base=<1-20>"
@@ -51,6 +52,9 @@ create_variant() {
         echo "  Delta_Margin=<50-500>"
         echo "  Aspiration_Window=<10-200>"
         echo "  IIR_MinDepth=<2-16>"
+        echo "  Singular_MinDepth=<4-32>"
+        echo "  Singular_Margin=<0-16>"
+        echo "  Singular_TTDepthSlack=<0-16>"
         exit 1
     fi
     
