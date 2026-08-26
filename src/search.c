@@ -55,6 +55,7 @@ static struct {
     uint64_t singular_hits;
     uint64_t singular_extensions;
     uint64_t singular_multicuts;
+    uint64_t main_quiet_see;
 } pruning_stats;
 
 #define TT_STAT_INC(var) ((var)++)
@@ -105,6 +106,36 @@ static void init_lmr_table(void) {
     lmr_table_initialized = true;
 }
 
+static int quiet_lmr_reduction(const SearchInfo* info, int depth, int moves_searched,
+                               bool is_pv, bool in_check, int move_score) {
+    if (!info->params.use_lmr || in_check ||
+        depth < info->params.lmr_reduction_limit ||
+        moves_searched < info->params.lmr_full_depth_moves) {
+        return 0;
+    }
+
+    int lmr_depth = depth < MAX_PLY ? depth : MAX_PLY - 1;
+    int lmr_moves = moves_searched < 64 ? moves_searched : 63;
+    int reduction = lmr_table[lmr_depth][lmr_moves];
+
+    if (!is_pv) reduction++;
+
+    if (move_score < info->params.lmr_stat_low2) {
+        reduction += 2;
+    } else if (move_score < info->params.lmr_stat_low1) {
+        reduction++;
+    } else if (move_score > info->params.lmr_stat_high2) {
+        reduction -= 2;
+    } else if (move_score > info->params.lmr_stat_high1) {
+        reduction--;
+    }
+
+    if (reduction < 1) reduction = 1;
+    if (depth - 1 - reduction < 1) reduction = depth - 2;
+    if (reduction < 0) reduction = 0;
+    return reduction;
+}
+
 void set_search_silent(bool silent) {
     search_silent_mode = silent;
 }
@@ -139,6 +170,7 @@ void search_params_init(SearchParams* params) {
     params->use_iir = true;
     params->use_probcut = true;
     params->use_singular = true;
+    params->use_main_quiet_see = true;
 
     // Late Move Pruning: skip quiets after base + depth^2 searched moves
     params->lmp_base = 6;
@@ -146,6 +178,8 @@ void search_params_init(SearchParams* params) {
 
     params->main_capture_see_margin = 100;
     params->main_capture_see_max_depth = 16;
+    params->main_quiet_see_margin = 20;
+    params->main_quiet_see_max_depth = 8;
 
     // Internal Iterative Reduction: reduce one ply when move ordering has no
     // transposition-table move to guide a sufficiently deep non-root node.
@@ -391,11 +425,6 @@ static int see(const Board* board, Move move) {
         victim_value = SEE_VALUES[1]; // Pawn
     }
     
-    // If capturing nothing (and not promoting), there is no exchange to evaluate
-    if (victim_value == 0 && !MOVE_IS_EN_PASSANT(move) && !MOVE_IS_PROMOTION(move)) {
-        return 0;
-    }
-
     // Gain array to track material balance at each step
     int gain[32];
     int depth = 0;
@@ -490,9 +519,6 @@ static bool see_ge(const Board* board, Move move, int threshold) {
     PieceTypeToken victim_type = getPieceTypeAtSquare(board, to, &victim_white);
     int victim_value = get_piece_value(victim_type);
     if (MOVE_IS_EN_PASSANT(move)) victim_value = SEE_VALUES[1];
-
-    if (victim_value == 0 && !MOVE_IS_EN_PASSANT(move) && !MOVE_IS_PROMOTION(move))
-        return 0 >= threshold;
 
     int64_t balance = (int64_t)victim_value + promo_gain - threshold;
     if (balance < 0) return false;
@@ -1482,6 +1508,12 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     bool can_main_capture_see = info->params.use_main_capture_see && ply > 0 &&
         !is_pv && !in_check && depth <= info->params.main_capture_see_max_depth &&
         abs(alpha) < TB_SCORE_MIN && abs(beta) < TB_SCORE_MIN;
+    // Quiet SEE pruning is independent from capture SEE pruning. Its threshold
+    // uses the move's history-adjusted LMR depth, so well-ordered moves receive
+    // a wider allowance than late moves that are already heavily reduced.
+    bool can_main_quiet_see = info->params.use_main_quiet_see && ply > 0 &&
+        !is_pv && !in_check && depth <= info->params.main_quiet_see_max_depth &&
+        abs(alpha) < TB_SCORE_MIN && abs(beta) < TB_SCORE_MIN;
     // Static eval at every eligible non-check node, reusing the TT copy when
     // available. This also feeds the per-ply stack used by improving-aware LMP.
     int raw_static_eval = TT_EVAL_NONE;
@@ -1712,6 +1744,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         bool is_capture = MOVE_IS_CAPTURE(m);
         bool is_promotion = MOVE_IS_PROMOTION(m);
         bool is_tactical = is_capture || is_promotion;
+        int reduction = 0;
 
         if (!is_tactical && quiets_tried_count < MAX_MOVES) {
             quiets_tried[quiets_tried_count++] = m;
@@ -1747,6 +1780,24 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
             m != mp.tt_move && moves_searched > 0 &&
             move_see < -info->params.main_capture_see_margin * depth) {
             PRUNING_STAT_INC(main_capture_see);
+            continue;
+        }
+
+        if (!is_tactical) {
+            reduction = quiet_lmr_reduction(info, depth, moves_searched,
+                                            is_pv, in_check, move_score);
+        }
+        int lmr_search_depth = depth - 1 - reduction;
+
+        // Main-search quiet SEE pruning. Preserve the TT move, the first
+        // well-ordered candidates, and quiets with non-negative history so a
+        // cut node does not lose its likely cutoff move before SEE is considered.
+        if (can_main_quiet_see && !is_tactical && m != mp.tt_move &&
+            moves_searched >= info->params.lmr_full_depth_moves &&
+            move_score < 0 &&
+            !see_ge(board, m, -info->params.main_quiet_see_margin *
+                              lmr_search_depth * lmr_search_depth)) {
+            PRUNING_STAT_INC(main_quiet_see);
             continue;
         }
 
@@ -1836,45 +1887,6 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                              info, ply + 1, true, false, 0);
         } else {
             // Late Move Reductions - logarithmic formula like Stockfish
-            int reduction = 0;
-
-            if (info->params.use_lmr && !in_check && !is_tactical &&
-                depth >= info->params.lmr_reduction_limit &&
-                moves_searched >= info->params.lmr_full_depth_moves) {
-
-                // Lookup from precomputed table (Stockfish-style formula)
-                int lmr_depth = depth < MAX_PLY ? depth : MAX_PLY - 1;
-                int lmr_moves = moves_searched < 64 ? moves_searched : 63;
-                reduction = lmr_table[lmr_depth][lmr_moves];
-
-                // Increase reduction for non-PV nodes
-                if (!is_pv) {
-                    reduction++;
-                }
-
-                // Adjust based on the combined history score (butterfly +
-                // continuation history = this quiet's ordering score, computed
-                // before applyMove). Thresholds match the SF-scale update
-                // magnitudes in history_bonus()/history_malus().
-                int stat = move_score;
-                if (stat < info->params.lmr_stat_low2) {
-                    reduction += 2;
-                } else if (stat < info->params.lmr_stat_low1) {
-                    reduction++;
-                } else if (stat > info->params.lmr_stat_high2) {
-                    reduction -= 2;
-                } else if (stat > info->params.lmr_stat_high1) {
-                    reduction--;
-                }
-
-                // Clamp reduction: at least 1, don't reduce below depth 1
-                if (reduction < 1) reduction = 1;
-                if (depth - 1 - reduction < 1) {
-                    reduction = depth - 2;
-                }
-                if (reduction < 0) reduction = 0;
-            }
-            
             // Null window search with possible reduction
             if (reduction > 0) {
                 PRUNING_STAT_INC(lmr);
@@ -2330,7 +2342,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                                   pruning_stats.lmp + pruning_stats.lmr +
                                   pruning_stats.delta + pruning_stats.see_pruning +
                                   pruning_stats.probcut_cuts;
-        total_prunings += pruning_stats.main_capture_see;
+        total_prunings += pruning_stats.main_capture_see + pruning_stats.main_quiet_see;
         total_prunings += pruning_stats.iir;
         printf("info string Pruning stats (total=%llu):\n", (unsigned long long)total_prunings);
         printf("info string   Null Move:    %llu\n", (unsigned long long)pruning_stats.null_move);
@@ -2353,6 +2365,8 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
                (unsigned long long)pruning_stats.probcut_cuts,
                (unsigned long long)pruning_stats.probcut_nodes);
         printf("info string   Main Cap SEE: %llu\n", (unsigned long long)pruning_stats.main_capture_see);
+        printf("info string   Main Quiet:   %llu\n",
+               (unsigned long long)pruning_stats.main_quiet_see);
         printf("info string   IIR:          %llu\n", (unsigned long long)pruning_stats.iir);
         int cmin = 0, cmax = 0, nonzero = 0, saturated = 0;
         for (int s = 0; s < 2; s++)
