@@ -30,6 +30,9 @@ const int NNUE_INPUT_BUCKET_MAP[64] = {
     9, 9, 9, 9, 9, 9, 9, 9,  // Rank 8
 };
 
+// Bumped whenever weights are (re)loaded so the Finny table can be invalidated
+static uint32_t net_generation = 1;
+
 // Helper: Get LSB index
 static inline int get_lsb(Bitboard bb) {
     if (bb == 0) return -1;
@@ -144,6 +147,7 @@ bool nnue_load_memory(const unsigned char* data, size_t size, NNUENetwork* net) 
     memcpy(net->output_biases, cursor, output_biases_size);
 
     net->loaded = true;
+    net_generation++;
     printf("info string NNUE loaded (size %zu, fnv1a64 %016" PRIx64 ")\n",
            size, nnue_hash(data, size));
     return true;
@@ -273,26 +277,6 @@ static inline void vec_sub(int16_t* restrict dst, const int16_t* restrict src, i
 #endif
 }
 
-// Add all pieces for accumulator computation
-static void add_piece_features(NNUEAccumulator* acc, const NNUENetwork* net,
-                                Bitboard pieces, int piece_type, int piece_color,
-                                KingBucket white_bucket, KingBucket black_bucket) {
-    while (pieces) {
-        int sq = get_lsb(pieces);
-        pieces &= pieces - 1;
-
-        int white_index = get_feature_index(0, piece_type, piece_color, sq, white_bucket);
-        int white_bucket_idx = white_index / NNUE_INPUT_SIZE;
-        int white_input_idx = white_index % NNUE_INPUT_SIZE;
-        vec_add(acc->white, net->ft_weights[white_bucket_idx][white_input_idx], NNUE_HIDDEN_SIZE);
-
-        int black_index = get_feature_index(1, piece_type, piece_color, sq, black_bucket);
-        int black_bucket_idx = black_index / NNUE_INPUT_SIZE;
-        int black_input_idx = black_index % NNUE_INPUT_SIZE;
-        vec_add(acc->black, net->ft_weights[black_bucket_idx][black_input_idx], NNUE_HIDDEN_SIZE);
-    }
-}
-
 // SIMD memcpy for bias initialization
 static inline void vec_copy(int16_t* restrict dst, const int16_t* restrict src, int size) {
 #if defined(NNUE_AVX512)
@@ -310,7 +294,63 @@ static inline void vec_copy(int16_t* restrict dst, const int16_t* restrict src, 
 #endif
 }
 
-// Compute full accumulator from scratch
+// Finny table: per perspective and king bucket (incl. mirror state) the accumulator of the last
+// position refreshed into that bucket plus the piece bitboards it was built from. A refresh then only
+// applies the piece differences instead of re-adding every piece.
+typedef struct {
+    alignas(64) int16_t values[NNUE_HIDDEN_SIZE];
+    Bitboard pieces[2][6];
+    bool valid;
+} FinnyEntry;
+
+static FinnyEntry finny_cache[2][NNUE_INPUT_BUCKETS * 2];
+static const NNUENetwork* finny_net = NULL;
+static uint32_t finny_generation = 0;
+
+static void finny_refresh_perspective(const Board* board, int16_t* dst, const NNUENetwork* net,
+                                      int perspective, KingBucket bucket) {
+    if (finny_net != net || finny_generation != net_generation) {
+        for (int p = 0; p < 2; p++)
+            for (int b = 0; b < NNUE_INPUT_BUCKETS * 2; b++) finny_cache[p][b].valid = false;
+        finny_net = net;
+        finny_generation = net_generation;
+    }
+
+    FinnyEntry* entry = &finny_cache[perspective][bucket.index * 2 + (bucket.mirrored ? 1 : 0)];
+    if (!entry->valid) {
+        vec_copy(entry->values, net->ft_biases, NNUE_HIDDEN_SIZE);
+        memset(entry->pieces, 0, sizeof(entry->pieces));
+        entry->valid = true;
+    }
+
+    for (int color = 0; color < 2; color++) {
+        for (int type = 0; type < 6; type++) {
+            Bitboard cur = board->byTypeBB[color][type];
+            Bitboard old = entry->pieces[color][type];
+            Bitboard added = cur & ~old;
+            Bitboard removed = old & ~cur;
+            while (added) {
+                int sq = get_lsb(added);
+                added &= added - 1;
+                int idx = get_feature_index(perspective, type, color, sq, bucket);
+                vec_add(entry->values, net->ft_weights[idx / NNUE_INPUT_SIZE][idx % NNUE_INPUT_SIZE],
+                        NNUE_HIDDEN_SIZE);
+            }
+            while (removed) {
+                int sq = get_lsb(removed);
+                removed &= removed - 1;
+                int idx = get_feature_index(perspective, type, color, sq, bucket);
+                vec_sub(entry->values, net->ft_weights[idx / NNUE_INPUT_SIZE][idx % NNUE_INPUT_SIZE],
+                        NNUE_HIDDEN_SIZE);
+            }
+            entry->pieces[color][type] = cur;
+        }
+    }
+
+    vec_copy(dst, entry->values, NNUE_HIDDEN_SIZE);
+}
+
+// Compute full accumulator (via the Finny table, only piece differences are applied)
 void nnue_refresh_accumulator(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
     if (acc == NULL || net == NULL || board == NULL) return;
 
@@ -327,27 +367,9 @@ void nnue_refresh_accumulator(const Board* board, NNUEAccumulator* acc, const NN
         return;
     }
 
-    KingBucket white_bucket = get_king_bucket(white_king_sq, 0);
-    KingBucket black_bucket = get_king_bucket(black_king_sq, 1);
+    finny_refresh_perspective(board, acc->white, net, 0, get_king_bucket(white_king_sq, 0));
+    finny_refresh_perspective(board, acc->black, net, 1, get_king_bucket(black_king_sq, 1));
 
-    // Initialize with biases
-    vec_copy(acc->white, net->ft_biases, NNUE_HIDDEN_SIZE);
-    vec_copy(acc->black, net->ft_biases, NNUE_HIDDEN_SIZE);
-    
-    add_piece_features(acc, net, board->whitePawns, NNUE_PIECE_PAWN, 0, white_bucket, black_bucket);
-    add_piece_features(acc, net, board->whiteKnights, NNUE_PIECE_KNIGHT, 0, white_bucket, black_bucket);
-    add_piece_features(acc, net, board->whiteBishops, NNUE_PIECE_BISHOP, 0, white_bucket, black_bucket);
-    add_piece_features(acc, net, board->whiteRooks, NNUE_PIECE_ROOK, 0, white_bucket, black_bucket);
-    add_piece_features(acc, net, board->whiteQueens, NNUE_PIECE_QUEEN, 0, white_bucket, black_bucket);
-    add_piece_features(acc, net, board->whiteKings, NNUE_PIECE_KING, 0, white_bucket, black_bucket);
-    
-    add_piece_features(acc, net, board->blackPawns, NNUE_PIECE_PAWN, 1, white_bucket, black_bucket);
-    add_piece_features(acc, net, board->blackKnights, NNUE_PIECE_KNIGHT, 1, white_bucket, black_bucket);
-    add_piece_features(acc, net, board->blackBishops, NNUE_PIECE_BISHOP, 1, white_bucket, black_bucket);
-    add_piece_features(acc, net, board->blackRooks, NNUE_PIECE_ROOK, 1, white_bucket, black_bucket);
-    add_piece_features(acc, net, board->blackQueens, NNUE_PIECE_QUEEN, 1, white_bucket, black_bucket);
-    add_piece_features(acc, net, board->blackKings, NNUE_PIECE_KING, 1, white_bucket, black_bucket);
-    
     acc->computed = true;
     acc->dirty = false;
     acc->requires_refresh = false;
