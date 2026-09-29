@@ -14,6 +14,11 @@ ifeq ($(STATS),1)
   CFLAGS += -DSEARCH_STATS
 endif
 
+# make runtime_magics=1: search for the magic numbers at startup instead of using the built-in constants
+ifeq ($(runtime_magics),1)
+  CFLAGS += -DRUNTIME_MAGICS
+endif
+
 ifeq ($(hl_256),1)
   CFLAGS += -DNNUE_HIDDEN_SIZE=256
 endif

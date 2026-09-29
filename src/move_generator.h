@@ -7,9 +7,20 @@
 // Initialize magic bitboards and other precomputed data
 void initMoveGenerator();
 
-// Called by initMoveGenerator to find magic numbers
-// Returns true on success, false on failure (e.g., too many attempts)
+// Called by initMoveGenerator to build the magic attack tables from the precomputed magics
+// Returns true on success, false if a magic number does not map its occupancies collision-free
 bool findAndInitMagicNumbers();
+
+// Magic lookup entry: attacks[((occupancy & mask) * magic) >> shift]
+typedef struct {
+    Bitboard mask;
+    Bitboard magic;
+    Bitboard* attacks;
+    int shift;
+} MagicEntry;
+
+extern MagicEntry g_rook_magics[64];
+extern MagicEntry g_bishop_magics[64];
 
 // Generate all pseudo-legal moves for the current player
 void generateMoves(const Board* board, MoveList* moveList);
@@ -33,9 +44,18 @@ void generateQuietMoves(const Board* board, MoveList* moveList);
 bool moveIsPseudoLegal(const Board* board, Move move);
 
 // Functions to get attacks for sliding pieces (using magic bitboards)
-Bitboard getRookAttacks(Square square, Bitboard occupancy);
-Bitboard getBishopAttacks(Square square, Bitboard occupancy);
-Bitboard getQueenAttacks(Square square, Bitboard occupancy); // Combines rook and bishop
+static inline Bitboard getRookAttacks(Square square, Bitboard occupancy) {
+    const MagicEntry* m = &g_rook_magics[square];
+    return m->attacks[((occupancy & m->mask) * m->magic) >> m->shift];
+}
+
+static inline Bitboard getBishopAttacks(Square square, Bitboard occupancy) {
+    const MagicEntry* m = &g_bishop_magics[square];
+    return m->attacks[((occupancy & m->mask) * m->magic) >> m->shift];
+}
+static inline Bitboard getQueenAttacks(Square square, Bitboard occupancy) { // Combines rook and bishop
+    return getRookAttacks(square, occupancy) | getBishopAttacks(square, occupancy);
+}
 bool isKingAttacked(const Board* board, bool isWhite);
 // static inline int pop_lsb(Bitboard *bb); // Removed static inline declaration from header
 // static inline int get_lsb_index(Bitboard bb); // Removed static inline declaration from header

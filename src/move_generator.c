@@ -12,19 +12,58 @@
 
 
 // --- Magic Bitboard Data ---
+// Magic multipliers were found offline (random search over sparse candidates). Fixed constants keep
+// startup instant and deterministic; findAndInitMagicNumbers() verifies them while filling the attack tables.
+// Build with RUNTIME_MAGICS=1 (make runtime_magics=1) to search for the magics at startup instead.
+#ifdef RUNTIME_MAGICS
 static Bitboard ROOK_MAGICS[64];
 static Bitboard BISHOP_MAGICS[64];
+#else
+static const Bitboard ROOK_MAGICS[64] = {
+    0x0080002882400210ULL, 0x0140002000100040ULL, 0x3880082000821000ULL, 0x1600045200204008ULL,
+    0x5100028500580010ULL, 0x420008020001104cULL, 0x0100240200008100ULL, 0x0080002141000180ULL,
+    0x4000800520400290ULL, 0x2410802004c00080ULL, 0x0022002090804201ULL, 0x8041001000082101ULL,
+    0x2001808064000800ULL, 0x00c2000200500804ULL, 0x0600800a00800100ULL, 0x0100800880004100ULL,
+    0x0002808002400060ULL, 0x0040404004201002ULL, 0x1410008020023880ULL, 0x1108420020114a00ULL,
+    0x8424808004000800ULL, 0x2500808004000200ULL, 0x020944000e900908ULL, 0x20000e000440840dULL,
+    0x0880005040042000ULL, 0xa010014040002001ULL, 0x2000110100200142ULL, 0x80360012004008a0ULL,
+    0x1000080080140080ULL, 0x2008404801042010ULL, 0x490200020001080cULL, 0x0002048600040549ULL,
+    0x0104c00280800024ULL, 0x0100400280802008ULL, 0x0000842000801000ULL, 0x0408080080801000ULL,
+    0x0010080101000410ULL, 0x4000800201800400ULL, 0x1000011604001810ULL, 0xf40100006900058aULL,
+    0x0002204018808000ULL, 0x4004201004414000ULL, 0x1010102082020040ULL, 0x00020040100a0020ULL,
+    0x0408000400808048ULL, 0x0001040002008080ULL, 0x0101001200c10024ULL, 0x80220100824a0004ULL,
+    0x3201804211082200ULL, 0x2052200440100840ULL, 0x20141000a0008c80ULL, 0x8c06080010028180ULL,
+    0x8050080180640080ULL, 0x2082010488100200ULL, 0x0005b00211084400ULL, 0x00003040830c0200ULL,
+    0x8020201042800101ULL, 0x32a0400094810021ULL, 0x802100440a200011ULL, 0x2008100104200901ULL,
+    0x8101000258001491ULL, 0x810100484e040005ULL, 0x0111d10210086084ULL, 0x00010100c0840022ULL,
+};
 
-static Bitboard ROOK_MASKS[64];
-static Bitboard BISHOP_MASKS[64];
+static const Bitboard BISHOP_MAGICS[64] = {
+    0x0042204802008022ULL, 0x0084040084010000ULL, 0x0010048a00444001ULL, 0x0004410060000000ULL,
+    0x0002021002000512ULL, 0x0002080288010000ULL, 0x000a221002291001ULL, 0x0020840841102800ULL,
+    0x0009902048008081ULL, 0x301b021002020140ULL, 0x2f00089801002040ULL, 0x5000040401801401ULL,
+    0x83080405a0000001ULL, 0x000102080c050040ULL, 0x0980008208208408ULL, 0x3624220044440484ULL,
+    0x028820102018c482ULL, 0x210400b10102040cULL, 0x1018004c12240050ULL, 0x0c0c0050c4048031ULL,
+    0x0000840400a01100ULL, 0x2002000888140204ULL, 0x0000400a12022028ULL, 0x6809840042049000ULL,
+    0x1088090c20204300ULL, 0x008450100a100102ULL, 0x0008480430202040ULL, 0x0a30240000401020ULL,
+    0x00c0840008802028ULL, 0x013001020a104200ULL, 0x00184c8101008800ULL, 0x5044024180210420ULL,
+    0x8002084000041000ULL, 0x8001082001890102ULL, 0x0084024104080200ULL, 0x6401b108000c01c0ULL,
+    0x8168020400001100ULL, 0x20008824400a0100ULL, 0x0002084100060083ULL, 0x3008010220450086ULL,
+    0x80020211400104a0ULL, 0x024100900400b002ULL, 0x0202309088013001ULL, 0x0000002038000301ULL,
+    0x4001a44102100402ULL, 0x2e01411101000200ULL, 0x24210825010000c0ULL, 0x0008084044402088ULL,
+    0x044200c404c000a0ULL, 0x0880410090304028ULL, 0x1040090409240182ULL, 0x03000210208805d0ULL,
+    0x80011088470c0100ULL, 0x0000400204810880ULL, 0x0214200206020100ULL, 0x0a18900400404003ULL,
+    0x04020a01420a1004ULL, 0x0104034048280802ULL, 0x084000004e080440ULL, 0x0000004481084800ULL,
+    0x0045040010e20600ULL, 0x0001148408500100ULL, 0xd080a04490008100ULL, 0x034008830c008034ULL,
+};
+#endif
 
-// Array of pointers to attack tables. Each table is dynamically allocated.
-static Bitboard* ROOK_ATTACKS_TABLE[64];
-static Bitboard* BISHOP_ATTACKS_TABLE[64];
+MagicEntry g_rook_magics[64];
+MagicEntry g_bishop_magics[64];
 
-// Number of relevant bits in the mask for each square
-static int ROOK_RELEVANT_BITS[64];
-static int BISHOP_RELEVANT_BITS[64];
+// Backing storage for all attack tables (one contiguous block per piece type)
+static Bitboard* ROOK_ATTACK_STORAGE = NULL;
+static Bitboard* BISHOP_ATTACK_STORAGE = NULL;
 
 // --- Precomputed Attack Tables (Non-sliding pieces) ---
 static Bitboard PAWN_ATTACKS[2][64];   // [color][square] (0 for white, 1 for black)
@@ -145,200 +184,128 @@ static Bitboard generate_bishop_attacks_otf_user(Square sq, Bitboard blockers) {
     return result;
 }
 
-// Random bitboard generation (adapted from user's reference code)
+static bool init_magic_table(MagicEntry* entries, const Bitboard* magics, Bitboard** storage, bool is_rook) {
+    size_t total = 0;
+    for (Square sq = 0; sq < 64; sq++) {
+        Bitboard mask = is_rook ? generate_rook_mask_user(sq) : generate_bishop_mask_user(sq);
+        total += (size_t)1 << POPCOUNT(mask);
+    }
+    free(*storage);
+    *storage = (Bitboard*)malloc(total * sizeof(Bitboard));
+    unsigned char* used = (unsigned char*)malloc(total);
+    if (!*storage || !used) {
+        free(used);
+        return false;
+    }
+    memset(used, 0, total);
+
+    size_t offset = 0;
+    bool ok = true;
+    for (Square sq = 0; sq < 64; sq++) {
+        MagicEntry* e = &entries[sq];
+        e->mask = is_rook ? generate_rook_mask_user(sq) : generate_bishop_mask_user(sq);
+        e->magic = magics[sq];
+        int bits = POPCOUNT(e->mask);
+        e->shift = 64 - bits;
+        e->attacks = *storage + offset;
+
+        for (int i = 0; i < (1 << bits); i++) {
+            Bitboard occ = index_to_occupancy(i, bits, e->mask);
+            Bitboard att = is_rook ? generate_rook_attacks_otf_user(sq, occ) : generate_bishop_attacks_otf_user(sq, occ);
+            size_t idx = (size_t)((occ * e->magic) >> e->shift);
+            if (used[offset + idx] && e->attacks[idx] != att) ok = false;
+            e->attacks[idx] = att;
+            used[offset + idx] = 1;
+        }
+        offset += (size_t)1 << bits;
+    }
+    free(used);
+    return ok;
+}
+
+#ifdef RUNTIME_MAGICS
+// Random bitboard generation
 static Bitboard random_u64() {
-  Bitboard u1, u2, u3, u4;
-    // Use rand() from stdlib; mask pieces to build a 64-bit value
-    u1 = (Bitboard)(rand()) & 0xFFFFULL;
-    u2 = (Bitboard)(rand()) & 0xFFFFULL;
-    u3 = (Bitboard)(rand()) & 0xFFFFULL;
-    u4 = (Bitboard)(rand()) & 0xFFFFULL;
-  return u1 | (u2 << 16) | (u3 << 32) | (u4 << 48);
+    Bitboard u1 = (Bitboard)(rand()) & 0xFFFFULL;
+    Bitboard u2 = (Bitboard)(rand()) & 0xFFFFULL;
+    Bitboard u3 = (Bitboard)(rand()) & 0xFFFFULL;
+    Bitboard u4 = (Bitboard)(rand()) & 0xFFFFULL;
+    return u1 | (u2 << 16) | (u3 << 32) | (u4 << 48);
 }
 
 static Bitboard random_u64_fewbits() {
     return random_u64() & random_u64() & random_u64();
 }
 
-// Magic transformation
-static inline unsigned int transform_magic(Bitboard occupancy, Bitboard magic, int relevant_bits) {
-// #define USE_32_BIT_MULTIPLICATIONS // Define this if you want to try the 32-bit path
-#ifdef USE_32_BIT_MULTIPLICATIONS
-    return (unsigned int)(((unsigned int)(occupancy * magic)) >> (32 - relevant_bits));
-#else
-    return (unsigned int)((occupancy * magic) >> (64 - relevant_bits));
-#endif
-}
+// Random search for a collision-free magic multiplier for one square
+static bool find_magic_for_square(Square sq, bool is_rook, int max_attempts, Bitboard* magic_out) {
+    Bitboard mask = is_rook ? generate_rook_mask_user(sq) : generate_bishop_mask_user(sq);
+    int bits = POPCOUNT(mask);
+    int states = 1 << bits;
+    Bitboard* occupancies = (Bitboard*)malloc(states * sizeof(Bitboard));
+    Bitboard* attacks = (Bitboard*)malloc(states * sizeof(Bitboard));
+    Bitboard* table = (Bitboard*)malloc(states * sizeof(Bitboard));
+    unsigned char* used = (unsigned char*)malloc(states);
+    bool found = false;
 
-// Main function to find magic for a square
-static bool find_magic_for_square_user(Square sq, bool is_rook, int max_attempts) {
-    Bitboard mask = is_rook ? ROOK_MASKS[sq] : BISHOP_MASKS[sq];
-    int relevant_bits = is_rook ? ROOK_RELEVANT_BITS[sq] : BISHOP_RELEVANT_BITS[sq];
-    
-    if (relevant_bits == 0 && (is_rook ? ROOK_MASKS[sq] : BISHOP_MASKS[sq]) == 0ULL) { // Edge cases like A1 for bishop mask
-        if (is_rook) {
-            ROOK_MAGICS[sq] = 0ULL; // No magic needed for empty mask
-            ROOK_ATTACKS_TABLE[sq] = (Bitboard*)calloc(1, sizeof(Bitboard)); 
-            if (ROOK_ATTACKS_TABLE[sq]) ROOK_ATTACKS_TABLE[sq][0] = generate_rook_attacks_otf_user(sq, 0ULL);
-            else { printf("Error: Mem alloc for empty mask rook sq %d\n", sq); return false;}
-        } else {
-            BISHOP_MAGICS[sq] = 0ULL;
-            BISHOP_ATTACKS_TABLE[sq] = (Bitboard*)calloc(1, sizeof(Bitboard));
-            if (BISHOP_ATTACKS_TABLE[sq]) BISHOP_ATTACKS_TABLE[sq][0] = generate_bishop_attacks_otf_user(sq, 0ULL);
-            else { printf("Error: Mem alloc for empty mask bishop sq %d\n", sq); return false;}
+    if (occupancies && attacks && table && used) {
+        for (int i = 0; i < states; i++) {
+            occupancies[i] = index_to_occupancy(i, bits, mask);
+            attacks[i] = is_rook ? generate_rook_attacks_otf_user(sq, occupancies[i])
+                                 : generate_bishop_attacks_otf_user(sq, occupancies[i]);
         }
-        return true;
-    }
-    if (relevant_bits < 0 || relevant_bits > 15) { // Safety check for table sizes (max 2^15 entries for practical purposes)
-        printf("Error: Invalid relevant_bits %d for sq %d, is_rook %d\n", relevant_bits, sq, is_rook);
-        return false;
-    }
-
-
-    int num_occupancy_states = 1 << relevant_bits;
-
-    Bitboard* occupancies = (Bitboard*)malloc(num_occupancy_states * sizeof(Bitboard));
-    Bitboard* attacks = (Bitboard*)malloc(num_occupancy_states * sizeof(Bitboard));
-    Bitboard* current_attack_table_ptr; // Will point to the dynamically allocated attack table
-
-    size_t attack_table_size_bytes = num_occupancy_states * sizeof(Bitboard);
-    current_attack_table_ptr = (Bitboard*)malloc(attack_table_size_bytes);
-
-    if (is_rook) {
-        ROOK_ATTACKS_TABLE[sq] = current_attack_table_ptr;
-    } else {
-        BISHOP_ATTACKS_TABLE[sq] = current_attack_table_ptr;
-    }
-    
-    if (!occupancies || !attacks || !current_attack_table_ptr) {
-        printf("Error: Memory allocation failed for magic finding (main arrays) on square %d\n", sq);
-        if (occupancies) free(occupancies);
-        if (attacks) free(attacks);
-        if (current_attack_table_ptr) {
-            if (is_rook) ROOK_ATTACKS_TABLE[sq] = NULL; else BISHOP_ATTACKS_TABLE[sq] = NULL;
-            free(current_attack_table_ptr);
-        }
-        return false;
-    }
-
-    for (int i = 0; i < num_occupancy_states; i++) {
-        occupancies[i] = index_to_occupancy(i, relevant_bits, mask);
-        if (is_rook) {
-            attacks[i] = generate_rook_attacks_otf_user(sq, occupancies[i]);
-        } else {
-            attacks[i] = generate_bishop_attacks_otf_user(sq, occupancies[i]);
-        }
-    }
-
-    bool* index_is_used = (bool*)calloc(num_occupancy_states, sizeof(bool));
-     if (!index_is_used) {
-        printf("Error: Memory allocation failed for index_is_used on square %d\n", sq);
-        free(occupancies);
-        free(attacks);
-        if (is_rook && ROOK_ATTACKS_TABLE[sq]) { free(ROOK_ATTACKS_TABLE[sq]); ROOK_ATTACKS_TABLE[sq] = NULL; }
-        if (!is_rook && BISHOP_ATTACKS_TABLE[sq]) { free(BISHOP_ATTACKS_TABLE[sq]); BISHOP_ATTACKS_TABLE[sq] = NULL; }
-        // current_attack_table_ptr was assigned to ROOK/BISHOP_ATTACKS_TABLE[sq]
-        return false;
-    }
-
-    for (int attempt = 0; attempt < max_attempts; attempt++) {
-        Bitboard magic_candidate = random_u64_fewbits();
-        // The original condition from user's code:
-        // if (POPCOUNT((mask * magic_candidate) & 0xFF00000000000000ULL) < 6) continue; // Temporarily disabled
-
-
-        memset(index_is_used, 0, num_occupancy_states * sizeof(bool));
-        memset(current_attack_table_ptr, 0, attack_table_size_bytes); // Clear before trying to fill
-        bool possible_magic = true;
-
-        for (int i = 0; i < num_occupancy_states; i++) {
-            unsigned int magic_index = transform_magic(occupancies[i], magic_candidate, relevant_bits);
-            
-            if (magic_index >= (unsigned int)num_occupancy_states) { // Should not happen if relevant_bits is correct for transform
-                 possible_magic = false; break;
+        for (int attempt = 0; attempt < max_attempts && !found; attempt++) {
+            Bitboard candidate = random_u64_fewbits();
+            memset(used, 0, states);
+            bool ok = true;
+            for (int i = 0; i < states; i++) {
+                unsigned int idx = (unsigned int)((occupancies[i] * candidate) >> (64 - bits));
+                if (!used[idx]) {
+                    table[idx] = attacks[i];
+                    used[idx] = 1;
+                } else if (table[idx] != attacks[i]) {
+                    ok = false;
+                    break;
+                }
             }
-
-            if (!index_is_used[magic_index]) {
-                current_attack_table_ptr[magic_index] = attacks[i];
-                index_is_used[magic_index] = true;
-            } else if (current_attack_table_ptr[magic_index] != attacks[i]) {
-                possible_magic = false;
-                break;
+            if (ok) {
+                *magic_out = candidate;
+                found = true;
             }
         }
-
-        if (possible_magic) {
-            if (is_rook) {
-                ROOK_MAGICS[sq] = magic_candidate;
-            } else {
-                BISHOP_MAGICS[sq] = magic_candidate;
-            }
-            free(occupancies);
-            free(attacks);
-            free(index_is_used);
-            return true;
-        }
     }
-
     free(occupancies);
     free(attacks);
-    free(index_is_used);
-    // If magic not found, free the allocated attack table
-    if (is_rook && ROOK_ATTACKS_TABLE[sq]) { free(ROOK_ATTACKS_TABLE[sq]); ROOK_ATTACKS_TABLE[sq] = NULL; }
-    if (!is_rook && BISHOP_ATTACKS_TABLE[sq]) { free(BISHOP_ATTACKS_TABLE[sq]); BISHOP_ATTACKS_TABLE[sq] = NULL; }
-    return false;
+    free(table);
+    free(used);
+    return found;
 }
 
-bool findAndInitMagicNumbers() {
-    srand((unsigned int)time(NULL)); // Seed rand()
-    printf("Attempting to find magic numbers (user logic, corrected random)... This may take a while.\n");
-    int magicAttemptsPerSquare = 10000000; // Kept high, but should succeed faster if logic is good.
-
+static bool search_magics(void) {
+    srand((unsigned int)time(NULL));
+    printf("Searching for magic numbers at runtime...\n");
+    bool ok = true;
     for (Square sq = 0; sq < 64; sq++) {
-        ROOK_MAGICS[sq] = 0ULL; // Reset
-        BISHOP_MAGICS[sq] = 0ULL;
-        if(ROOK_ATTACKS_TABLE[sq]) { free(ROOK_ATTACKS_TABLE[sq]); ROOK_ATTACKS_TABLE[sq] = NULL; }
-        if(BISHOP_ATTACKS_TABLE[sq]) { free(BISHOP_ATTACKS_TABLE[sq]); BISHOP_ATTACKS_TABLE[sq] = NULL; }
-
-        // Rook
-        if (ROOK_RELEVANT_BITS[sq] > 0) { // Only find magic if mask is not empty
-            // printf("Finding Rook magic for sq %d (mask bits: %d)...\n\", sq, ROOK_RELEVANT_BITS[sq]);
-            if (!find_magic_for_square_user(sq, true, magicAttemptsPerSquare)) {
-                 // printf("Failed Rook magic for sq %d.\n\", sq);
-            }
-        } else { // Empty mask, still need to init attack table for 0 index
-            ROOK_ATTACKS_TABLE[sq] = (Bitboard*)calloc(1, sizeof(Bitboard));
-            if(ROOK_ATTACKS_TABLE[sq]) ROOK_ATTACKS_TABLE[sq][0] = generate_rook_attacks_otf_user(sq, 0ULL);
-        }
-
-
-        // Bishop
-        if (BISHOP_RELEVANT_BITS[sq] > 0) {
-            // printf("Finding Bishop magic for sq %d (mask bits: %d)...\n\", sq, BISHOP_RELEVANT_BITS[sq]);
-            if (!find_magic_for_square_user(sq, false, magicAttemptsPerSquare)) {
-                // printf("Failed Bishop magic for sq %d.\n\", sq);
-            }
-        } else {
-            BISHOP_ATTACKS_TABLE[sq] = (Bitboard*)calloc(1, sizeof(Bitboard));
-            if(BISHOP_ATTACKS_TABLE[sq]) BISHOP_ATTACKS_TABLE[sq][0] = generate_bishop_attacks_otf_user(sq, 0ULL);
-        }
+        ok = find_magic_for_square(sq, true, 10000000, &ROOK_MAGICS[sq]) && ok;
+        ok = find_magic_for_square(sq, false, 10000000, &BISHOP_MAGICS[sq]) && ok;
     }
+    return ok;
+}
+#endif
 
-    printf("Magic number search complete.\n");
-    int rooksFound = 0, bishopsFound = 0;
-    for(int i=0; i<64; ++i) {
-        if(ROOK_MAGICS[i] != 0ULL && ROOK_ATTACKS_TABLE[i] != NULL) rooksFound++;
-        else if (ROOK_RELEVANT_BITS[i] == 0 && ROOK_ATTACKS_TABLE[i] != NULL) rooksFound++; // Count empty mask cases as "found"
-        
-        if(BISHOP_MAGICS[i] != 0ULL && BISHOP_ATTACKS_TABLE[i] != NULL) bishopsFound++;
-        else if (BISHOP_RELEVANT_BITS[i] == 0 && BISHOP_ATTACKS_TABLE[i] != NULL) bishopsFound++;
+bool findAndInitMagicNumbers() {
+#ifdef RUNTIME_MAGICS
+    if (!search_magics()) {
+        fprintf(stderr, "Error: magic number search failed\n");
+        return false;
     }
-    printf("Found %d/64 Rook magics and %d/64 Bishop magics.\n", rooksFound, bishopsFound);
-    if (rooksFound < 64 || bishopsFound < 64) {
-        printf("Warning: Not all magic numbers were found. Sliding piece move generation might be slow or incorrect for some squares.\n");
-        printf("Consider using pre-calculated magics or increasing attempts (currently %d per square with non-zero mask).\n", magicAttemptsPerSquare);
+#endif
+    bool ok = init_magic_table(g_rook_magics, ROOK_MAGICS, &ROOK_ATTACK_STORAGE, true);
+    ok = init_magic_table(g_bishop_magics, BISHOP_MAGICS, &BISHOP_ATTACK_STORAGE, false) && ok;
+    if (!ok) {
+        fprintf(stderr, "Error: precomputed magic numbers are invalid\n");
     }
-    return (rooksFound == 64 && bishopsFound == 64);
+    return ok;
 }
 
 void initMoveGenerator() {
@@ -408,49 +375,9 @@ void initMoveGenerator() {
         }
     }
 
-    for (Square sq = 0; sq < 64; sq++) {
-        ROOK_MASKS[sq] = generate_rook_mask_user(sq);
-        ROOK_RELEVANT_BITS[sq] = POPCOUNT(ROOK_MASKS[sq]);
-
-        BISHOP_MASKS[sq] = generate_bishop_mask_user(sq);
-        BISHOP_RELEVANT_BITS[sq] = POPCOUNT(BISHOP_MASKS[sq]);
-        
-        ROOK_ATTACKS_TABLE[sq] = NULL; // Initialize pointers
-        BISHOP_ATTACKS_TABLE[sq] = NULL;
-    }
-
     findAndInitMagicNumbers();
 }
 
-Bitboard getRookAttacks(Square square, Bitboard occupancy) {
-    if (ROOK_RELEVANT_BITS[square] == 0) { // Empty mask (e.g. corner for bishop mask, but rook masks are usually not empty)
-        return ROOK_ATTACKS_TABLE[square] ? ROOK_ATTACKS_TABLE[square][0] : generate_rook_attacks_otf_user(square, occupancy);
-    }
-    if (ROOK_MAGICS[square] == 0ULL || ROOK_ATTACKS_TABLE[square] == NULL) {
-        return generate_rook_attacks_otf_user(square, occupancy);
-    }
-    Bitboard relevant_occupancy = occupancy & ROOK_MASKS[square];
-    unsigned int index = transform_magic(relevant_occupancy, ROOK_MAGICS[square], ROOK_RELEVANT_BITS[square]);
-    if (index >= (1U << ROOK_RELEVANT_BITS[square])) { /* Should not happen */ return generate_rook_attacks_otf_user(square, occupancy); }
-    return ROOK_ATTACKS_TABLE[square][index];
-}
-
-Bitboard getBishopAttacks(Square square, Bitboard occupancy) {
-    if (BISHOP_RELEVANT_BITS[square] == 0) { // Empty mask (e.g. corner for bishop mask)
-         return BISHOP_ATTACKS_TABLE[square] ? BISHOP_ATTACKS_TABLE[square][0] : generate_bishop_attacks_otf_user(square, occupancy);
-    }
-    if (BISHOP_MAGICS[square] == 0ULL || BISHOP_ATTACKS_TABLE[square] == NULL) {
-        return generate_bishop_attacks_otf_user(square, occupancy);
-    }
-    Bitboard relevant_occupancy = occupancy & BISHOP_MASKS[square];
-    unsigned int index = transform_magic(relevant_occupancy, BISHOP_MAGICS[square], BISHOP_RELEVANT_BITS[square]);
-    if (index >= (1U << BISHOP_RELEVANT_BITS[square])) { /* Should not happen */ return generate_bishop_attacks_otf_user(square, occupancy); }
-    return BISHOP_ATTACKS_TABLE[square][index];
-}
-
-Bitboard getQueenAttacks(Square square, Bitboard occupancy) {
-    return getRookAttacks(square, occupancy) | getBishopAttacks(square, occupancy);
-}
 
 static Bitboard getOccupiedByColor(const Board* board, bool isWhite) {
     int c = isWhite ? WHITE : BLACK;
