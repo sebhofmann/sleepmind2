@@ -178,6 +178,8 @@ void search_params_init(SearchParams* params) {
 
     // Razoring (drop into qsearch if position looks hopeless)
     params->use_razoring = true;
+
+    tm_params_init(&params->tm);
     params->razor_margin = 299;         // Base margin (scaled by depth)
 
     params->pawn_corr_limit = 48;
@@ -1826,6 +1828,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         info->prev_pieces[ply] = cmh_piece_index(board, MOVE_TO(m));
 
         int score;
+        uint64_t nodes_before_move = info->nodesSearched;
 
         // =======================================================================
         // Principal Variation Search (PVS) with Late Move Reductions (LMR)
@@ -1967,6 +1970,11 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
         #endif
         
         moves_searched++;
+
+        if (ply == 0) {
+            info->rootNodes[MOVE_FROM(m)][MOVE_TO(m)] +=
+                info->nodesSearched - nodes_before_move;
+        }
         
         if (info->stopSearch) return 0;
         
@@ -2088,8 +2096,10 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
     // Initialize TT for new search
     tt_new_search();
     
-    // Track longest meaningful iteration time
-    long max_meaningful_iteration_time = 0;
+    // Best-move stability for time management
+    Move tm_prev_best = 0;
+    int tm_stability = 0;
+    TimeLimits tm_limits = { info->softTimeLimit, info->hardTimeLimit };
     
     for (int i = 0; i < MAX_PLY; i++) {
         info->pv_length[i] = 0;
@@ -2103,7 +2113,8 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
     int max_depth = (info->depthLimit > 0) ? info->depthLimit : MAX_PLY;
     for (int depth = 1; depth <= max_depth; depth++) {
         long iteration_start = get_elapsed_time(info);
-        int nodes_before = info->nodesSearched;
+        uint64_t nodes_before = info->nodesSearched;
+        if (info->dynamicTime) memset(info->rootNodes, 0, sizeof(info->rootNodes));
         
         info->bestMoveThisIteration = 0;
         info->seldepth = 0;
@@ -2139,12 +2150,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         
         long iteration_end = get_elapsed_time(info);
         info->lastIterationTime = iteration_end - iteration_start;
-        int nodes_this_iteration = info->nodesSearched - nodes_before;
-        
-        // Update max meaningful iteration time
-        if (info->lastIterationTime >= 10 && nodes_this_iteration >= 1000) {
-            max_meaningful_iteration_time = info->lastIterationTime;
-        }
+        uint64_t nodes_this_iteration = info->nodesSearched - nodes_before;
         
         if (info->stopSearch) {
             if (!search_silent_mode) {
@@ -2161,11 +2167,14 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         info->bestScoreThisIteration = score;
         
         // Update best move from completed iteration
+        int score_drop = prev_score - score;
         if (info->bestMoveThisIteration != 0) {
             best_move = info->bestMoveThisIteration;
             best_score = score;
             prev_score = score;
         }
+        tm_stability = (best_move == tm_prev_best) ? tm_stability + 1 : 0;
+        tm_prev_best = best_move;
         
         // UCI output
         long time_ms = get_elapsed_time(info);
@@ -2247,27 +2256,25 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
             break;
         }
         
-        // Time management
+        // Time management: stop once the soft limit is used up. In clock
+        // games the limit follows the search: more time while the best move
+        // is unstable, takes few of the nodes or the score is dropping.
         if (info->softTimeLimit > 0) {
-            long remaining = info->softTimeLimit - time_ms;
-            
-            long time_for_estimate = max_meaningful_iteration_time > 0 ? 
-                                     max_meaningful_iteration_time : info->lastIterationTime;
-            long estimated_next = time_for_estimate * 3;
-            
-            if (time_ms >= info->softTimeLimit) {
-                printf("info string Soft time limit reached after depth %d\n", depth);
-                fflush(stdout);
-                break;
+            long soft = info->softTimeLimit;
+            if (info->dynamicTime && depth >= TM_MIN_SCALE_DEPTH &&
+                best_move != 0 && abs(score) < TB_SCORE_MIN) {
+                int best_node_pct = nodes_this_iteration > 0
+                    ? (int)(info->rootNodes[MOVE_FROM(best_move)][MOVE_TO(best_move)] * 100 /
+                            nodes_this_iteration)
+                    : 100;
+                soft = tm_scaled_soft(&info->params.tm, &tm_limits,
+                                      tm_stability, best_node_pct, score_drop);
             }
-            
-            bool enough_time_for_next = (estimated_next <= remaining);
-            bool still_early = (time_ms < (info->softTimeLimit * 60) / 100);
-            
-            if (!enough_time_for_next && !still_early) {
+
+            if (time_ms >= soft) {
                 if (!search_silent_mode) {
-                    printf("info string Stopping before depth %d (estimated: %ld ms, remaining: %ld ms)\n",
-                           depth + 1, estimated_next, remaining);
+                    printf("info string Soft time limit reached after depth %d (%ld of %ld ms)\n",
+                           depth, time_ms, soft);
                     fflush(stdout);
                 }
                 break;

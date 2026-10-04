@@ -336,6 +336,7 @@ static bool play_game(int game_num, NNUENetwork* nnue_network) {
                 search_info.nodeLimit = 0;
             }
             
+            search_info.dynamicTime = false;
             search_info.stopSearch = false;
             search_info.lastIterationTime = 0;
             search_info.nnue_acc = &nnue_accumulator;
