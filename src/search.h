@@ -5,6 +5,7 @@
 #include "move.h"
 #include "nnue.h"
 #include "syzygy.h"
+#include "timeman.h"
 #include <stdbool.h>
 #include <limits.h>
 
@@ -113,6 +114,9 @@ typedef struct {
     int lmr_stat_low1;         // below: reduction += 1 (default: -10365)
     int lmr_stat_high1;        // above: reduction -= 1 (default: 21295)
     int lmr_stat_high2;        // above: reduction -= 2 (default: 23868)
+
+    // Time management
+    TMParams tm;
 } SearchParams;
 
 // Initialize SearchParams with default values
@@ -127,6 +131,11 @@ typedef struct {
     long startTimeMs;
     long softTimeLimit;  // Zeit, nach der keine neue Tiefe begonnen wird
     long hardTimeLimit;  // Absolutes Zeitlimit (Abbruch der Suche)
+    // Scale softTimeLimit after each iteration from search feedback (best
+    // move stability, node share, score trend). Off for fixed-time searches.
+    bool dynamicTime;
+    // Nodes spent below each root move in the current iteration [from][to]
+    uint64_t rootNodes[64][64];
     bool stopSearch;
     uint64_t nodesSearched;
     Move bestMoveThisIteration;

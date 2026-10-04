@@ -302,6 +302,17 @@ void uci_loop() {
             printf("option name LMR_StatLow1 type spin default -2893 min -49000 max 0\n");
             printf("option name LMR_StatHigh1 type spin default 23973 min 0 max 49000\n");
             printf("option name LMR_StatHigh2 type spin default 14621 min 0 max 49000\n");
+            printf("option name Move Overhead type spin default 10 min 0 max 5000\n");
+            printf("option name TM_MovesDiv type spin default 20 min 5 max 60\n");
+            printf("option name TM_IncPct type spin default 75 min 0 max 100\n");
+            printf("option name TM_SoftPct type spin default 60 min 10 max 200\n");
+            printf("option name TM_HardPct type spin default 300 min 100 max 1000\n");
+            printf("option name TM_HardMaxPct type spin default 75 min 10 max 95\n");
+            printf("option name TM_StabBase type spin default 160 min 100 max 300\n");
+            printf("option name TM_StabStep type spin default 17 min 0 max 40\n");
+            printf("option name TM_NodeBase type spin default 150 min 100 max 300\n");
+            printf("option name TM_NodeScale type spin default 135 min 50 max 300\n");
+            printf("option name TM_ScoreMult type spin default 100 min 0 max 400\n");
             printf("option name SyzygyPath type string default <empty>\n");
             printf("option name SyzygyProbeLimit type spin default 7 min 0 max 7\n");
             printf("uciok\n");
@@ -525,6 +536,39 @@ void uci_loop() {
                 } else if (strcmp(option_name, "LMR_StatHigh2") == 0) {
                     search_params.lmr_stat_high2 = value;
                     printf("info string Set LMR_StatHigh2 to %d\n", value);
+                } else if (strcmp(option_name, "Move Overhead") == 0) {
+                    search_params.tm.move_overhead = value;
+                    printf("info string Set Move Overhead to %d\n", value);
+                } else if (strcmp(option_name, "TM_MovesDiv") == 0) {
+                    search_params.tm.moves_div = value;
+                    printf("info string Set TM_MovesDiv to %d\n", value);
+                } else if (strcmp(option_name, "TM_IncPct") == 0) {
+                    search_params.tm.inc_pct = value;
+                    printf("info string Set TM_IncPct to %d\n", value);
+                } else if (strcmp(option_name, "TM_SoftPct") == 0) {
+                    search_params.tm.soft_pct = value;
+                    printf("info string Set TM_SoftPct to %d\n", value);
+                } else if (strcmp(option_name, "TM_HardPct") == 0) {
+                    search_params.tm.hard_pct = value;
+                    printf("info string Set TM_HardPct to %d\n", value);
+                } else if (strcmp(option_name, "TM_HardMaxPct") == 0) {
+                    search_params.tm.hard_max_pct = value;
+                    printf("info string Set TM_HardMaxPct to %d\n", value);
+                } else if (strcmp(option_name, "TM_StabBase") == 0) {
+                    search_params.tm.stab_base = value;
+                    printf("info string Set TM_StabBase to %d\n", value);
+                } else if (strcmp(option_name, "TM_StabStep") == 0) {
+                    search_params.tm.stab_step = value;
+                    printf("info string Set TM_StabStep to %d\n", value);
+                } else if (strcmp(option_name, "TM_NodeBase") == 0) {
+                    search_params.tm.node_base = value;
+                    printf("info string Set TM_NodeBase to %d\n", value);
+                } else if (strcmp(option_name, "TM_NodeScale") == 0) {
+                    search_params.tm.node_scale = value;
+                    printf("info string Set TM_NodeScale to %d\n", value);
+                } else if (strcmp(option_name, "TM_ScoreMult") == 0) {
+                    search_params.tm.score_mult = value;
+                    printf("info string Set TM_ScoreMult to %d\n", value);
                 } else if (strcmp(option_name, "SyzygyPath") == 0) {
                     // value_start holds the raw path; strip trailing whitespace.
                     strncpy(syzygy_path, value_start, sizeof(syzygy_path) - 1);
@@ -694,69 +738,41 @@ void uci_loop() {
             long current_player_time = current_board.whiteToMove ? wtime : btime;
             long current_player_inc = current_board.whiteToMove ? winc : binc;
 
-            long soft_limit, hard_limit;
+            // Soft/hard limits; 0 = unlimited. Only clock games scale the
+            // soft limit from search feedback.
+            TimeLimits limits = { 0, 0 };
+            bool dynamic_time = false;
+            bool only_move = false;
 
             if (infinite || depth_limit > 0 || node_limit > 0) {
                 // Unendliche Suche, Tiefenbegrenzung oder Knotenbegrenzung
-                soft_limit = 0;
-                hard_limit = 0;
             } else if (movetime > 0) {
-                // Feste Zeit pro Zug
-                soft_limit = movetime;
-                hard_limit = movetime;
+                limits = tm_movetime(&search_params.tm, movetime);
             } else if (current_player_time > 0) {
-                // Normale Zeitkontrolle
-                // Berechne die erwartete Anzahl der verbleibenden Züge
-                int expected_moves = movestogo > 0 ? movestogo : 25;  // Annahme: 25 Züge bis Spielende (aggressiver)
-                
-                // Basis-Zeit pro Zug
-                long base_time = current_player_time / expected_moves;
-                
-                // Inkrement voll hinzufügen
-                long inc_bonus = current_player_inc;
-                
-                // Soft-Limit: Zeit, nach der keine neue Tiefe begonnen wird
-                soft_limit = base_time + inc_bonus;
-                
-                // Stelle sicher, dass wir nicht zu viel Zeit nutzen (max 25% der Gesamtzeit)
-                long max_time = current_player_time / 4;
-                if (soft_limit > max_time) {
-                    soft_limit = max_time;
-                }
-                
-                // Hard-Limit: Absolutes Maximum (2.5x Soft-Limit, aber max 40% der Zeit)
-                hard_limit = (soft_limit * 5) / 2;
-                long absolute_max = (current_player_time * 40) / 100;
-                if (hard_limit > absolute_max) {
-                    hard_limit = absolute_max;
-                }
-                
-                // Mindestzeit garantieren
-                if (soft_limit < 50) soft_limit = 50;
-                if (hard_limit < 100) hard_limit = 100;
-                
-                // Bei sehr wenig Zeit: aggressivere Einstellungen
-                if (current_player_time < 1000) {
-                    soft_limit = current_player_time / 8;
-                    hard_limit = current_player_time / 4;
-                    if (soft_limit < 10) soft_limit = 10;
-                    if (hard_limit < 20) hard_limit = 20;
-                }
+                limits = tm_allocate(&search_params.tm, current_player_time,
+                                     current_player_inc, movestogo);
+                dynamic_time = true;
+
+                // A forced move needs no thinking time.
+                MoveList legal_moves;
+                generateLegalMoves(&current_board, &legal_moves);
+                only_move = (legal_moves.count == 1);
             } else {
                 // Keine Zeitkontrolle angegeben - Standard
-                soft_limit = 2000;
-                hard_limit = 5000;
+                limits.soft = 2000;
+                limits.hard = 5000;
             }
 
             printf("info string Time management: soft=%ld ms, hard=%ld ms (time=%ld, inc=%ld, movestogo=%d)\n",
-                   soft_limit, hard_limit, current_player_time, current_player_inc, movestogo);
+                   limits.soft, limits.hard, current_player_time, current_player_inc, movestogo);
             fflush(stdout);
 
             printBoard(&current_board); // Print the current board state for debugging
 
             search_info.startTimeMs = search_current_time_ms();
-            search_info.softTimeLimit = soft_limit;
-            search_info.hardTimeLimit = hard_limit;
+            search_info.softTimeLimit = limits.soft;
+            search_info.hardTimeLimit = limits.hard;
+            search_info.dynamicTime = dynamic_time;
             search_info.stopSearch = false;
             search_info.lastIterationTime = 0;
             search_info.nnue_acc = &nnue_accumulator;  // Use the local NNUE accumulator
@@ -765,7 +781,7 @@ void uci_loop() {
             search_info.bestMoveThisIteration = 0;
             search_info.bestScoreThisIteration = 0;
             search_info.seldepth = 0;
-            search_info.depthLimit = depth_limit;  // Set depth limit from UCI
+            search_info.depthLimit = only_move ? 1 : depth_limit;  // Set depth limit from UCI
             search_info.nodeLimit = node_limit;     // Set node limit from UCI
             search_info.params = search_params;    // Copy search parameters
             clear_volatile_history(&search_info);  // Killers/prev_moves only; history persists
