@@ -5,11 +5,13 @@ set -e
 CHECKPOINTS_DIR="training/checkpoints"
 ARCHIVE_DIR="archive/gen3"
 BUILD_SLEEPMIND="build/sleepmind"
-OPENINGS_FILE="/home/paschty/Downloads/2moves_v2.pgn"
 WORKSPACE="/home/paschty/workspace/sleepmind2"
 VARIANTS_DIR="$WORKSPACE/variants"
 
-# Liest uci_options.txt einer Variante und gibt cutechess-Optionen aus
+# Runner (fastchess), Eröffnungsbuch (UHO) und Adjudication
+source "$(dirname "${BASH_SOURCE[0]}")/testing_common.sh"
+
+# Liest uci_options.txt einer Variante und gibt Engine-Optionen für den Runner aus
 # (gleiches Format wie variants.sh: Zeilen "name=value", '#' = Kommentar).
 load_uci_opts() {
     local dir="$1" opts="" line n v
@@ -33,9 +35,11 @@ CONCURRENCY="${CONCURRENCY:-30}"
 
 # SPRT-Parameter (per Env überschreibbar) - Standard: "ist die neue Version >0 Elo?"
 ELO0="${ELO0:-0}"       # H0: kein Gewinn
-ELO1="${ELO1:-5}"       # H1: +5 Elo
+ELO1="${ELO1:-3}"       # H1: +3 Elo
 ALPHA="${ALPHA:-0.05}"  # Falsch-Positiv-Rate
 BETA="${BETA:-0.05}"    # Falsch-Negativ-Rate
+# Elo-Modell des SPRT (nur fastchess): logistic | normalized | bayesian
+SPRT_MODEL="${SPRT_MODEL:-logistic}"
 
 MODE="${1:-tournament}"
 
@@ -53,10 +57,12 @@ SPRT-Modus: zwei Varianten 1-gegen-1, läuft bis PASS/FAIL.
 
 Env-Overrides: TC=$TC CONCURRENCY=$CONCURRENCY
                ELO0=$ELO0 ELO1=$ELO1 ALPHA=$ALPHA BETA=$BETA
+               SPRT_MODEL=$SPRT_MODEL RUNNER=$RUNNER ADJUDICATE=$ADJUDICATE
+               OPENINGS_FILE=$OPENINGS_FILE
 
 Beispiel:
   ./tournament.sh sprt newx
-  ELO1=3 TC=8+0.08 CONCURRENCY=24 ./tournament.sh sprt newx baseline
+  ELO1=5 TC=8+0.08 CONCURRENCY=24 ./tournament.sh sprt newx baseline
 EOF
 }
 
@@ -87,29 +93,38 @@ case "$MODE" in
     NEW_OPTS=$(load_uci_opts "$NEW_DIR")
     BASE_OPTS=$(load_uci_opts "$BASE_DIR")
 
-    PGNOUT="$VARIANTS_DIR/sprt_${NEW_NAME}_vs_${BASE_NAME}.pgn"
+    # TC im Dateinamen: die PGN wird über Läufe hinweg angehängt, so mischen
+    # sich wenigstens keine Zeitkontrollen in einer Datei.
+    PGNOUT="$VARIANTS_DIR/sprt_${NEW_NAME}_vs_${BASE_NAME}_tc${TC}.pgn"
 
-    echo "=== SPRT ==="
+    ensure_book
+    setup_match_args
+    pgnout_args "$PGNOUT"
+    sprt_args "$ELO0" "$ELO1" "$ALPHA" "$BETA"
+
+    echo "=== SPRT ($RUNNER) ==="
     echo "  NEW : $NEW_NAME${NEW_OPTS:+  (uci:$NEW_OPTS)}"
     echo "  BASE: $BASE_NAME${BASE_OPTS:+  (uci:$BASE_OPTS)}"
     echo "  TC=$TC  concurrency=$CONCURRENCY"
-    echo "  H0=$ELO0 Elo  H1=$ELO1 Elo  alpha=$ALPHA beta=$BETA"
+    echo "  H0=$ELO0 Elo  H1=$ELO1 Elo  alpha=$ALPHA beta=$BETA  model=$SPRT_MODEL"
+    echo "  Buch: $OPENINGS_FILE"
     echo ""
 
     # -rounds hoch ansetzen: SPRT stoppt selbst, sobald eine Schranke gerissen wird.
     # -games 2 -repeat  => jede Eröffnung mit beiden Farben gespielt (fair).
     # $NEW_OPTS/$BASE_OPTS bewusst unquoted: sollen in einzelne Argumente splitten.
-    cutechess-cli \
+    "$RUNNER_BIN" \
         -engine name="$NEW_NAME" cmd="$NEW_DIR/sleepmind" dir="$NEW_DIR" $NEW_OPTS \
         -engine name="$BASE_NAME" cmd="$BASE_DIR/sleepmind" dir="$BASE_DIR" $BASE_OPTS \
         -each proto=uci tc="$TC" \
-        -sprt elo0="$ELO0" elo1="$ELO1" alpha="$ALPHA" beta="$BETA" \
+        "${SPRT_ARGS[@]}" \
         -games 2 -rounds 50000 -repeat \
         -concurrency "$CONCURRENCY" \
-        -openings file="$OPENINGS_FILE" format=pgn order=random \
-        -pgnout "$PGNOUT" \
+        "${OPENING_ARGS[@]}" \
+        "${ADJUDICATION_ARGS[@]}" \
+        "${PGNOUT_ARGS[@]}" \
         -ratinginterval 10 \
-        -recover
+        "${RUNNER_ARGS[@]}"
 
     echo ""
     echo "SPRT beendet. PGN: $PGNOUT"
@@ -153,15 +168,20 @@ case "$MODE" in
     echo "Starte Turnier..."
     echo ""
 
-    cutechess-cli \
+    ensure_book
+    setup_match_args
+    pgnout_args "$ARCHIVE_DIR/tournament_results.pgn"
+
+    # 3 Eröffnungen je Paarung, jede mit beiden Farben (= 6 Partien)
+    "$RUNNER_BIN" \
         $ENGINE_ARGS \
         -each proto=uci tc="$TC" \
-        -games 6 \
+        -games 2 -rounds 3 -repeat \
         -concurrency "$CONCURRENCY" \
-        -openings file="$OPENINGS_FILE" format=pgn \
-        -pgnout "$ARCHIVE_DIR/tournament_results.pgn" \
-        -recover \
-        -repeat
+        "${OPENING_ARGS[@]}" \
+        "${ADJUDICATION_ARGS[@]}" \
+        "${PGNOUT_ARGS[@]}" \
+        "${RUNNER_ARGS[@]}"
 
     echo ""
     echo "Turnier abgeschlossen! Ergebnisse in $ARCHIVE_DIR/tournament_results.pgn"
