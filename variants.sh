@@ -6,8 +6,10 @@ WORKSPACE="/home/paschty/workspace/sleepmind2"
 VARIANTS_DIR="$WORKSPACE/variants"
 BUILD_SLEEPMIND="$WORKSPACE/build/sleepmind"
 NNUE_FILE="$WORKSPACE/quantised.bin"
-OPENINGS_FILE="/home/paschty/Downloads/2moves_v2.pgn"
 UCI_OPTIONS_TOOL="$WORKSPACE/uci_options.py"
+
+# Runner (fastchess), Eröffnungsbuch (UHO) und Adjudication
+source "$(dirname "${BASH_SOURCE[0]}")/testing_common.sh"
 
 # Erstelle variants Ordner falls nicht vorhanden
 mkdir -p "$VARIANTS_DIR"
@@ -144,18 +146,24 @@ run_tournament() {
     echo ""
     
     local result_file="$VARIANTS_DIR/tournament_$(date +%Y%m%d_%H%M%S).pgn"
-    
+
+    ensure_book
+    setup_match_args
+    pgnout_args "$result_file"
+
+    # Jede Eröffnung wird mit beiden Farben gespielt (Partiepaare)
+    local rounds=$(( (games + 1) / 2 ))
+
     # Starte das Turnier
-    cutechess-cli \
+    "$RUNNER_BIN" \
         $ENGINE_ARGS \
         -each proto=uci tc=10+0.2 \
-        -games "$games" \
-        -rounds 1 \
+        -games 2 -rounds "$rounds" -repeat \
         -concurrency 32 \
-        -openings file="$OPENINGS_FILE" format=pgn order=random \
-        -pgnout "$result_file" \
-        -recover \
-        -repeat
+        "${OPENING_ARGS[@]}" \
+        "${ADJUDICATION_ARGS[@]}" \
+        "${PGNOUT_ARGS[@]}" \
+        "${RUNNER_ARGS[@]}"
     
     echo ""
     echo "Turnier abgeschlossen! Ergebnisse in: $result_file"

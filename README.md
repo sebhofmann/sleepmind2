@@ -51,9 +51,12 @@ Every issue is implemented and evaluated separately:
      | tee <issue>_sprt.log
    ```
 
-   The test uses `/home/paschty/Downloads/2moves_v2.pgn`, paired colors, and
-   `-repeat`. Unless an issue explicitly says otherwise, use `H0=0`, `H1=+5`,
-   and `alpha=beta=0.05`. Always start the SPRT with output logging as shown
+   The test runs on fastchess with the `UHO_Lichess_4852_v1` opening book
+   (downloaded to `books/` on first use), paired colors, and a pentanomial
+   SPRT. Unless an issue explicitly says otherwise, use `H0=0`, `H1=+3`
+   (logistic Elo), and `alpha=beta=0.05`. Draw and resign adjudication are on
+   by default; see `testing_common.sh` for the overrides (`RUNNER=cutechess`,
+   `OPENINGS_FILE`, `ADJUDICATE=0`, `SPRT_MODEL`). Always start the SPRT with output logging as shown
    above and keep the complete log file.
 
 7. Push the branch and create a pull request. Record the final W/L/D, Elo
