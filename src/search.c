@@ -554,7 +554,7 @@ bool see_ge_debug(const Board* board, Move move, int threshold) {
 // =============================================================================
 #define CMH_MAX 16384
 #define CAPTURE_HISTORY_MAX 24576
-#define CAPTURE_HISTORY_ORDER_LIMIT 2048
+#define CAPTURE_HISTORY_ORDER_DIV 8
 static int16_t cmh_table[12][64][12][64]; // 1 ply back (countermove history)
 static int16_t fmh_table[12][64][12][64]; // 2 plies back (follow-up history)
 
@@ -615,10 +615,10 @@ static inline int capture_history_score(const Board* board,
     int piece = capture_piece_index(board, m);
     int captured = captured_type_index(board, m);
     if (piece < 0 || captured < 0) return 0;
-    int score = info->capture_history[piece][MOVE_TO(m)][captured];
-    if (score > CAPTURE_HISTORY_ORDER_LIMIT) return CAPTURE_HISTORY_ORDER_LIMIT;
-    if (score < -CAPTURE_HISTORY_ORDER_LIMIT) return -CAPTURE_HISTORY_ORDER_LIMIT;
-    return score;
+    // Scaled, not clamped: a single deep bonus exceeds any useful clamp, which
+    // would turn the table into a "last result" flag instead of an average.
+    return info->capture_history[piece][MOVE_TO(m)][captured] /
+        CAPTURE_HISTORY_ORDER_DIV;
 }
 
 static void update_capture_history(SearchInfo* info, const Board* board,
@@ -724,15 +724,16 @@ static int mp_capture_score(MovePicker* mp, Move m, bool* is_good, int* see_out)
         int see_value = see(board, m);
         *see_out = see_value;
 
-        // SEE determines only the good/bad partition.  Within a partition,
-        // prefer valuable victims and captures which have caused cutoffs in
-        // similar positions.  Multiplying exact SEE by 100 here used to drown
-        // out the bounded history term and effectively disabled the learning.
+        // SEE decides the good/bad partition. Within a partition, prefer
+        // valuable victims and captures which have caused cutoffs in similar
+        // positions; the exact SEE (which also carries promotion gains and the
+        // attacker's value) stays in as a tiebreaker. Multiplying SEE by 100
+        // here used to drown out the history term entirely.
         bool isBlack = !board->whiteToMove;
         PieceTypeToken victim = MOVE_IS_EN_PASSANT(m)
-                              ? PAWN
+                              ? PAWN_T
                               : getPieceTypeAtSquare(board, MOVE_TO(m), &isBlack);
-        int victim_score = get_piece_value(victim) * 10;
+        int victim_score = get_piece_value(victim) * 10 + see_value;
         int capture_history = mp->mode == MP_EVASION
                             ? 0 : capture_history_score(board, mp->info, m);
 
@@ -1739,7 +1740,7 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
     Move quiets_tried[MAX_MOVES];
     int quiets_tried_count = 0;
 
-    // Legal captures actually searched before a capture cutoff receive maluses.
+    // Legal captures actually searched before a cutoff receive maluses.
     Move captures_tried[MAX_MOVES];
     int captures_tried_count = 0;
 
@@ -2059,13 +2060,15 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
                 }
             } else {
                 update_capture_history(info, board, m, history_bonus(info, depth));
+            }
 
-                for (int j = 0; j < captures_tried_count; j++) {
-                    Move prev = captures_tried[j];
-                    if (prev == m) continue;
-                    update_capture_history(info, board, prev,
-                                           -history_malus(info, depth));
-                }
+            // Captures searched before the cutoff failed to produce it,
+            // whether a capture or a quiet move cut in the end.
+            for (int j = 0; j < captures_tried_count; j++) {
+                Move prev = captures_tried[j];
+                if (prev == m) continue;
+                update_capture_history(info, board, prev,
+                                       -history_malus(info, depth));
             }
             break;
         }
