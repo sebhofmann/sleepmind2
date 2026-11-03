@@ -14,6 +14,7 @@ typedef struct {
     int oldHalfMoveClock;
     uint64_t oldZobristKey;
     uint64_t oldPawnKey;
+    uint64_t oldNonPawnKey[2];
 } MoveUndoInfo;
 
 // --- Function Prototypes ---

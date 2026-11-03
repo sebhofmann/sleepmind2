@@ -4,14 +4,25 @@
 #include <assert.h>
 #include <stdio.h>
 
+static void check_non_pawn_keys(const Board* board) {
+    assert(board->nonPawnKey[WHITE] == calculate_non_pawn_key(board, WHITE));
+    assert(board->nonPawnKey[BLACK] == calculate_non_pawn_key(board, BLACK));
+}
+
 static void check_move(Board* board, Move move) {
     uint64_t old = board->pawnKey;
+    uint64_t old_white = board->nonPawnKey[WHITE];
+    uint64_t old_black = board->nonPawnKey[BLACK];
     MoveUndoInfo undo;
     applyMove(board, move, &undo, NULL, NULL);
     assert(board->pawnKey == calculate_pawn_key(board));
+    check_non_pawn_keys(board);
     undoMove(board, move, &undo, NULL, NULL);
     assert(board->pawnKey == old);
     assert(board->pawnKey == calculate_pawn_key(board));
+    assert(board->nonPawnKey[WHITE] == old_white);
+    assert(board->nonPawnKey[BLACK] == old_black);
+    check_non_pawn_keys(board);
 }
 
 int main(void) {
@@ -39,6 +50,18 @@ int main(void) {
 
     Board castle = parseFEN("4k3/8/8/8/8/8/8/4K2R w K - 0 1");
     check_move(&castle, CREATE_MOVE(SQ_E1, SQ_G1, 0, 0, 0, 0, 1));
+
+    Board black_castle = parseFEN("r3k3/8/8/8/8/8/8/4K3 b q - 0 1");
+    check_move(&black_castle, CREATE_MOVE(SQ_E8, SQ_C8, 0, 0, 0, 0, 1));
+
+    Board black_capture_promotion = parseFEN("4k3/8/8/8/8/8/p7/1R2K3 b - - 0 1");
+    check_move(&black_capture_promotion,
+               CREATE_MOVE(SQ_A2, SQ_B1, PROMOTION_N, 1, 0, 0, 0));
+
+    Board piece_takes_piece = parseFEN("4k3/8/5n2/8/3B4/8/8/4K3 w - - 0 1");
+    check_move(&piece_takes_piece, CREATE_MOVE(SQ_D4, SQ_F6, 0, 1, 0, 0, 0));
+    assert(piece_takes_piece.nonPawnKey[WHITE] !=
+           parseFEN("4k3/8/5n2/8/8/8/8/4K3 w - - 0 1").nonPawnKey[WHITE]);
 
     uint64_t pawn_key = start.pawnKey;
     start.whiteToMove = !start.whiteToMove;

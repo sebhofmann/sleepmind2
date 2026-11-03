@@ -103,6 +103,7 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
     // Accumulate zobrist changes locally
     uint64_t zobrist = board->zobristKey;
     uint64_t pawnKey = board->pawnKey;
+    uint64_t nonPawnKey[2] = { board->nonPawnKey[0], board->nonPawnKey[1] };
     
     // Store undo info
     undoInfo->oldEnPassantSquare = board->enPassantSquare;
@@ -110,6 +111,8 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
     undoInfo->oldHalfMoveClock = board->halfMoveClock;
     undoInfo->oldZobristKey = board->zobristKey;
     undoInfo->oldPawnKey = board->pawnKey;
+    undoInfo->oldNonPawnKey[WHITE] = board->nonPawnKey[WHITE];
+    undoInfo->oldNonPawnKey[BLACK] = board->nonPawnKey[BLACK];
     undoInfo->capturedPieceType = NO_PIECE_TYPE;
     
     // Determine captured piece (O(1) lookup)
@@ -158,6 +161,8 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
     zobrist ^= ZOBRIST_PIECE_KEY(movingPieceType, us, from);
     if (movingType == PAWN)
         pawnKey ^= ZOBRIST_PIECE_KEY(PAWN_T, us, from);
+    else
+        nonPawnKey[us] ^= ZOBRIST_PIECE_KEY(movingPieceType, us, from);
 
     // Handle captures
     if (MOVE_IS_CAPTURE(move)) {
@@ -176,6 +181,8 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
             zobrist ^= ZOBRIST_PIECE_KEY(capturedPieceType, them, to);
             if (capturedType == PAWN)
                 pawnKey ^= ZOBRIST_PIECE_KEY(PAWN_T, them, to);
+            else
+                nonPawnKey[them] ^= ZOBRIST_PIECE_KEY(capturedPieceType, them, to);
         }
     }
 
@@ -195,11 +202,14 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
         board->piece[to] = promoPiece;
         
         zobrist ^= ZOBRIST_PIECE_KEY((PieceTypeToken)(promoType + 1), us, to);
+        nonPawnKey[us] ^= ZOBRIST_PIECE_KEY((PieceTypeToken)(promoType + 1), us, to);
     } else {
         board->piece[to] = movingPiece;
         zobrist ^= ZOBRIST_PIECE_KEY(movingPieceType, us, to);
         if (movingType == PAWN)
             pawnKey ^= ZOBRIST_PIECE_KEY(PAWN_T, us, to);
+        else
+            nonPawnKey[us] ^= ZOBRIST_PIECE_KEY(movingPieceType, us, to);
     }
 
     // Update castling rights
@@ -246,6 +256,7 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
         board->piece[rookTo] = (us == WHITE) ? W_ROOK : B_ROOK;
         
         zobrist ^= ZOBRIST_PIECE_KEY(ROOK_T, us, rookFrom) ^ ZOBRIST_PIECE_KEY(ROOK_T, us, rookTo);
+        nonPawnKey[us] ^= ZOBRIST_PIECE_KEY(ROOK_T, us, rookFrom) ^ ZOBRIST_PIECE_KEY(ROOK_T, us, rookTo);
         
         if (nnue_acc != NULL && nnue_net != NULL && !nnue_lazy) {
             nnue_refresh_accumulator(board, nnue_acc, nnue_net);
@@ -287,6 +298,8 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
     // Single write of zobrist key
     board->zobristKey = zobrist;
     board->pawnKey = pawnKey;
+    board->nonPawnKey[WHITE] = nonPawnKey[WHITE];
+    board->nonPawnKey[BLACK] = nonPawnKey[BLACK];
     board->history[board->historyIndex++] = zobrist;
 }
 
@@ -405,6 +418,8 @@ void undoMove(Board* board, Move move, const MoveUndoInfo* undoInfo, NNUEAccumul
     // Restore Zobrist key
     board->zobristKey = undoInfo->oldZobristKey;
     board->pawnKey = undoInfo->oldPawnKey;
+    board->nonPawnKey[WHITE] = undoInfo->oldNonPawnKey[WHITE];
+    board->nonPawnKey[BLACK] = undoInfo->oldNonPawnKey[BLACK];
 }
 
 // =============================================================================
@@ -481,6 +496,8 @@ void mirrorBoard(Board* board) {
         board->zobristKey ^= zobrist_side_to_move_key;
     }
     board->pawnKey = calculate_pawn_key(board);
+    board->nonPawnKey[WHITE] = calculate_non_pawn_key(board, WHITE);
+    board->nonPawnKey[BLACK] = calculate_non_pawn_key(board, BLACK);
     
     // Clear history (mirrored position has new history)
     board->historyIndex = 0;
