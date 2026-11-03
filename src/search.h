@@ -90,6 +90,7 @@ typedef struct {
     int pawn_corr_bonus_scale;
     int pawn_corr_eval_scale;
     int pawn_corr_min_depth;
+    int nonpawn_corr_eval_scale;  // 0 disables the non-pawn correction
 
     // Delta pruning margin for quiescence
     int delta_margin;          // (default: 200)
@@ -148,6 +149,7 @@ typedef struct {
 
     // Persistent within a game, indexed by side-to-move and pawn hash.
     int16_t pawn_correction_history[2][PAWN_CORRECTION_SIZE];
+    int16_t nonpawn_correction_history[2][2][PAWN_CORRECTION_SIZE]; // [stm][piece color][key]
 
     // Piece index (0-11) that made prev_moves[ply], recorded at make time
     // (the piece may be captured later, so a board lookup would be wrong)

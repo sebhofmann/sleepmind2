@@ -139,6 +139,8 @@ Board parseFEN(const char* fen) {
     // 7. Zobrist key
     board.zobristKey = calculate_zobrist_key(&board);
     board.pawnKey = calculate_pawn_key(&board);
+    board.nonPawnKey[WHITE] = calculate_non_pawn_key(&board, WHITE);
+    board.nonPawnKey[BLACK] = calculate_non_pawn_key(&board, BLACK);
 
     return board;
 }

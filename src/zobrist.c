@@ -91,3 +91,14 @@ uint64_t calculate_pawn_key(const Board* board) {
     }
     return key;
 }
+
+uint64_t calculate_non_pawn_key(const Board* board, int color) {
+    uint64_t key = 0ULL;
+    for (int sq = 0; sq < 64; sq++) {
+        uint8_t p = board->piece[sq];
+        if (p != NO_PIECE && PIECE_COLOR_OF(p) == color && PIECE_TYPE_OF(p) != PAWN) {
+            key ^= ZOBRIST_PIECE_KEY((PieceTypeToken)(PIECE_TYPE_OF(p) + 1), color, sq);
+        }
+    }
+    return key;
+}

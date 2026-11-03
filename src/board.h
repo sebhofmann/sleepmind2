@@ -82,6 +82,7 @@ typedef struct {
     int enPassantSquare;
     uint64_t zobristKey;
     uint64_t pawnKey; // Pawn-only Zobrist key for correction history
+    uint64_t nonPawnKey[2]; // Per-color non-pawn Zobrist keys (kings included)
     uint64_t history[1000]; 
     int historyIndex; 
 } Board;

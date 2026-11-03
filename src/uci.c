@@ -289,6 +289,7 @@ void uci_loop() {
             printf("option name PawnCorr_BonusScale type spin default 128 min 16 max 256\n");
             printf("option name PawnCorr_EvalScale type spin default 128 min 16 max 256\n");
             printf("option name PawnCorr_MinDepth type spin default 2 min 1 max 8\n");
+            printf("option name NonPawnCorr_EvalScale type spin default 128 min 0 max 256\n");
             printf("option name Delta_Margin type spin default 200 min 50 max 500\n");
             printf("option name Aspiration_Window type spin default 114 min 10 max 200\n");
             printf("option name Hist_BonusMult type spin default 441 min 50 max 800\n");
@@ -489,6 +490,9 @@ void uci_loop() {
                 } else if (strcmp(option_name, "PawnCorr_MinDepth") == 0) {
                     search_params.pawn_corr_min_depth = value;
                     printf("info string Set PawnCorr_MinDepth to %d\n", value);
+                } else if (strcmp(option_name, "NonPawnCorr_EvalScale") == 0) {
+                    search_params.nonpawn_corr_eval_scale = value;
+                    printf("info string Set NonPawnCorr_EvalScale to %d\n", value);
                 } else if (strcmp(option_name, "Aspiration_Window") == 0) {
                     search_params.aspiration_window = value;
                     printf("info string Set Aspiration_Window to %d\n", value);

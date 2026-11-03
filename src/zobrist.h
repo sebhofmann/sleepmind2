@@ -24,6 +24,7 @@ void init_zobrist_keys(void);
 
 uint64_t calculate_zobrist_key(const Board* board);
 uint64_t calculate_pawn_key(const Board* board);
+uint64_t calculate_non_pawn_key(const Board* board, int color);
 
 
 #endif
