@@ -40,7 +40,7 @@ SRC_DIR = src
 BUILD_DIR = build
 
 # Common source files (shared between engine and training)
-COMMON_SRCS = board_io.c move_generator.c move.c bitboard_utils.c search.c tt.c evaluation.c board_modifiers.c zobrist.c nnue.c syzygy.c tbprobe.c
+COMMON_SRCS = board_io.c move_generator.c move.c bitboard_utils.c search.c timeman.c tt.c evaluation.c board_modifiers.c zobrist.c nnue.c syzygy.c tbprobe.c
 
 # Engine source files
 ENGINE_SRCS = main.c uci.c $(COMMON_SRCS)
@@ -71,7 +71,10 @@ test-pawn-hash: $(BUILD_DIR) $(BUILD_DIR)/pawn_hash_test
 test-pawn-correction: $(BUILD_DIR) $(BUILD_DIR)/pawn_correction_test
 	$(BUILD_DIR)/pawn_correction_test
 
-test: test-nnue test-pawn-hash test-pawn-correction
+test-timeman: $(BUILD_DIR) $(BUILD_DIR)/timeman_test
+	$(BUILD_DIR)/timeman_test
+
+test: test-nnue test-pawn-hash test-pawn-correction test-timeman
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -101,6 +104,9 @@ $(BUILD_DIR)/pawn_hash_test: tests/pawn_hash_test.c $(addprefix $(BUILD_DIR)/, b
 $(BUILD_DIR)/pawn_correction_test: tests/pawn_correction_test.c
 	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $<
 
+$(BUILD_DIR)/timeman_test: tests/timeman_test.c $(SRC_DIR)/timeman.c
+	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $^
+
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) -MMD -MP -I$(SRC_DIR) -c $< -o $@
 
@@ -116,4 +122,4 @@ debug: clean all
 debug_eval: CFLAGS = $(DEBUG_EVAL_FLAGS)
 debug_eval: clean all
 
-.PHONY: all training both test test-nnue test-pawn-hash test-pawn-correction clean debug debug_eval
+.PHONY: all training both test test-nnue test-pawn-hash test-pawn-correction test-timeman clean debug debug_eval
