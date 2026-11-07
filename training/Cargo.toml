@@ -5,10 +5,9 @@ edition = "2021"
 
 
 [dependencies]
-bullet = { git = "https://github.com/jw1912/bullet", package = "bullet_lib", features = ["hip"], default-features = false }
+bullet = { git = "https://github.com/jw1912/bullet", package = "bullet_lib", features = ["cuda"] }
 
 [[bin]]
 name = "training"
 path = "training.rs"
-
 
