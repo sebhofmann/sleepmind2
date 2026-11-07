@@ -6,7 +6,8 @@ edition = "2021"
 
 [dependencies]
 bullet = { git = "https://github.com/jw1912/bullet", package = "bullet_lib", features = ["cuda"] }
-# DataReader trait for the mixed bulletformat/viriformat loader (same git source as bullet_lib)
+# DataReader trait for the mixed bulletformat/viriformat loader (same git source as bullet_lib);
+# also used directly by training_deep.rs
 bullet-trainer = { git = "https://github.com/jw1912/bullet", package = "bullet-trainer" }
 rand = "0.9"
 
@@ -14,3 +15,6 @@ rand = "0.9"
 name = "training"
 path = "training.rs"
 
+[[bin]]
+name = "training_deep"
+path = "training_deep.rs"

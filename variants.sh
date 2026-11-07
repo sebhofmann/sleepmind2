@@ -5,7 +5,8 @@ set -e
 WORKSPACE="/home/paschty/workspace/sleepmind2"
 VARIANTS_DIR="$WORKSPACE/variants"
 BUILD_SLEEPMIND="$WORKSPACE/build/sleepmind"
-NNUE_FILE="$WORKSPACE/quantised.bin"
+# Netz, das in die Variante kopiert wird (für NNUE_ARCH=deep: NNUE_FILE=$WORKSPACE/quantised_deep.bin)
+NNUE_FILE="${NNUE_FILE:-$WORKSPACE/quantised.bin}"
 UCI_OPTIONS_TOOL="$WORKSPACE/uci_options.py"
 
 # Runner (fastchess), Eröffnungsbuch (UHO) und Adjudication

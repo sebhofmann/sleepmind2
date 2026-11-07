@@ -17,6 +17,20 @@
 
 // Input bucket map based on king position (32 elements for half-board with mirroring)
 // Index = rank * 8 + file (files 4-7 are mirrored from files 0-3)
+// Must match BUCKET_LAYOUT in the training script of the selected architecture.
+#if NNUE_ARCH == NNUE_ARCH_DEEP
+// 16 buckets (training/training_deep.rs, layout from bullet's advanced example)
+const int NNUE_INPUT_BUCKET_MAP[64] = {
+     0,  1,  2,  3,  3,  2,  1,  0,  // Rank 1
+     4,  5,  6,  7,  7,  6,  5,  4,  // Rank 2
+     8,  8,  9,  9,  9,  9,  8,  8,  // Rank 3
+    10, 10, 11, 11, 11, 11, 10, 10,  // Rank 4
+    12, 12, 13, 13, 13, 13, 12, 12,  // Rank 5
+    12, 12, 13, 13, 13, 13, 12, 12,  // Rank 6
+    14, 14, 15, 15, 15, 15, 14, 14,  // Rank 7
+    14, 14, 15, 15, 15, 15, 14, 14,  // Rank 8
+};
+#else
 // 10 buckets: fine-grained bucketing based on king position from bullet
 // Expanded from [(idx / 8) * 4 + [0, 1, 2, 3, 3, 2, 1, 0][idx % 8]]
 const int NNUE_INPUT_BUCKET_MAP[64] = {
@@ -29,6 +43,7 @@ const int NNUE_INPUT_BUCKET_MAP[64] = {
     9, 9, 9, 9, 9, 9, 9, 9,  // Rank 7
     9, 9, 9, 9, 9, 9, 9, 9,  // Rank 8
 };
+#endif
 
 // Bumped whenever weights are (re)loaded so the Finny table can be invalidated
 static uint32_t net_generation = 1;
@@ -103,11 +118,46 @@ int nnue_get_output_bucket(const Board* board) {
     return bucket_index;
 }
 
+// The weight arrays in the order bullet writes them (see SavedFormat in the training script)
+typedef struct {
+    void* ptr;
+    size_t size;
+} NNUESection;
+
+// net may be NULL to only query the sizes (sizeof does not evaluate its operand)
+#define NNUE_SECTION(field) (NNUESection){ net ? (void*)net->field : NULL, sizeof(net->field) }
+
+static int nnue_sections(NNUENetwork* net, NNUESection* out) {
+    int n = 0;
+    out[n++] = NNUE_SECTION(ft_weights);
+    out[n++] = NNUE_SECTION(ft_biases);
+#if NNUE_ARCH == NNUE_ARCH_DEEP
+    out[n++] = NNUE_SECTION(l1_weights);
+    out[n++] = NNUE_SECTION(l1_biases);
+    out[n++] = NNUE_SECTION(l2_weights);
+    out[n++] = NNUE_SECTION(l2_biases);
+    out[n++] = NNUE_SECTION(l3_weights);
+    out[n++] = NNUE_SECTION(l3_biases);
+#else
+    out[n++] = NNUE_SECTION(output_weights);
+    out[n++] = NNUE_SECTION(output_biases);
+#endif
+    return n;
+}
+
+#define NNUE_MAX_SECTIONS 8
+
 static size_t nnue_parameter_size(void) {
-    return (size_t)NNUE_INPUT_BUCKETS * NNUE_INPUT_SIZE * NNUE_HIDDEN_SIZE * sizeof(int16_t) +
-           (size_t)NNUE_HIDDEN_SIZE * sizeof(int16_t) +
-           (size_t)NNUE_OUTPUT_BUCKETS * 2 * NNUE_HIDDEN_SIZE * sizeof(int16_t) +
-           (size_t)NNUE_OUTPUT_BUCKETS * sizeof(int16_t);
+    NNUESection sections[NNUE_MAX_SECTIONS];
+    int n = nnue_sections(NULL, sections);
+    size_t size = 0;
+    for (int i = 0; i < n; i++) size += sections[i].size;
+    return size;
+}
+
+// bullet pads the quantised file to a multiple of 64 bytes
+static size_t nnue_file_size(void) {
+    return (nnue_parameter_size() + 63) / 64 * 64;
 }
 
 uint64_t nnue_hash(const unsigned char* data, size_t size) {
@@ -119,8 +169,17 @@ uint64_t nnue_hash(const unsigned char* data, size_t size) {
     return hash;
 }
 
+#if NNUE_ARCH == NNUE_ARCH_DEEP
+// Derived (non-file) data, refreshed after every load
+static void nnue_deep_prepare(NNUENetwork* net) {
+    const int8_t* src = &net->l1_weights[0][0][0];
+    int16_t* dst = &net->l1_weights_i16[0][0][0];
+    for (size_t i = 0; i < sizeof(net->l1_weights); i++) dst[i] = src[i];
+}
+#endif
+
 bool nnue_load_memory(const unsigned char* data, size_t size, NNUENetwork* net) {
-    const size_t expected_size = nnue_parameter_size() + 48;
+    const size_t expected_size = nnue_file_size();
     if (net) net->loaded = false;
     if (!data || !net) {
         fprintf(stderr, "info string NNUE memory buffer or network is NULL\n");
@@ -133,24 +192,28 @@ bool nnue_load_memory(const unsigned char* data, size_t size, NNUENetwork* net) 
     }
 
     const unsigned char* cursor = data;
-    const size_t ft_weights_size = sizeof(net->ft_weights);
-    const size_t ft_biases_size = sizeof(net->ft_biases);
-    const size_t output_weights_size = sizeof(net->output_weights);
-    const size_t output_biases_size = sizeof(net->output_biases);
-
-    memcpy(net->ft_weights, cursor, ft_weights_size);
-    cursor += ft_weights_size;
-    memcpy(net->ft_biases, cursor, ft_biases_size);
-    cursor += ft_biases_size;
-    memcpy(net->output_weights, cursor, output_weights_size);
-    cursor += output_weights_size;
-    memcpy(net->output_biases, cursor, output_biases_size);
+    NNUESection sections[NNUE_MAX_SECTIONS];
+    int n = nnue_sections(net, sections);
+    for (int i = 0; i < n; i++) {
+        memcpy(sections[i].ptr, cursor, sections[i].size);
+        cursor += sections[i].size;
+    }
+#if NNUE_ARCH == NNUE_ARCH_DEEP
+    nnue_deep_prepare(net);
+#endif
 
     net->loaded = true;
     net_generation++;
     printf("info string NNUE loaded (size %zu, fnv1a64 %016" PRIx64 ")\n",
            size, nnue_hash(data, size));
     return true;
+}
+
+NNUENetwork* nnue_alloc_network(void) {
+    size_t size = (sizeof(NNUENetwork) + 63) / 64 * 64;  // aligned_alloc needs a multiple of the alignment
+    NNUENetwork* net = aligned_alloc(64, size);
+    if (net) memset(net, 0, size);
+    return net;
 }
 
 // Load NNUE weights from file into network
@@ -186,7 +249,7 @@ bool nnue_load(const char* filename, NNUENetwork* net) {
     }
 
     size_t size = (size_t)file_size;
-    const size_t expected_size = nnue_parameter_size() + 48;
+    const size_t expected_size = nnue_file_size();
     if (size != expected_size) {
         fprintf(stderr, "info string NNUE file size mismatch! Got %zu, expected %zu\n",
                 size, expected_size);
@@ -221,16 +284,15 @@ bool nnue_save(const char* filename, const NNUENetwork* net) {
     FILE* file = fopen(filename, "wb");
     if (!file) return false;
     
-    for (int bucket = 0; bucket < NNUE_INPUT_BUCKETS; bucket++) {
-        for (int i = 0; i < NNUE_INPUT_SIZE; i++) {
-            fwrite(net->ft_weights[bucket][i], sizeof(int16_t), NNUE_HIDDEN_SIZE, file);
-        }
+    NNUESection sections[NNUE_MAX_SECTIONS];
+    int n = nnue_sections((NNUENetwork*)net, sections);
+    size_t written = 0;
+    for (int i = 0; i < n; i++) {
+        fwrite(sections[i].ptr, 1, sections[i].size, file);
+        written += sections[i].size;
     }
-    fwrite(net->ft_biases, sizeof(int16_t), NNUE_HIDDEN_SIZE, file);
-    for (int bucket = 0; bucket < NNUE_OUTPUT_BUCKETS; bucket++) {
-        fwrite(net->output_weights[bucket], sizeof(int16_t), 2 * NNUE_HIDDEN_SIZE, file);
-    }
-    fwrite(net->output_biases, sizeof(int16_t), NNUE_OUTPUT_BUCKETS, file);
+    static const char pad[] = "bullet";
+    for (size_t i = written; i < nnue_file_size(); i++) fputc(pad[(i - written) % 6], file);
     
     fclose(file);
     return true;
@@ -479,6 +541,111 @@ static inline int32_t screlu_dot(const int16_t* acc, const int16_t* weights, int
 #endif
 }
 
+#if NNUE_ARCH == NNUE_ARCH_DEEP
+// ---------------------------------------------------------------------------------------------
+// Deep architecture forward pass. Integer scales (see training/training_deep.rs):
+//   FT accumulator          x 255                  -> clamp [0, 255]
+//   pairwise (a*b + 4) >> 3 x 255^2/8 (~8128)      -> i16 in [0, 8128] (13 bit, rounded)
+//   L1 out                  x 2^20  (i8 weights x 128/(255/256)^2 -> 255^2/8 * that = 2^20,
+//                                    biases stored x 2^14, shifted up by 6)
+//   L2 in                   x Q^2 = 2^12: [clamp(z, 0, 1), min(z^2, 1)], rounded
+//   L2 out                  x Q^3, crelu
+//   L3 out                  x Q^4  -> eval = out * NNUE_SCALE / Q^4
+// ---------------------------------------------------------------------------------------------
+#define NNUE_FT_HALF     (NNUE_HIDDEN_SIZE / 2)
+#define NNUE_PAIR_SHIFT  3
+#define NNUE_L1_SHIFT    20
+#define NNUE_L1_ONE      (1 << NNUE_L1_SHIFT)
+#define NNUE_Q3          (NNUE_Q * NNUE_Q * NNUE_Q)
+#define NNUE_Q4          ((int64_t)NNUE_Q3 * NNUE_Q)
+
+// Pairwise CReLU of one perspective: out[i] = (clamp(acc[i]) * clamp(acc[i + HALF]) + 4) >> 3
+static inline void deep_ft_activate(const int16_t* acc, int16_t* out) {
+#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i qa = _mm256_set1_epi16(NNUE_QA);
+    const __m256i half = _mm256_set1_epi16(1 << (NNUE_PAIR_SHIFT - 1));
+    for (int i = 0; i < NNUE_FT_HALF; i += 16) {
+        __m256i a = _mm256_loadu_si256((const __m256i*)(acc + i));
+        __m256i b = _mm256_loadu_si256((const __m256i*)(acc + NNUE_FT_HALF + i));
+        a = _mm256_min_epi16(_mm256_max_epi16(a, zero), qa);
+        b = _mm256_min_epi16(_mm256_max_epi16(b, zero), qa);
+        // a*b <= 65025 (+4) fits u16: mullo keeps all bits, logical shift treats them unsigned
+        __m256i p = _mm256_add_epi16(_mm256_mullo_epi16(a, b), half);
+        _mm256_storeu_si256((__m256i*)(out + i), _mm256_srli_epi16(p, NNUE_PAIR_SHIFT));
+    }
+#else
+    for (int i = 0; i < NNUE_FT_HALF; i++) {
+        int32_t a = acc[i] < 0 ? 0 : (acc[i] > NNUE_QA ? NNUE_QA : acc[i]);
+        int32_t b = acc[i + NNUE_FT_HALF];
+        b = b < 0 ? 0 : (b > NNUE_QA ? NNUE_QA : b);
+        out[i] = (int16_t)((a * b + (1 << (NNUE_PAIR_SHIFT - 1))) >> NNUE_PAIR_SHIFT);
+    }
+#endif
+}
+
+// L1 dot product: i16 activations (0..8128) x i16-widened i8 weights; |sum| <= 768*8128*127 < 2^31
+static inline int32_t deep_l1_dot(const int16_t* in, const int16_t* w) {
+#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+    __m256i sum = _mm256_setzero_si256();
+    for (int i = 0; i < NNUE_L1_IN; i += 16) {
+        __m256i x = _mm256_loadu_si256((const __m256i*)(in + i));
+        __m256i y = _mm256_load_si256((const __m256i*)(w + i));
+        sum = _mm256_add_epi32(sum, _mm256_madd_epi16(x, y));
+    }
+    __m128i s = _mm_add_epi32(_mm256_castsi256_si128(sum), _mm256_extracti128_si256(sum, 1));
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, _MM_SHUFFLE(1, 0, 3, 2)));
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, _MM_SHUFFLE(2, 3, 0, 1)));
+    return _mm_cvtsi128_si32(s);
+#else
+    int32_t sum = 0;
+    for (int i = 0; i < NNUE_L1_IN; i++) sum += (int32_t)in[i] * w[i];
+    return sum;
+#endif
+}
+
+int nnue_evaluate(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
+    if (acc == NULL || net == NULL) return 0;
+
+    if (!acc->computed) {
+        nnue_materialize_accumulator(board, acc, net);
+    }
+
+    const int bucket = nnue_get_output_bucket(board);
+    const int16_t* us_acc = board->whiteToMove ? acc->white : acc->black;
+    const int16_t* them_acc = board->whiteToMove ? acc->black : acc->white;
+
+    alignas(64) int16_t ft_out[NNUE_L1_IN];
+    deep_ft_activate(us_acc, ft_out);
+    deep_ft_activate(them_acc, ft_out + NNUE_FT_HALF);
+
+    int32_t l2_in[2 * NNUE_L2_SIZE];
+    for (int o = 0; o < NNUE_L2_SIZE; o++) {
+        int32_t z = deep_l1_dot(ft_out, net->l1_weights_i16[bucket][o])
+                  + net->l1_biases[bucket][o] * (1 << (NNUE_L1_SHIFT - 14));
+        int64_t lin = z < 0 ? 0 : (z > NNUE_L1_ONE ? NNUE_L1_ONE : z);
+        int64_t zc = z < -NNUE_L1_ONE ? -NNUE_L1_ONE : (z > NNUE_L1_ONE ? NNUE_L1_ONE : z);
+        // 2^20 -> Q^2 = 2^12 and 2^40 -> 2^12, both rounded
+        l2_in[o] = (int32_t)((lin + (1 << 7)) >> 8);
+        l2_in[NNUE_L2_SIZE + o] = (int32_t)((zc * zc + (INT64_C(1) << 27)) >> 28);
+    }
+
+    int32_t l3_in[NNUE_L3_SIZE];
+    for (int o = 0; o < NNUE_L3_SIZE; o++) {
+        const int32_t* w = net->l2_weights[bucket][o];
+        int32_t sum = net->l2_biases[bucket][o];
+        for (int i = 0; i < 2 * NNUE_L2_SIZE; i++) sum += l2_in[i] * w[i];
+        l3_in[o] = sum < 0 ? 0 : (sum > NNUE_Q3 ? NNUE_Q3 : sum);
+    }
+
+    int64_t out = net->l3_biases[bucket];
+    for (int i = 0; i < NNUE_L3_SIZE; i++) out += (int64_t)l3_in[i] * net->l3_weights[bucket][i];
+
+    int eval = (int)(out * NNUE_SCALE / NNUE_Q4);
+    return board->whiteToMove ? eval : -eval;
+}
+
+#else
 // Evaluate position using NNUE
 int nnue_evaluate(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
     if (acc == NULL || net == NULL) return 0;
@@ -503,6 +670,8 @@ int nnue_evaluate(const Board* board, NNUEAccumulator* acc, const NNUENetwork* n
     int eval = (output * NNUE_SCALE) / (NNUE_QA * NNUE_QB);
     return board->whiteToMove ? eval : -eval;
 }
+
+#endif
 
 // Combined sub-add for move updates (dst = dst - src_sub + src_add)
 static inline void vec_sub_add(int16_t* restrict dst, const int16_t* restrict src_sub,

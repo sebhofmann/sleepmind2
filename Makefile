@@ -35,9 +35,46 @@ ifeq ($(hl_1024),1)
   CFLAGS += -DNNUE_HIDDEN_SIZE=1024
 endif
 
+# NNUE architecture: make NNUE_ARCH=deep for the deep net (training/training_deep.rs),
+# default is the legacy single-layer net (training/training.rs). Each architecture embeds
+# its own net file; override with NNUE_FILE=<path>.
+NNUE_ARCH ?= legacy
+ifeq ($(NNUE_ARCH),deep)
+  NNUE_FILE ?= quantised_deep.bin
+  NNUE_FLAGS = -DNNUE_ARCH=1
+else ifeq ($(NNUE_ARCH),legacy)
+  NNUE_FILE ?= quantised.bin
+  NNUE_FLAGS = -DNNUE_ARCH=0
+else
+  $(error unknown NNUE_ARCH '$(NNUE_ARCH)', use legacy or deep)
+endif
+NNUE_FLAGS += -DNNUE_EMBED_FILE='"$(NNUE_FILE)"'
+CFLAGS += $(NNUE_FLAGS)
+DEBUG_FLAGS += $(NNUE_FLAGS)
+DEBUG_EVAL_FLAGS += $(NNUE_FLAGS)
+
+# make debug / make debug_eval set BUILD_MODE for their inner make run
+ifeq ($(BUILD_MODE),debug)
+  CFLAGS = $(DEBUG_FLAGS)
+else ifeq ($(BUILD_MODE),debug_eval)
+  CFLAGS = $(DEBUG_EVAL_FLAGS)
+endif
+
 # Directories
 SRC_DIR = src
 BUILD_DIR = build
+
+# The stamp rule below must not become the default goal
+.DEFAULT_GOAL := all
+
+# Rebuild everything when the NNUE configuration changes, so objects of different
+# architectures never get mixed
+NNUE_STAMP = $(BUILD_DIR)/.nnue_config
+NNUE_CONFIG = $(NNUE_ARCH) $(NNUE_FILE) $(CFLAGS)
+$(shell mkdir -p $(BUILD_DIR); [ "$$(cat $(NNUE_STAMP) 2>/dev/null)" = "$(NNUE_CONFIG)" ] || echo "$(NNUE_CONFIG)" > $(NNUE_STAMP))
+$(NNUE_STAMP):
+	@mkdir -p $(BUILD_DIR)
+	@echo "$(NNUE_CONFIG)" > $@
 
 # Common source files (shared between engine and training)
 COMMON_SRCS = board_io.c move_generator.c move.c bitboard_utils.c search.c tt.c evaluation.c board_modifiers.c zobrist.c nnue.c syzygy.c tbprobe.c
@@ -86,12 +123,12 @@ $(TRAINING_EXEC): $(TRAINING_OBJS)
 
 # Vendored Fathom probing code: needs POSIX (mmap) under -std=c11, and its
 # warnings are not actionable for us, so they are suppressed.
-$(BUILD_DIR)/tbprobe.o: $(SRC_DIR)/tbprobe.c
+$(BUILD_DIR)/tbprobe.o: $(SRC_DIR)/tbprobe.c $(NNUE_STAMP)
 	$(CC) $(CFLAGS) -D_GNU_SOURCE -w -MMD -MP -I$(SRC_DIR) -c $< -o $@
 
 # Keep the release engine self-contained. The explicit dependency ensures that
 # replacing the trained net always relinks the executable.
-$(BUILD_DIR)/embedded_nnue.o: $(SRC_DIR)/embedded_nnue.S quantised.bin
+$(BUILD_DIR)/embedded_nnue.o: $(SRC_DIR)/embedded_nnue.S $(NNUE_FILE) $(NNUE_STAMP)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/nnue_load_test: tests/nnue_load_test.c $(BUILD_DIR)/nnue.o $(BUILD_DIR)/embedded_nnue.o
@@ -103,7 +140,7 @@ $(BUILD_DIR)/pawn_hash_test: tests/pawn_hash_test.c $(addprefix $(BUILD_DIR)/, b
 $(BUILD_DIR)/pawn_correction_test: tests/pawn_correction_test.c
 	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $<
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(NNUE_STAMP)
 	$(CC) $(CFLAGS) -MMD -MP -I$(SRC_DIR) -c $< -o $@
 
 # Auto-generated header dependencies (so .h changes trigger rebuilds)
@@ -112,10 +149,14 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 clean:
 	rm -rf $(BUILD_DIR)
 
-debug: CFLAGS = $(DEBUG_FLAGS)
-debug: clean all
+# Separate make runs: "clean all" in one run is unreliable, since make caches the
+# directory contents before clean removes them
+debug:
+	$(MAKE) clean
+	$(MAKE) all BUILD_MODE=debug
 
-debug_eval: CFLAGS = $(DEBUG_EVAL_FLAGS)
-debug_eval: clean all
+debug_eval:
+	$(MAKE) clean
+	$(MAKE) all BUILD_MODE=debug_eval
 
 .PHONY: all training both test test-nnue test-pawn-hash test-pawn-correction clean debug debug_eval

@@ -5,13 +5,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef NNUE_EMBED_FILE
+#define NNUE_EMBED_FILE "quantised.bin"
+#endif
+
 extern const unsigned char sleepmind_nnue_start[];
 extern const unsigned char sleepmind_nnue_end[];
 
 int main(void) {
     const size_t embedded_size = (size_t)(sleepmind_nnue_end - sleepmind_nnue_start);
-    NNUENetwork* embedded = calloc(1, sizeof(*embedded));
-    NNUENetwork* file = calloc(1, sizeof(*file));
+    NNUENetwork* embedded = nnue_alloc_network();
+    NNUENetwork* file = nnue_alloc_network();
     if (!embedded || !file) {
         fprintf(stderr, "allocation failed\n");
         return 1;
@@ -25,7 +29,7 @@ int main(void) {
         fprintf(stderr, "embedded network failed to load\n");
         return 1;
     }
-    if (!nnue_load("quantised.bin", file)) {
+    if (!nnue_load(NNUE_EMBED_FILE, file)) {
         fprintf(stderr, "file network failed to load\n");
         return 1;
     }
