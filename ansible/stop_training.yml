@@ -59,7 +59,7 @@
       shell: |
         cd {{ output_dir }}
         if ls training_temp_*.* 1> /dev/null 2>&1; then
-          cat training_temp_*.* 2>/dev/null | grep -v '^$' | grep '|' >> training_combined.txt
+          ls training_temp_*.* | grep -v '\.log$' | xargs -r cat | grep '|' >> training_combined.games
           rm -f training_temp_*.*
           echo "Temp files combined"
         else
@@ -73,17 +73,17 @@
 
     - name: Check if training data exists
       stat:
-        path: "{{ output_dir }}/training_combined.txt"
+        path: "{{ output_dir }}/training_combined.games"
       register: training_file
 
     - name: Count lines in training data
-      shell: wc -l < {{ output_dir }}/training_combined.txt
+      shell: wc -l < {{ output_dir }}/training_combined.games
       register: line_count
       when: training_file.stat.exists
 
     - name: Show training data stats
       debug:
-        msg: "{{ inventory_hostname }}: {{ line_count.stdout | default('0') }} Positionen ({{ training_file.stat.size | default(0) | human_readable }})"
+        msg: "{{ inventory_hostname }}: {{ line_count.stdout | default('0') }} Partien ({{ training_file.stat.size | default(0) | human_readable }})"
       when: training_file.stat.exists
 
     - name: Create local collection directory
@@ -96,8 +96,8 @@
     - name: Fetch training data to control node (with timestamp)
       synchronize:
         mode: pull
-        src: "{{ output_dir }}/training_combined.txt"
-        dest: "{{ local_collect_dir }}/{{ inventory_hostname }}/training_{{ timestamp }}.txt"
+        src: "{{ output_dir }}/training_combined.games"
+        dest: "{{ local_collect_dir }}/{{ inventory_hostname }}/training_{{ timestamp }}.games"
         rsync_opts:
           - "--info=progress2"
           - "--compress"
@@ -115,5 +115,5 @@
 
     - name: Show collection complete
       debug:
-        msg: "Daten gesichert nach {{ local_collect_dir }}/{{ inventory_hostname }}/training_{{ timestamp }}.txt"
+        msg: "Daten gesichert nach {{ local_collect_dir }}/{{ inventory_hostname }}/training_{{ timestamp }}.games"
       when: training_file.stat.exists

@@ -1,0 +1,15 @@
+[package]
+name = "datatools"
+version = "0.1.0"
+edition = "2021"
+description = "SleepMind training data tools: viriformat packing/inspection, statistics, legacy data filtering"
+
+# Same viriformat/bulletformat versions as bullet_lib (training/Cargo.lock), so
+# the packed games are read back with exactly the code the trainer uses.
+[dependencies]
+anyhow = "1.0"
+bulletformat = "1.8.0"
+viriformat = "=2.0.1"
+
+[profile.release]
+debug = false

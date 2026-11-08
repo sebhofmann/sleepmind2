@@ -6,6 +6,9 @@ edition = "2021"
 
 [dependencies]
 bullet = { git = "https://github.com/jw1912/bullet", package = "bullet_lib", features = ["cuda"] }
+# DataReader trait for the mixed bulletformat/viriformat loader (same git source as bullet_lib)
+bullet-trainer = { git = "https://github.com/jw1912/bullet", package = "bullet-trainer" }
+rand = "0.9"
 
 [[bin]]
 name = "training"

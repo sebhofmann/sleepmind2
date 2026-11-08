@@ -2111,6 +2111,10 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
     int alpha = -INT_MAX + 1;
     int beta = INT_MAX - 1;
     int prev_score = 0;
+    // Score of the last COMPLETED iteration. negamax() overwrites
+    // bestScoreThisIteration at the root while an iteration is still running,
+    // so it is restored from here when the search is stopped mid-iteration.
+    int completed_score = 0;
     
     int max_depth = (info->depthLimit > 0) ? info->depthLimit : MAX_PLY;
     for (int depth = 1; depth <= max_depth; depth++) {
@@ -2166,11 +2170,13 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
             // DO NOT update best_move or best_score from incomplete iteration!
             // The bestMoveThisIteration might be from a partial search and unreliable.
             // Keep the best_move and bestScoreThisIteration from the last completed iteration.
+            info->bestScoreThisIteration = completed_score;
             break;
         }
         
         // Only update bestScoreThisIteration after a COMPLETED iteration
         info->bestScoreThisIteration = score;
+        completed_score = score;
         
         // Update best move from completed iteration
         if (info->bestMoveThisIteration != 0) {

@@ -91,7 +91,7 @@
       when: training_running.stdout != ""
 
     - name: Remove old temp files and combined training data
-      shell: rm -f {{ output_dir }}/training_temp_* {{ output_dir }}/training_combined.txt
+      shell: rm -f {{ output_dir }}/training_temp_* {{ output_dir }}/training_combined.games
       changed_when: false
 
     - name: Start training data generation in background
@@ -106,8 +106,6 @@
         MAX_MOVES={{ training_max_moves }} \
         DRAW_THRESHOLD={{ training_draw_threshold }} \
         EVAL_THRESHOLD={{ training_eval_threshold }} \
-        ADJUDICATE={{ training_adjudicate }} \
-        FILTER_TACTICS={{ training_filter_tactics }} \
         VERBOSE={{ training_verbose }} \
         ./generate_training_data.sh' > {{ output_dir }}/training.log 2>&1 &
       async: 10

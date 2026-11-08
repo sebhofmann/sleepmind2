@@ -75,11 +75,9 @@ Alle Parameter können in `inventory.yml` oder per `-e` übergeben werden:
 | `training_nodes` | 5000 | Suchknoten pro Zug (0=benutze Tiefe) |
 | `training_random_moves` | 12 | Zufallszüge am Anfang |
 | `training_random_prob` | 100 | Wahrscheinlichkeit für Zufallszüge (0-100%) |
-| `training_max_moves` | 250 | Maximale Züge pro Spiel |
+| `training_max_moves` | 2000 | Sicherheitslimit in Halbzügen; Partien, die es erreichen, werden verworfen |
 | `training_draw_threshold` | 50 | Züge ohne Fortschritt bis Remis |
 | `training_eval_threshold` | 3 | Max Bewertung in Bauern nach Zufallszügen (0=aus) |
-| `training_adjudicate` | 10 | Spiel beenden bei +/- N Bauern (0=aus) |
-| `training_filter_tactics` | 1 | Taktische Positionen filtern (1=an, 0=aus) |
 | `training_verbose` | 1 | Verbosity Level (0-2) |
 
 ## Ergebnisse
@@ -89,16 +87,17 @@ Nach `stop_training.yml` werden die Daten nach `./collected_data/` kopiert:
 ```
 collected_data/
 ├── training1/
-│   ├── training_combined.txt
-│   └── training.log
-├── training2/
-│   └── ...
-└── training_all.txt          # Kombiniert aus allen Hosts
+│   ├── training_<timestamp>.games   # eine Partie pro Zeile
+│   └── training_<timestamp>.log
+└── training2/
+    └── ...
 ```
 
-### Duplikate entfernen
+### Ins Viriformat packen
 
 ```bash
-cd collected_data
-sort -u training_all.txt > training_unique.txt
+./pack_training_games.sh -i ansible/collected_data -o training_data/new.vf
 ```
+
+Das Binpack wird mit `training --viri training_data/new.vf` (optional zusammen
+mit gefilterten Altdaten `--data ...`) trainiert; gefiltert wird im Loader.

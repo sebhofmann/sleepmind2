@@ -51,6 +51,8 @@ ENGINE_EXEC = $(BUILD_DIR)/sleepmind
 # Training data generator source files
 TRAINING_SRCS = training_main.c training_data.c $(COMMON_SRCS)
 TRAINING_OBJS = $(addprefix $(BUILD_DIR)/, $(TRAINING_SRCS:.c=.o))
+# Same embedded network as the engine (quantised.bin at build time).
+TRAINING_OBJS += $(BUILD_DIR)/embedded_nnue.o
 TRAINING_EXEC = $(BUILD_DIR)/training
 
 # Default target - build engine only

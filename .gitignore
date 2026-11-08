@@ -3,6 +3,7 @@
 build
 main.dSYM
 training/target
+training/datatools/target
 training_data
 checkpoints
 .idea

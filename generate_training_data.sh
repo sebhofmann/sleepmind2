@@ -1,15 +1,21 @@
 #!/bin/bash
 
 # Training Data Generator für SleepMind
-# Startet mehrere Instanzen des Training-Programms parallel
+# Startet mehrere Instanzen des Training-Programms parallel.
+#
+# Ausgabe: ganze Partien, eine pro Zeile ("Start-FEN | zug:score ... | Ergebnis"),
+# gesammelt in training_combined.games. Umwandlung ins Viriformat für den Trainer:
+#   ./pack_training_games.sh -i training_data -o data.vf
+# Keine Eval-Adjudication und keine Stellungsfilter mehr: Partien enden nur nach
+# den Schachregeln (bzw. exakt per Syzygy), gefiltert wird im Trainer-Loader.
 
 set -e
 
 # Konfiguration
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TRAINING_PATH="$SCRIPT_DIR/build/training"
-TRAINING_DIR="$SCRIPT_DIR/training_data"
-OUTPUT_FILE="$TRAINING_DIR/training_combined.txt"
+TRAINING_DIR="${TRAINING_DIR:-$SCRIPT_DIR/training_data}"
+OUTPUT_FILE="$TRAINING_DIR/training_combined.games"
 TEMP_PREFIX="$TRAINING_DIR/training_temp"
 
 # Parameter (können überschrieben werden)
@@ -19,11 +25,9 @@ DEPTH=${DEPTH:-6}                       # Suchtiefe
 NODES=${NODES:-5000}                       # Knotenlimit (0=benutze Tiefe)
 RANDOM_MOVES=${RANDOM_MOVES:-12}         # Zufallszüge am Anfang
 RANDOM_PROB=${RANDOM_PROB:-50}         # Wahrscheinlichkeit für Zufallszüge (%)
-MAX_MOVES=${MAX_MOVES:-250}  # Maximale Züge pro Spiel 
+MAX_MOVES=${MAX_MOVES:-2000}  # Sicherheitslimit in Halbzügen; Partien, die es erreichen, werden verworfen
 DRAW_THRESHOLD=${DRAW_THRESHOLD:-50} # 50-Züge-Regel
 EVAL_THRESHOLD=${EVAL_THRESHOLD:-4}  # Max Bewertung in Bauern nach Zufallszügen (0=aus)
-ADJUDICATE=${ADJUDICATE:-10} # Spiel beenden bei +/- N Bauern (0=aus)
-FILTER_TACTICS=${FILTER_TACTICS:-1}   # Taktische Positionen filtern (0=aus)
 VERBOSE=${VERBOSE:-1}  # Verbosity Level
 SYZYGY_PATH=${SYZYGY_PATH:-}          # Pfad zu Syzygy-Tablebases (leer=aus)
 SYZYGY_PROBE_LIMIT=${SYZYGY_PROBE_LIMIT:-7}  # Max. Steinezahl für TB-Adjudication
@@ -66,11 +70,10 @@ else
 echo "  Suchtiefe:         $DEPTH"
 fi
 echo "  Zufallszüge:       $RANDOM_MOVES (${RANDOM_PROB}%)"
-echo "  Max Züge/Spiel:    $MAX_MOVES"
-echo "  Draw-Threshold:    $DRAW_THRESHOLD"
+echo "  Zuglimit:          $MAX_MOVES Halbzüge (Partie wird verworfen)"
+echo "  50-Züge-Regel:     $DRAW_THRESHOLD"
 echo "  Eval-Threshold:    $EVAL_THRESHOLD Bauern (0=aus)"
-echo "  Adjudicate bei:    $ADJUDICATE Bauern (0=aus)"
-echo "  Filter Taktik:     $FILTER_TACTICS (1=an, 0=aus)"
+echo "  Eval-Adjudication: keine"
 if [ -n "$SYZYGY_PATH" ]; then
 echo "  Syzygy-TB:         $SYZYGY_PATH (bis $SYZYGY_PROBE_LIMIT Steine)"
 else
@@ -94,7 +97,7 @@ combine_data() {
     echo -e "${YELLOW}Kombiniere Trainingsdaten...${NC}"
     
     # Zähle temporäre Dateien
-    TEMP_COUNT=$(ls -1 "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '.log$' | wc -l || echo "0")
+    TEMP_COUNT=$(ls -1 "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '\.log$' | wc -l || echo "0")
     
     if [ "$TEMP_COUNT" -eq 0 ]; then
         echo -e "${RED}Keine Trainingsdaten zum Kombinieren gefunden.${NC}"
@@ -103,23 +106,26 @@ combine_data() {
     
     echo "Gefundene Trainingsdateien: $TEMP_COUNT"
     
-    # Kombiniere alle Trainingsdaten
-    cat "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '^$' | grep '|' >> "$OUTPUT_FILE"
-    
-    # Zähle Zeilen
-    NEW_LINES=$(cat "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '^$' | grep '|' | wc -l)
+    # Kombiniere alle Partien (eine pro Zeile; Logs ausgenommen)
+    local data_files
+    data_files=$(ls -1 "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '\.log$')
+    cat $data_files 2>/dev/null | grep '|' >> "$OUTPUT_FILE"
+
+    NEW_LINES=$(cat $data_files 2>/dev/null | grep -c '|' || true)
     TOTAL_LINES=$(wc -l < "$OUTPUT_FILE" 2>/dev/null || echo "0")
-    
+
     echo ""
     echo -e "${GREEN}=== Ergebnis ===${NC}"
-    echo "  Neue Positionen:     $NEW_LINES"
-    echo "  Gesamt in Datei:     $TOTAL_LINES"
+    echo "  Neue Partien:        $NEW_LINES"
+    echo "  Gesamt in Datei:     $TOTAL_LINES Partien"
     echo "  Output-Datei:        $OUTPUT_FILE"
+    echo "  Verworfen (Zuglimit): $(grep -h 'Discarded (move limit)' "${TEMP_PREFIX}"_*.log 2>/dev/null | awk '{s+=$NF} END {print s+0}')"
 
-    # Lösche temporäre Dateien
+    # Lösche die temporären Datendateien; die Instanz-Logs (mit Summary:
+    # Partien, Verworfene, Ø Länge, pos/sec) bleiben bis zum nächsten Start.
     echo ""
-    echo "Lösche temporäre Dateien..."
-    rm -f "${TEMP_PREFIX}"_*
+    echo "Lösche temporäre Datendateien (Logs bleiben: ${TEMP_PREFIX}_*.log)..."
+    rm -f $data_files
     
     return 0
 }
@@ -173,8 +179,6 @@ for i in $(seq 1 $CONCURRENCY); do
             -r "$RANDOM_MOVES" \
             -p "$RANDOM_PROB" \
             -e "$EVAL_THRESHOLD" \
-            -a "$ADJUDICATE" \
-            -f "$FILTER_TACTICS" \
             --max-moves "$MAX_MOVES" \
             --draw-threshold "$DRAW_THRESHOLD" \
             -v "$VERBOSE" \
@@ -188,8 +192,6 @@ for i in $(seq 1 $CONCURRENCY); do
             -r "$RANDOM_MOVES" \
             -p "$RANDOM_PROB" \
             -e "$EVAL_THRESHOLD" \
-            -a "$ADJUDICATE" \
-            -f "$FILTER_TACTICS" \
             --max-moves "$MAX_MOVES" \
             --draw-threshold "$DRAW_THRESHOLD" \
             -v "$VERBOSE" \
@@ -221,15 +223,18 @@ while true; do
     
     # Zeige Status
     ELAPSED=$(($(date +%s) - START_TIME))
-    TOTAL_POS=$(cat "${TEMP_PREFIX}"_*.* 2>/dev/null | wc -l || echo "0")
+    # Partien = Zeilen der Datendateien; Positionen = Summe der letzten Statuszeilen
+    TOTAL_GAMES=$(ls -1 "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '\.log$' | xargs -r cat | wc -l)
+    TOTAL_POS=$(for f in "${TEMP_PREFIX}"_*.log; do grep '^\[Status' "$f" 2>/dev/null | tail -1; done \
+        | sed -n 's/.* \([0-9]*\) positions.*/\1/p' | awk '{s+=$1} END {print s+0}')
     if [ $ELAPSED -gt 0 ]; then
         POS_PER_SEC=$((TOTAL_POS / ELAPSED))
     else
         POS_PER_SEC=0
     fi
-    
-    printf "\r[%d/%d Instanzen laufen | %d Positionen | %d pos/sec | %ds]     " \
-           "$RUNNING" "$CONCURRENCY" "$TOTAL_POS" "$POS_PER_SEC" "$ELAPSED"
+
+    printf "\r[%d/%d Instanzen laufen | %d Partien | %d Positionen | %d pos/sec | %ds]     " \
+           "$RUNNING" "$CONCURRENCY" "$TOTAL_GAMES" "$TOTAL_POS" "$POS_PER_SEC" "$ELAPSED"
     
     sleep 5
 done
@@ -260,7 +265,6 @@ combine_data
 
 if [ $TOTAL_TIME -gt 0 ]; then
     # NEW_LINES wurde in combine_data gesetzt
-    NEW_LINES=$(cat "${TEMP_PREFIX}"_*.* 2>/dev/null | grep -v '^$' | grep '|' | wc -l 2>/dev/null || echo "0")
     echo "  Laufzeit:            ${TOTAL_TIME}s"
 fi
 

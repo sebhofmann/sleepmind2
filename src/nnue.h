@@ -79,6 +79,9 @@ bool nnue_load(const char* filename, NNUENetwork* net);
 // Load NNUE weights from an in-memory copy of the quantised network file.
 bool nnue_load_memory(const unsigned char* data, size_t size, NNUENetwork* net);
 
+// FNV-1a 64-bit hash of a quantised network file (as logged by nnue_load_memory).
+uint64_t nnue_hash(const unsigned char* data, size_t size);
+
 // Save NNUE weights to file
 bool nnue_save(const char* filename, const NNUENetwork* net);
 

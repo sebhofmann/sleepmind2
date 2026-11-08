@@ -5,89 +5,78 @@
 #include <sys/types.h>  // For pid_t
 #include <unistd.h>     // For getpid()
 
-// Global variables
-TrainingEntry training_data[MAX_TRAINING_ENTRIES];
-int training_data_count = 0;
-FILE* training_file = NULL;
-char training_data_path[256] = "";
-bool training_enabled = false;
+static char record_fen[128];
+static Move record_moves[MAX_GAME_RECORD_PLIES];
+static int record_scores[MAX_GAME_RECORD_PLIES];
+static int record_count = 0;
+static bool record_active = false;
 
-void init_training_data() {
-    training_data_count = 0;
+static FILE* training_file = NULL;
+static char training_data_path[512] = "";
+
+void game_record_begin(const Board* board) {
+    const char* fen = outputFEN(board);
+    strncpy(record_fen, fen, sizeof(record_fen) - 1);
+    record_fen[sizeof(record_fen) - 1] = '\0';
+    record_count = 0;
+    record_active = true;
+}
+
+bool game_record_add(Move move, int white_score) {
+    if (!record_active || record_count >= MAX_GAME_RECORD_PLIES) return false;
+    record_moves[record_count] = move;
+    record_scores[record_count] = white_score;
+    record_count++;
+    return true;
+}
+
+int game_record_length(void) {
+    return record_active ? record_count : 0;
+}
+
+void game_record_discard(void) {
+    record_count = 0;
+    record_active = false;
+}
+
+void game_record_write(int result) {  // 1 = White won, 0 = draw, -1 = Black won
+    if (!record_active) return;
+    if (record_count > 0 && training_file) {
+        const char* res = result > 0 ? "1.0" : result < 0 ? "0.0" : "0.5";
+        fprintf(training_file, "%s |", record_fen);
+        char mv[8];
+        for (int i = 0; i < record_count; i++) {
+            moveToString(record_moves[i], mv);
+            fprintf(training_file, " %s:%d", mv, record_scores[i]);
+        }
+        fprintf(training_file, " | %s\n", res);
+        // Flush after each game so a killed instance loses at most one game.
+        fflush(training_file);
+    }
+    game_record_discard();
+}
+
+void set_training_data_path(const char* path) {
+    close_training_data();
+    if (!path || !path[0]) return;
+    // Append PID to filename for unique files in parallel runs
+    snprintf(training_data_path, sizeof(training_data_path), "%s.%lld",
+             path, (long long)getpid());
+    training_file = fopen(training_data_path, "a");
+    if (training_file) {
+        setvbuf(training_file, NULL, _IOFBF, 1 << 16);
+    } else {
+        fprintf(stderr, "Error: cannot open training data file %s\n", training_data_path);
+    }
+}
+
+const char* get_training_data_path(void) {
+    return training_data_path;
+}
+
+void close_training_data(void) {
     if (training_file) {
         fclose(training_file);
         training_file = NULL;
     }
-    training_enabled = false;
-    strcpy(training_data_path, "");
-}
-
-void add_training_entry(const Board* board, int eval, int ply) {
-    if (!training_enabled || training_data_count >= MAX_TRAINING_ENTRIES) return;
-    const char* fen = outputFEN(board);
-    strncpy(training_data[training_data_count].fen, fen, sizeof(training_data[training_data_count].fen) - 1);
-    training_data[training_data_count].eval = eval;
-    training_data[training_data_count].ply = ply;
-    training_data[training_data_count].white_to_move = board->whiteToMove;
-    training_data_count++;
-}
-
-void write_training_data(int result) {  // 1 = win for white, 0 = draw, -1 = loss for white
-    if (!training_enabled || !training_data_path[0]) return;
-    if (!training_file) {
-        training_file = fopen(training_data_path, "a");
-        if (!training_file) return;
-    }
-    for (int i = 0; i < training_data_count; i++) {
-        // Score is white-relative: positive = good for white
-        // The stored eval is STM-relative, so flip if black to move
-        int white_relative_eval = training_data[i].white_to_move 
-            ? training_data[i].eval 
-            : -training_data[i].eval;
-        
-        // WDL is white-relative: 1.0 = white wins, 0.5 = draw, 0.0 = white loses
-        const char* wdl;
-        if (result == 1) wdl = "1.0";       // White won
-        else if (result == -1) wdl = "0.0"; // White lost
-        else wdl = "0.5";                   // Draw
-        fprintf(training_file, "%s | %d | %s\n", training_data[i].fen, white_relative_eval, wdl);
-    }
-    // Flush after each game to ensure data is written to disk
-    // This prevents data loss if the process is terminated
-    fflush(training_file);
-    training_data_count = 0;  // Reset
-}
-
-void flush_training_data() {
-    if (training_file) {
-        fflush(training_file);
-    }
-}
-
-void set_training_data_path(const char* path) {
-    if (path && strlen(path) > 0) {
-        // Append PID to filename for unique files in parallel runs
-        pid_t pid = getpid();
-        snprintf(training_data_path, sizeof(training_data_path), "%s.%lld", path, (long long)pid);
-        training_enabled = true;
-        if (training_file) {
-            fclose(training_file);
-        }
-        training_file = fopen(training_data_path, "a");
-        if (training_file) {
-            // Use larger buffer for better I/O performance
-            setvbuf(training_file, NULL, _IOFBF, 65536);  // 64KB buffer
-        }
-    } else {
-        training_enabled = false;
-        if (training_file) {
-            fclose(training_file);
-            training_file = NULL;
-        }
-        strcpy(training_data_path, "");
-    }
-}
-
-void enable_training(bool enable) {
-    training_enabled = enable;
 }

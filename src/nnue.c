@@ -110,7 +110,7 @@ static size_t nnue_parameter_size(void) {
            (size_t)NNUE_OUTPUT_BUCKETS * sizeof(int16_t);
 }
 
-static uint64_t nnue_hash(const unsigned char* data, size_t size) {
+uint64_t nnue_hash(const unsigned char* data, size_t size) {
     uint64_t hash = UINT64_C(14695981039346656037);
     for (size_t i = 0; i < size; ++i) {
         hash ^= data[i];

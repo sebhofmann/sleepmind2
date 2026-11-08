@@ -28,9 +28,7 @@ all:
         training_nodes: 5000
         training_random_moves: 12
         training_random_prob: 100
-        training_max_moves: 250
+        training_max_moves: 2000
         training_draw_threshold: 50
         training_eval_threshold: 3
-        training_adjudicate: 10
-        training_filter_tactics: 1
         training_verbose: 1
