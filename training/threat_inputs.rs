@@ -22,9 +22,9 @@ use bullet::game::formats::{bulletformat::ChessBoard, montyformat::chess::Attack
 pub const NUM_PAIRS: usize = 96 * 95 / 2;
 pub const THREATS_PER_SIDE: usize = 29904;
 pub const NUM_INPUTS: usize = NUM_PAIRS + 2 * THREATS_PER_SIDE;
-/// At most 16 pawns -> 120 pairs; every non-king piece attacks at most 8 occupied squares
-/// (sliders are blocked by the first piece per ray), so 30 pieces stay below 256 threats.
-pub const MAX_ACTIVE: usize = 120 + 256;
+/// As in bullet's example: at most 16 pawns -> 120 pairs, plus up to 128 threats (real positions
+/// stay far below, max seen 50 threats / 85 features in 2M positions).
+pub const MAX_ACTIVE: usize = 120 + 128;
 
 const PAWN: usize = 0;
 const KING: usize = 5;
