@@ -96,9 +96,14 @@ typedef struct {
     // L3: weights x Q, biases x Q^4
     alignas(64) int32_t l3_weights[NNUE_OUTPUT_BUCKETS][NNUE_L3_SIZE];
     alignas(64) int32_t l3_biases[NNUE_OUTPUT_BUCKETS];
-    // Not part of the file: l1_weights widened to i16 at load time, so L1 can take 13-bit
-    // pairwise activations via madd_epi16 (u8 activations for maddubs only allow 7 bits)
-    alignas(64) int16_t l1_weights_i16[NNUE_OUTPUT_BUCKETS][NNUE_L2_SIZE][NNUE_L1_IN];
+    // Not part of the file, derived at load time (nnue_deep_prepare):
+    // L1 weights re-laid out for the sparse L1 pass (as in pawnocchio): the u8 pairwise
+    // activations are read as 4-byte groups, [bucket][group g][out][4] = w[out][4g..4g+3],
+    // so one nonzero group updates all 16 outputs with two dpbusd and zero groups are skipped.
+    alignas(64) int8_t l1_weights_sparse[NNUE_OUTPUT_BUCKETS][NNUE_L1_IN / 4][NNUE_L2_SIZE][4];
+    // L2 weights as i16 (bullet clips weights to +-1.98, so |w x Q| <= 127) in the same pair
+    // layout: [bucket][input pair][out][2]; L2 inputs are <= Q^2 = 4096 and fit i16 as well
+    alignas(64) int16_t l2_weights_sparse[NNUE_OUTPUT_BUCKETS][NNUE_L2_SIZE][NNUE_L3_SIZE][2];
 #else
     // Output layer weights: [OUTPUT_BUCKETS][2 * HIDDEN_SIZE] (both perspectives concatenated)
     alignas(64) int16_t output_weights[NNUE_OUTPUT_BUCKETS][2 * NNUE_HIDDEN_SIZE];
