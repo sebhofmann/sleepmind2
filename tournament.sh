@@ -32,6 +32,16 @@ load_uci_opts() {
 # Gemeinsame Test-Einstellungen (per Env überschreibbar)
 TC="${TC:-10+0.1}"
 CONCURRENCY="${CONCURRENCY:-30}"
+# Feste Knotenzahl pro Zug statt Zeitkontrolle (z. B. NODES=30000); misst die
+# Stärke unabhängig von der Geschwindigkeit (NPS) der Engines.
+NODES="${NODES:-}"
+if [ -n "$NODES" ]; then
+    LIMIT_ARGS=(tc=inf "nodes=$NODES")
+    LIMIT_LABEL="nodes$NODES"
+else
+    LIMIT_ARGS=(tc="$TC")
+    LIMIT_LABEL="tc$TC"
+fi
 
 # SPRT-Parameter (per Env überschreibbar) - Standard: "ist die neue Version >0 Elo?"
 ELO0="${ELO0:-0}"       # H0: kein Gewinn
@@ -55,7 +65,7 @@ SPRT-Modus: zwei Varianten 1-gegen-1, läuft bis PASS/FAIL.
   -> wie bei variants.sh nur der Name, nicht der ganze Pfad.
      uci_options.txt der jeweiligen Variante wird automatisch geladen.
 
-Env-Overrides: TC=$TC CONCURRENCY=$CONCURRENCY
+Env-Overrides: TC=$TC NODES=$NODES CONCURRENCY=$CONCURRENCY
                ELO0=$ELO0 ELO1=$ELO1 ALPHA=$ALPHA BETA=$BETA
                SPRT_MODEL=$SPRT_MODEL RUNNER=$RUNNER ADJUDICATE=$ADJUDICATE
                OPENINGS_FILE=$OPENINGS_FILE
@@ -63,6 +73,7 @@ Env-Overrides: TC=$TC CONCURRENCY=$CONCURRENCY
 Beispiel:
   ./tournament.sh sprt newx
   ELO1=5 TC=8+0.08 CONCURRENCY=24 ./tournament.sh sprt newx baseline
+  NODES=30000 CONCURRENCY=16 ./tournament.sh sprt newx baseline
 EOF
 }
 
@@ -95,7 +106,7 @@ case "$MODE" in
 
     # TC im Dateinamen: die PGN wird über Läufe hinweg angehängt, so mischen
     # sich wenigstens keine Zeitkontrollen in einer Datei.
-    PGNOUT="$VARIANTS_DIR/sprt_${NEW_NAME}_vs_${BASE_NAME}_tc${TC}.pgn"
+    PGNOUT="$VARIANTS_DIR/sprt_${NEW_NAME}_vs_${BASE_NAME}_${LIMIT_LABEL}.pgn"
 
     ensure_book
     setup_match_args
@@ -105,7 +116,7 @@ case "$MODE" in
     echo "=== SPRT ($RUNNER) ==="
     echo "  NEW : $NEW_NAME${NEW_OPTS:+  (uci:$NEW_OPTS)}"
     echo "  BASE: $BASE_NAME${BASE_OPTS:+  (uci:$BASE_OPTS)}"
-    echo "  TC=$TC  concurrency=$CONCURRENCY"
+    echo "  ${LIMIT_ARGS[*]}  concurrency=$CONCURRENCY"
     echo "  H0=$ELO0 Elo  H1=$ELO1 Elo  alpha=$ALPHA beta=$BETA  model=$SPRT_MODEL"
     echo "  Buch: $OPENINGS_FILE"
     echo ""
@@ -116,7 +127,7 @@ case "$MODE" in
     "$RUNNER_BIN" \
         -engine name="$NEW_NAME" cmd="$NEW_DIR/sleepmind" dir="$NEW_DIR" $NEW_OPTS \
         -engine name="$BASE_NAME" cmd="$BASE_DIR/sleepmind" dir="$BASE_DIR" $BASE_OPTS \
-        -each proto=uci tc="$TC" \
+        -each proto=uci "${LIMIT_ARGS[@]}" \
         "${SPRT_ARGS[@]}" \
         -games 2 -rounds 50000 -repeat \
         -concurrency "$CONCURRENCY" \
@@ -175,7 +186,7 @@ case "$MODE" in
     # 3 Eröffnungen je Paarung, jede mit beiden Farben (= 6 Partien)
     "$RUNNER_BIN" \
         $ENGINE_ARGS \
-        -each proto=uci tc="$TC" \
+        -each proto=uci "${LIMIT_ARGS[@]}" \
         -games 2 -rounds 3 -repeat \
         -concurrency "$CONCURRENCY" \
         "${OPENING_ARGS[@]}" \
