@@ -496,15 +496,32 @@ void nnue_refresh_accumulator(const Board* board, NNUEAccumulator* acc, const NN
     finny_refresh_perspective(board, acc->white, net, 0, get_king_bucket(white_king_sq, 0));
     finny_refresh_perspective(board, acc->black, net, 1, get_king_bucket(black_king_sq, 1));
 
-#if NNUE_ARCH == NNUE_ARCH_THREATS
-    // the threat part is rebuilt on the next eval (from the ancestor saved by nnue_evaluate)
-    acc->tp_computed = false;
-#endif
     acc->computed = true;
     acc->dirty = false;
     acc->requires_refresh = false;
     acc->previous = NULL;
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    acc->tp_computed[0] = acc->tp_computed[1] = false;  // rebuilt from the board on the next eval
+    acc->tp_state = NNUE_TP_STATE_NONE;
+#endif
 }
+
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+// PSQT-only refresh inside the lazy chain: keeps the threat state and the link to the parent,
+// which the threat materialisation still needs
+static void psqt_refresh_in_chain(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
+    NNUEAccumulator* previous = acc->previous;
+    const int8_t state = acc->tp_state;
+    const bool computed[2] = { acc->tp_computed[0], acc->tp_computed[1] };
+    nnue_refresh_accumulator(board, acc, net);
+    acc->previous = previous;
+    acc->tp_state = state;
+    acc->tp_computed[0] = computed[0];
+    acc->tp_computed[1] = computed[1];
+}
+#else
+#define psqt_refresh_in_chain nnue_refresh_accumulator
+#endif
 
 // Reset accumulator for new position using network
 void nnue_reset_accumulator(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
@@ -517,7 +534,8 @@ void nnue_prepare_child_accumulator(NNUEAccumulator* child, NNUEAccumulator* par
 
     child->computed = false;
 #if NNUE_ARCH == NNUE_ARCH_THREATS
-    child->tp_computed = false;
+    child->tp_computed[0] = child->tp_computed[1] = false;
+    child->tp_state = NNUE_TP_STATE_PREPARED;
 #endif
     child->dirty = true;
     child->requires_refresh = false;
@@ -539,7 +557,7 @@ void nnue_mark_accumulator_dirty(NNUEAccumulator* acc, const Board* board, int f
 
     acc->computed = false;
 #if NNUE_ARCH == NNUE_ARCH_THREATS
-    acc->tp_computed = false;
+    acc->tp_computed[0] = acc->tp_computed[1] = false;
 #endif
     acc->dirty = true;
     acc->requires_refresh = requires_refresh;
@@ -823,32 +841,14 @@ static inline void deep_l2_forward(const int16_t* in, const NNUENetwork* net, in
 
 #if NNUE_ARCH == NNUE_ARCH_THREATS
 // ---------------------------------------------------------------------------------------------
-// Threat + pawn-pair accumulator. On eval the raw threats (and, if the pawns changed, the raw
-// pawn pairs) of the position are listed in board coordinates and merge-diffed against the
-// nearest ancestor frame that has its lists; only the changed features get an index and only
-// their i8 rows are applied. A perspective whose square mask changed (king crossed the d/e
-// files) starts from a small Finny-like cache per mirror state instead.
+// Threat + pawn-pair accumulator, after pawnocchio (src/nnue/inputs/psq_threats.zig): applyMove
+// records each move's threat/pawn-pair changes as raw tuples (nnue_threats.c). On eval the pending
+// frames are materialised one by one from their parent (indices for the perspective, then one
+// pass over the accumulator); if the king of a perspective changed its mirror state the half is
+// rebuilt from the board instead.
 // ---------------------------------------------------------------------------------------------
 #define NNUE_TP_MAX_ACTIVE (NNUE_TP_MAX_THREATS + NNUE_TP_MAX_PAIRS)
-
-// Merge diff of two ascending lists: new \ old -> add, old \ new -> sub
-#define TP_DEFINE_DIFF(name, type)                                                              \
-    static void name(const type* old, int n_old, const type* cur, int n_cur,                    \
-                     type* add, int* n_add, type* sub, int* n_sub) {                            \
-        int i = 0, j = 0, na = 0, ns = 0;                                                       \
-        while (i < n_old && j < n_cur) {                                                        \
-            const type a = old[i], b = cur[j];                                                  \
-            if (a == b) { i++; j++; }                                                           \
-            else if (a < b) { sub[ns++] = a; i++; }                                             \
-            else { add[na++] = b; j++; }                                                        \
-        }                                                                                       \
-        while (i < n_old) sub[ns++] = old[i++];                                                 \
-        while (j < n_cur) add[na++] = cur[j++];                                                 \
-        *n_add = na;                                                                            \
-        *n_sub = ns;                                                                            \
-    }
-TP_DEFINE_DIFF(tp_diff_threats, uint32_t)
-TP_DEFINE_DIFF(tp_diff_pairs, uint16_t)
+#define NNUE_TP_MAX_ROWS   (NNUE_TP_MAX_DELTA + NNUE_TP_MAX_PAIR_DELTA)
 
 // dst = (src, or 0 if NULL) + sum of the add rows - sum of the sub rows; the i8 rows are widened
 // to i16. Tiled so that a block of the accumulator stays in registers over all rows.
@@ -890,147 +890,88 @@ static void tp_apply(int16_t* dst, const int16_t* src, const NNUENetwork* net,
 #endif
 }
 
-// State a perspective's threat accumulator is derived from: an ancestor frame or a cache entry
-typedef struct {
-    const int16_t* acc;
-    const uint32_t* raw;
-    int n_raw;
-    const uint16_t* raw_pairs;
-    int n_raw_pairs;
-    Bitboard pawns[2];
-} TPBase;
-
-// Like the Finny table: per perspective and king mirror state the last threat accumulator built
-// after a mirror change, so crossing the d/e files back and forth only applies the differences
-typedef struct {
-    alignas(64) int16_t acc[NNUE_HIDDEN_SIZE];
-    uint32_t raw[NNUE_TP_MAX_THREATS];
-    uint16_t raw_pairs[NNUE_TP_MAX_PAIRS];
-    int n_raw;
-    int n_raw_pairs;
-    Bitboard pawns[2];
-    bool valid;
-} TPCacheEntry;
-
-static TPCacheEntry tp_cache[2][2];
-static const NNUENetwork* tp_cache_net = NULL;
-static uint32_t tp_cache_generation = 0;
-
-// Raw threat/pair changes between a base and the current frame
-typedef struct {
-    uint32_t add[NNUE_TP_MAX_THREATS], sub[NNUE_TP_MAX_THREATS];
-    uint16_t pair_add[NNUE_TP_MAX_PAIRS], pair_sub[NNUE_TP_MAX_PAIRS];
-    int n_add, n_sub, n_pair_add, n_pair_sub;
-} TPChanges;
-
-static void tp_changes(const TPBase* base, const NNUEAccumulator* acc, const Bitboard pawns[2], TPChanges* ch) {
-    tp_diff_threats(base->raw, base->n_raw, acc->tp_raw, acc->tp_n_raw, ch->add, &ch->n_add, ch->sub, &ch->n_sub);
-    if (base->pawns[0] != pawns[0] || base->pawns[1] != pawns[1]) {
-        tp_diff_pairs(base->raw_pairs, base->n_raw_pairs, acc->tp_raw_pairs, acc->tp_n_raw_pairs,
-                      ch->pair_add, &ch->n_pair_add, ch->pair_sub, &ch->n_pair_sub);
-    } else {
-        ch->n_pair_add = ch->n_pair_sub = 0;
+void nnue_record_threat_move(NNUEAccumulator* acc, const Board* board, int from, int to, int moving_piece,
+                             int captured_piece, int capture_sq, bool castling) {
+    if (acc == NULL) return;
+    acc->tp_computed[0] = acc->tp_computed[1] = false;
+    acc->tp_mask[0] = (int8_t)nnue_tp_square_mask(board, 0);
+    acc->tp_mask[1] = (int8_t)nnue_tp_square_mask(board, 1);
+    // a frame reused without nnue_prepare_child_accumulator (search at max ply) holds no usable delta
+    if (acc->tp_state != NNUE_TP_STATE_PREPARED) {
+        acc->tp_state = NNUE_TP_STATE_NONE;
+        return;
     }
+    const bool ok = nnue_tp_record_move(board, from, to, moving_piece, captured_piece, capture_sq, castling,
+                                        &acc->tp_delta);
+    acc->tp_state = ok ? NNUE_TP_STATE_RECORDED : NNUE_TP_STATE_NONE;
 }
 
-// Full threat accumulator of one perspective from the frame's raw lists
-static void tp_build(int16_t* dst, const NNUEAccumulator* acc, int p, int mask, const NNUENetwork* net) {
+// pawnocchio buildThreatAccumulator: one half from scratch
+static void tp_build_half(const Board* board, NNUEAccumulator* acc, int p, const NNUENetwork* net) {
+    const int mask = nnue_tp_square_mask(board, p);
+    uint32_t raw[NNUE_TP_MAX_THREATS];
+    uint16_t raw_pairs[NNUE_TP_MAX_PAIRS];
     uint16_t idx[NNUE_TP_MAX_ACTIVE];
-    int n = nnue_tp_threat_indices(acc->tp_raw, acc->tp_n_raw, p, mask, idx);
-    n += nnue_tp_pair_indices(acc->tp_raw_pairs, acc->tp_n_raw_pairs, p, mask, idx + n);
-    tp_apply(dst, NULL, net, idx, n, NULL, 0);
-}
-
-// Brings acc->tp up to date. prev: the frame this one was derived from (may be NULL).
-static void tp_update(const Board* board, NNUEAccumulator* acc, const NNUEAccumulator* prev,
-                      const NNUENetwork* net) {
-    if (tp_cache_net != net || tp_cache_generation != net_generation) {
-        for (int p = 0; p < 2; p++) tp_cache[p][0].valid = tp_cache[p][1].valid = false;
-        tp_cache_net = net;
-        tp_cache_generation = net_generation;
-    }
-
-    const NNUEAccumulator* anc = prev;
-    for (int steps = 0; anc != NULL && !anc->tp_computed; steps++) {
-        anc = steps < 256 ? anc->previous : NULL;
-    }
-
-    const int mask[2] = { nnue_tp_square_mask(board, 0), nnue_tp_square_mask(board, 1) };
-    const Bitboard pawns[2] = { board->byTypeBB[WHITE][PAWN], board->byTypeBB[BLACK][PAWN] };
-
-    acc->tp_n_raw = (int16_t)nnue_tp_raw_threats(board, acc->tp_raw);
-    if (anc != NULL && anc->tp_pawns[0] == pawns[0] && anc->tp_pawns[1] == pawns[1]) {
-        acc->tp_n_raw_pairs = anc->tp_n_raw_pairs;
-        memcpy(acc->tp_raw_pairs, anc->tp_raw_pairs, (size_t)anc->tp_n_raw_pairs * sizeof(uint16_t));
-    } else {
-        acc->tp_n_raw_pairs = (int16_t)nnue_tp_raw_pairs(board, acc->tp_raw_pairs);
-    }
-
-    TPChanges anc_changes;  // shared by both perspectives
-    bool anc_changes_done = false;
-
-    for (int p = 0; p < 2; p++) {
-        TPCacheEntry* entry = &tp_cache[p][(mask[p] & 7) != 0];
-        const bool from_ancestor = anc != NULL && anc->tp_mask[p] == mask[p];
-        if (from_ancestor || entry->valid) {
-            TPBase base;
-            TPChanges own_changes;
-            const TPChanges* ch;
-            if (from_ancestor) {
-                base = (TPBase){ anc->tp[p], anc->tp_raw, anc->tp_n_raw, anc->tp_raw_pairs, anc->tp_n_raw_pairs,
-                                 { anc->tp_pawns[0], anc->tp_pawns[1] } };
-                if (!anc_changes_done) {
-                    tp_changes(&base, acc, pawns, &anc_changes);
-                    anc_changes_done = true;
-                }
-                ch = &anc_changes;
-            } else {
-                base = (TPBase){ entry->acc, entry->raw, entry->n_raw, entry->raw_pairs, entry->n_raw_pairs,
-                                 { entry->pawns[0], entry->pawns[1] } };
-                tp_changes(&base, acc, pawns, &own_changes);
-                ch = &own_changes;
-            }
-            uint16_t add[NNUE_TP_MAX_ACTIVE], sub[NNUE_TP_MAX_ACTIVE];
-            int n_add = nnue_tp_threat_indices(ch->add, ch->n_add, p, mask[p], add);
-            int n_sub = nnue_tp_threat_indices(ch->sub, ch->n_sub, p, mask[p], sub);
-            n_add += nnue_tp_pair_indices(ch->pair_add, ch->n_pair_add, p, mask[p], add + n_add);
-            n_sub += nnue_tp_pair_indices(ch->pair_sub, ch->n_pair_sub, p, mask[p], sub + n_sub);
-            tp_apply(acc->tp[p], base.acc, net, add, n_add, sub, n_sub);
-        } else {
-            tp_build(acc->tp[p], acc, p, mask[p], net);
-        }
-
-        if (!from_ancestor) {
-            memcpy(entry->acc, acc->tp[p], sizeof(entry->acc));
-            memcpy(entry->raw, acc->tp_raw, (size_t)acc->tp_n_raw * sizeof(uint32_t));
-            memcpy(entry->raw_pairs, acc->tp_raw_pairs, (size_t)acc->tp_n_raw_pairs * sizeof(uint16_t));
-            entry->n_raw = acc->tp_n_raw;
-            entry->n_raw_pairs = acc->tp_n_raw_pairs;
-            entry->pawns[0] = pawns[0];
-            entry->pawns[1] = pawns[1];
-            entry->valid = true;
-        }
-        acc->tp_mask[p] = (int8_t)mask[p];
-        acc->tp_pawns[p] = pawns[p];
-    }
-    acc->tp_computed = true;
-
-#ifdef DEBUG_NNUE_EVAL
-    // incremental result and stored lists against a fresh build from the board
-    uint32_t raw[NNUE_TP_MAX_THREATS];
-    uint16_t raw_pairs[NNUE_TP_MAX_PAIRS];
     const int n_raw = nnue_tp_raw_threats(board, raw);
     const int n_raw_pairs = nnue_tp_raw_pairs(board, raw_pairs);
-    const bool lists_ok = n_raw == acc->tp_n_raw && n_raw_pairs == acc->tp_n_raw_pairs &&
-                          memcmp(raw, acc->tp_raw, (size_t)n_raw * sizeof(uint32_t)) == 0 &&
-                          memcmp(raw_pairs, acc->tp_raw_pairs, (size_t)n_raw_pairs * sizeof(uint16_t)) == 0;
+    int n = nnue_tp_threat_indices(raw, n_raw, p, mask, idx);
+    n += nnue_tp_pair_indices(raw_pairs, n_raw_pairs, p, mask, idx + n);
+    tp_apply(acc->tp[p], NULL, net, idx, n, NULL, 0);
+    acc->tp_mask[p] = (int8_t)mask;
+    acc->tp_computed[p] = true;
+}
+
+// pawnocchio materialiseThreatHalf: frame = parent + the frame's recorded changes
+static void tp_materialise_half(NNUEAccumulator* frame, const NNUEAccumulator* parent, int p,
+                                const NNUENetwork* net) {
+    const NNUETPDelta* d = &frame->tp_delta;
+    const int mask = frame->tp_mask[p];
+    uint16_t add[NNUE_TP_MAX_ROWS], sub[NNUE_TP_MAX_ROWS];
+    int n_add = nnue_tp_threat_indices(d->add, d->n_add, p, mask, add);
+    int n_sub = nnue_tp_threat_indices(d->sub, d->n_sub, p, mask, sub);
+    n_add += nnue_tp_pair_indices(d->pair_add, d->n_pair_add, p, mask, add + n_add);
+    n_sub += nnue_tp_pair_indices(d->pair_sub, d->n_pair_sub, p, mask, sub + n_sub);
+    tp_apply(frame->tp[p], parent->tp[p], net, add, n_add, sub, n_sub);
+    frame->tp_computed[p] = true;
+}
+
+// pawnocchio resolvePending, per perspective. Only the current board is known here (make/unmake),
+// so a mirror change inside the pending chain can only be rebuilt for the frame being evaluated;
+// the frames from that change on stay pending for this perspective.
+static void tp_ensure(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
     for (int p = 0; p < 2; p++) {
-        alignas(64) int16_t full[NNUE_HIDDEN_SIZE];
-        tp_build(full, acc, p, mask[p], net);
-        if (memcmp(full, acc->tp[p], sizeof(full)) != 0 || !lists_ok) {
-            printf("info string THREAT ACC MISMATCH perspective %d (ancestor %s, lists %s)\n", p,
-                   anc ? "yes" : "no", lists_ok ? "ok" : "bad");
-            memcpy(acc->tp[p], full, sizeof(full));
+        if (acc->tp_computed[p]) continue;
+
+        NNUEAccumulator* chain[256];
+        int n = 0;
+        NNUEAccumulator* cursor = acc;
+        while (n < 256 && cursor != NULL && !cursor->tp_computed[p] && cursor->tp_state == NNUE_TP_STATE_RECORDED) {
+            chain[n++] = cursor;
+            cursor = cursor->previous;
+        }
+        if (cursor == NULL || !cursor->tp_computed[p]) {
+            tp_build_half(board, acc, p, net);
+            continue;
+        }
+
+        const NNUEAccumulator* parent = cursor;
+        int i = n - 1;
+        for (; i >= 0; i--) {
+            if (chain[i]->tp_mask[p] != parent->tp_mask[p]) break;
+            tp_materialise_half(chain[i], parent, p, net);
+            parent = chain[i];
+        }
+        if (i >= 0) tp_build_half(board, acc, p, net);
+    }
+
+#ifdef DEBUG_NNUE_EVAL
+    // pawnocchio's oracle check: incremental result against a build from scratch
+    for (int p = 0; p < 2; p++) {
+        alignas(64) int16_t incremental[NNUE_HIDDEN_SIZE];
+        memcpy(incremental, acc->tp[p], sizeof(incremental));
+        tp_build_half(board, acc, p, net);
+        if (memcmp(incremental, acc->tp[p], sizeof(incremental)) != 0) {
+            printf("info string THREAT ACC MISMATCH perspective %d\n", p);
         }
     }
 #endif
@@ -1040,14 +981,11 @@ static void tp_update(const Board* board, NNUEAccumulator* acc, const NNUEAccumu
 int nnue_evaluate(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
     if (acc == NULL || net == NULL) return 0;
 
-#if NNUE_ARCH == NNUE_ARCH_THREATS
-    const NNUEAccumulator* prev = acc->previous;  // a PSQT refresh below clears acc->previous
-#endif
     if (!acc->computed) {
         nnue_materialize_accumulator(board, acc, net);
     }
 #if NNUE_ARCH == NNUE_ARCH_THREATS
-    if (!acc->tp_computed) tp_update(board, acc, prev, net);
+    if (!acc->tp_computed[0] || !acc->tp_computed[1]) tp_ensure(board, acc, net);
     const int16_t* us_tp = board->whiteToMove ? acc->tp[WHITE] : acc->tp[BLACK];
     const int16_t* them_tp = board->whiteToMove ? acc->tp[BLACK] : acc->tp[WHITE];
 #else
@@ -1233,7 +1171,7 @@ void nnue_materialize_accumulator(const Board* board, NNUEAccumulator* acc, cons
 
     while (cursor != NULL && !cursor->computed) {
         if (cursor->requires_refresh || count >= (int)(sizeof(chain) / sizeof(chain[0]))) {
-            nnue_refresh_accumulator(board, acc, net);
+            psqt_refresh_in_chain(board, acc, net);
             return;
         }
         chain[count++] = cursor;
@@ -1241,7 +1179,7 @@ void nnue_materialize_accumulator(const Board* board, NNUEAccumulator* acc, cons
     }
 
     if (cursor == NULL || !cursor->computed) {
-        nnue_refresh_accumulator(board, acc, net);
+        psqt_refresh_in_chain(board, acc, net);
         return;
     }
 
@@ -1251,7 +1189,7 @@ void nnue_materialize_accumulator(const Board* board, NNUEAccumulator* acc, cons
         vec_copy(frame->black, cursor->black, NNUE_HIDDEN_SIZE);
 
         if (!nnue_apply_lazy_delta(frame, net)) {
-            nnue_refresh_accumulator(board, acc, net);
+            psqt_refresh_in_chain(board, acc, net);
             return;
         }
 
@@ -1289,8 +1227,8 @@ void nnue_apply_move(const Board* board, NNUEAccumulator* acc, const NNUENetwork
     // Sonst würden wir Deltas auf Müllwerte anwenden.
     if (!acc->computed) return;
 #if NNUE_ARCH == NNUE_ARCH_THREATS
-    acc->tp_computed = false;  // no ancestor frame: full threat refresh on the next eval
-    acc->previous = NULL;
+    acc->tp_computed[0] = acc->tp_computed[1] = false;  // no parent frame: rebuilt on the next eval
+    acc->tp_state = NNUE_TP_STATE_NONE;
 #endif
     
     nnue_update_piece_move(acc, board, net, from_sq, to_sq, piece_type, is_white ? 0 : 1, true);
@@ -1334,8 +1272,8 @@ void nnue_undo_move(const Board* board, NNUEAccumulator* acc, const NNUENetwork*
     // WICHTIG: Nur inkrementell updaten wenn Accumulator bereits initialisiert!
     if (!acc->computed) return;
 #if NNUE_ARCH == NNUE_ARCH_THREATS
-    acc->tp_computed = false;  // no ancestor frame: full threat refresh on the next eval
-    acc->previous = NULL;
+    acc->tp_computed[0] = acc->tp_computed[1] = false;  // no parent frame: rebuilt on the next eval
+    acc->tp_state = NNUE_TP_STATE_NONE;
 #endif
     
     nnue_update_piece_move(acc, board, net, from_sq, to_sq, piece_type, is_white ? 0 : 1, false);

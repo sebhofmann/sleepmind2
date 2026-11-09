@@ -89,17 +89,15 @@ typedef struct NNUEAccumulator {
     int black_king_sq;
 #if NNUE_ARCH == NNUE_ARCH_THREATS
     // Threat + pawn-pair part of the FT, kept apart from white/black (PSQT + bias) so the Finny table
-    // stays PSQT-only; both are summed (saturating) before the activation. Updated lazily on eval by
-    // diffing the active threats/pairs against the nearest ancestor frame that has them.
+    // stays PSQT-only; both are summed (saturating) before the activation. As in pawnocchio the move
+    // into this frame records its threat/pawn-pair changes (applyMove -> nnue_record_threat_move),
+    // and on eval every pending frame is materialised from its parent; a perspective whose king
+    // mirror state changed is rebuilt from the board.
     alignas(64) int16_t tp[2][NNUE_HIDDEN_SIZE];
-    // raw threats / pawn pairs in board coordinates (nnue_threats.h), shared by both perspectives
-    uint32_t tp_raw[NNUE_TP_MAX_THREATS];
-    uint16_t tp_raw_pairs[NNUE_TP_MAX_PAIRS];
-    int16_t tp_n_raw;
-    int16_t tp_n_raw_pairs;
-    int8_t tp_mask[2];        // square mask of each perspective the lists were built with
-    Bitboard tp_pawns[2];     // pawn bitboards the pair lists were built from
-    bool tp_computed;
+    NNUETPDelta tp_delta;     // changes of the move into this frame (valid if tp_state == recorded)
+    int8_t tp_state;          // NNUE_TP_STATE_*
+    int8_t tp_mask[2];        // square mask of each perspective in this frame's position
+    bool tp_computed[2];
 #endif
 } NNUEAccumulator;
 
@@ -143,6 +141,17 @@ typedef struct {
 
     bool loaded;
 } NNUENetwork;
+
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+#define NNUE_TP_STATE_NONE      0   // no usable delta: rebuild from the board
+#define NNUE_TP_STATE_PREPARED  1   // fresh child frame, waiting for its move
+#define NNUE_TP_STATE_RECORDED  2   // tp_delta holds the move's changes
+
+// Records the threat/pawn-pair changes of the move just made into a prepared child frame (board
+// after the move; pieces as enum Piece, captured_piece NO_PIECE if none)
+void nnue_record_threat_move(NNUEAccumulator* acc, const Board* board, int from, int to, int moving_piece,
+                             int captured_piece, int capture_sq, bool castling);
+#endif
 
 // Global network instance (deprecated - weights now in NNUEAccumulator)
 extern NNUENetwork nnue_net;

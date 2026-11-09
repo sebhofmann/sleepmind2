@@ -39,6 +39,26 @@ int nnue_tp_raw_threats(const Board* board, uint32_t* out);
 // perspective (same-type attack towards a higher square) are skipped. Returns the count.
 int nnue_tp_threat_indices(const uint32_t* raw, int n, int perspective, int mask, uint16_t* out);
 
+// Threat/pawn-pair changes of one move as raw tuples (packing as above), see nnue_tp_record_move
+#define NNUE_TP_MAX_DELTA        160
+#define NNUE_TP_MAX_PAIR_DELTA   32   // removed: <= 2 x 15 + 1, added: <= 15
+typedef struct {
+    uint32_t add[NNUE_TP_MAX_DELTA];
+    uint32_t sub[NNUE_TP_MAX_DELTA];
+    uint16_t pair_add[NNUE_TP_MAX_PAIR_DELTA];
+    uint16_t pair_sub[NNUE_TP_MAX_PAIR_DELTA];
+    int16_t n_add, n_sub;
+    int8_t n_pair_add, n_pair_sub;
+    bool overflow;
+} NNUETPDelta;
+
+// Emits the threat and pawn-pair changes of a move (after pawnocchio's threat updates), called on
+// the board AFTER the move. moving_piece / captured_piece as enum Piece (NO_PIECE = no capture),
+// capture_sq differs from `to` only for en passant, castling: `to` is the king's target square.
+// Returns false if the buffers overflowed (the caller then rebuilds from scratch).
+bool nnue_tp_record_move(const Board* board, int from, int to, int moving_piece, int captured_piece,
+                         int capture_sq, bool castling, NNUETPDelta* delta);
+
 // Active threat features of both perspectives (masks from nnue_tp_square_mask)
 void nnue_tp_threats(const Board* board, const int mask[2], uint16_t* out[2], int count[2]);
 
