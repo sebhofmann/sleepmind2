@@ -11,17 +11,24 @@
 //   NNUE_ARCH_LEGACY: (768x10 -> HIDDEN)x2 -> SCReLU -> 1, 8 output buckets  (training/training.rs)
 //   NNUE_ARCH_DEEP:   (768x16 -> 768)x2 -> pairwise CReLU -> 16 -> [x, x^2] -> 32 -> 1,
 //                     8 output buckets on every layer                          (training/training_deep.rs)
+//   NNUE_ARCH_THREATS: deep, plus threat and pawn-pair inputs (i8, see nnue_threats.h) added to the
+//                     FT accumulator before the pairwise CReLU                (training/training_threats.rs)
 // A net only loads into a build of the matching architecture (checked via file size).
 #define NNUE_ARCH_LEGACY     0
 #define NNUE_ARCH_DEEP       1
+#define NNUE_ARCH_THREATS    2
 #ifndef NNUE_ARCH
 #define NNUE_ARCH            NNUE_ARCH_DEEP
 #endif
+// Architectures sharing the deep output stack (pairwise CReLU -> L1 -> L2 -> L3)
+#define NNUE_IS_DEEP         (NNUE_ARCH == NNUE_ARCH_DEEP || NNUE_ARCH == NNUE_ARCH_THREATS)
 
 // Net file of this build (set by the Makefile per architecture)
 #ifndef NNUE_EMBED_FILE
 #if NNUE_ARCH == NNUE_ARCH_DEEP
 #define NNUE_EMBED_FILE      "quantised_deep.bin"
+#elif NNUE_ARCH == NNUE_ARCH_THREATS
+#define NNUE_EMBED_FILE      "quantised_threats.bin"
 #else
 #define NNUE_EMBED_FILE      "quantised.bin"
 #endif
@@ -30,7 +37,7 @@
 #define NNUE_INPUT_SIZE      768   // 64 squares * 6 piece types * 2 colors
 #define NNUE_OUTPUT_BUCKETS  8     // Output buckets (material count)
 
-#if NNUE_ARCH == NNUE_ARCH_DEEP
+#if NNUE_IS_DEEP
 #define NNUE_HIDDEN_SIZE     768   // FT width per perspective (pairwise -> 384 per perspective)
 #define NNUE_INPUT_BUCKETS   16    // King position buckets
 #define NNUE_L1_IN           NNUE_HIDDEN_SIZE   // 2 perspectives x HIDDEN/2
@@ -55,6 +62,10 @@
 #define NNUE_QA              255   // Feature transformer weight quantization
 #define NNUE_QB              64    // Legacy: output layer weight quantization
 #define NNUE_Q               64    // Deep: L2/L3 weight quantization
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+#include "nnue_threats.h"
+#endif
+
 #ifndef NNUE_SCALE
 #define NNUE_SCALE           295   // Final output scale (must match bullet's eval_scale)
 #endif
@@ -76,6 +87,20 @@ typedef struct NNUEAccumulator {
     int capture_sq;
     int white_king_sq;
     int black_king_sq;
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    // Threat + pawn-pair part of the FT, kept apart from white/black (PSQT + bias) so the Finny table
+    // stays PSQT-only; both are summed (saturating) before the activation. Updated lazily on eval by
+    // diffing the active threats/pairs against the nearest ancestor frame that has them.
+    alignas(64) int16_t tp[2][NNUE_HIDDEN_SIZE];
+    // raw threats / pawn pairs in board coordinates (nnue_threats.h), shared by both perspectives
+    uint32_t tp_raw[NNUE_TP_MAX_THREATS];
+    uint16_t tp_raw_pairs[NNUE_TP_MAX_PAIRS];
+    int16_t tp_n_raw;
+    int16_t tp_n_raw_pairs;
+    int8_t tp_mask[2];        // square mask of each perspective the lists were built with
+    Bitboard tp_pawns[2];     // pawn bitboards the pair lists were built from
+    bool tp_computed;
+#endif
 } NNUEAccumulator;
 
 // NNUE Network weights (separate from accumulator, can be loaded from file)
@@ -83,10 +108,15 @@ typedef struct NNUEAccumulator {
 typedef struct {
     // Feature transformer weights: [INPUT_BUCKETS][INPUT_SIZE][HIDDEN_SIZE]
     alignas(64) int16_t ft_weights[NNUE_INPUT_BUCKETS][NNUE_INPUT_SIZE][NNUE_HIDDEN_SIZE];
-    // Feature transformer biases: [HIDDEN_SIZE]
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    // Threat + pawn-pair weights (bullet l0/pp/w, i8 x QA): [feature][HIDDEN_SIZE]; SIMD builds
+    // interleave every 32-value block at load time (tp_interleave_weights in nnue.c)
+    alignas(64) int8_t tp_weights[NNUE_TP_INPUTS][NNUE_HIDDEN_SIZE];
+#endif
+    // Feature transformer biases: [HIDDEN_SIZE] (threats arch: bullet l0/pp/b)
     alignas(64) int16_t ft_biases[NNUE_HIDDEN_SIZE];
 
-#if NNUE_ARCH == NNUE_ARCH_DEEP
+#if NNUE_IS_DEEP
     // L1: i8, [bucket][out][in], in = stm pairwise (HIDDEN/2) | ntm pairwise (HIDDEN/2), scale 2^14 with biases
     alignas(64) int8_t l1_weights[NNUE_OUTPUT_BUCKETS][NNUE_L2_SIZE][NNUE_L1_IN];
     alignas(64) int32_t l1_biases[NNUE_OUTPUT_BUCKETS][NNUE_L2_SIZE];
