@@ -273,6 +273,20 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
         nnue_refresh_accumulator(board, nnue_acc, nnue_net);
     }
 
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    // threat/pawn-pair changes of this move, on the board after the move (as in pawnocchio)
+    if (nnue_lazy && nnue_net != NULL) {
+        int capSq = to;
+        uint8_t capPiece = capturedPiece;
+        if (MOVE_IS_EN_PASSANT(move)) {
+            capSq = (us == WHITE) ? (to - 8) : (to + 8);
+            capPiece = (uint8_t)MAKE_PIECE_NEW(PAWN, them);
+        }
+        nnue_record_threat_move(nnue_acc, board, from, to, movingPiece, capPiece, capSq,
+                                MOVE_IS_CASTLING(move));
+    }
+#endif
+
     // En passant square update
     if (undoInfo->oldEnPassantSquare != SQ_NONE) {
         zobrist ^= zobrist_enpassant_keys[undoInfo->oldEnPassantSquare];
