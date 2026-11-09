@@ -27,7 +27,7 @@ use bullet::{
         lr::{self, LrScheduler},
         wdl::{self, WdlScheduler},
     },
-    value::{loader::DirectSequentialDataLoader, save::save_to_checkpoint},
+    value::save::save_to_checkpoint,
 };
 use bullet_trainer::{
     model::{
@@ -42,6 +42,11 @@ use bullet_trainer::{
     run::{DefaultDevice, HostPool, TrainingSchedule, TrainingSteps, train},
 };
 use std::env;
+
+mod mixed_loader;
+mod viri_filter;
+use mixed_loader::MixedLoader;
+use viri_filter::{VIRI_BUFFER_MB, VIRI_THREADS, should_keep};
 
 // Must match NNUE_SCALE in src/nnue.h
 const EVAL_SCALE: f32 = 295.0;
@@ -117,7 +122,9 @@ fn make_mapper(inputs: &ModelInputs<InputTy>, wdl: impl WdlScheduler) -> ModelIn
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    let mut dataset_path = "data/baseline.data".to_string();
+    let mut bullet_paths: Vec<String> = Vec::new();
+    let mut viri_paths: Vec<String> = Vec::new();
+    let mut viri_fraction: Option<f64> = None;
     let mut superbatches: usize = 1100;
     let mut start_stage: usize = 0;
     let mut start_superbatch: usize = 1;
@@ -131,7 +138,11 @@ fn main() {
     while i < args.len() {
         let next = |i: usize| args.get(i + 1).cloned().unwrap_or_default();
         match args[i].as_str() {
-            "--data" | "-d" => dataset_path = next(i),
+            "--data" | "-d" => bullet_paths.push(next(i)),
+            "--viri" => viri_paths.push(next(i)),
+            "--viri-fraction" => {
+                viri_fraction = Some(next(i).parse().expect("--viri-fraction must be a number in [0, 1]"))
+            }
             "--superbatches" | "-s" => superbatches = next(i).parse().expect("invalid -s"),
             "--start-stage" => start_stage = next(i).parse().expect("invalid --start-stage"),
             "--start" => start_superbatch = next(i).parse().expect("invalid --start"),
@@ -143,7 +154,10 @@ fn main() {
             "--help" | "-h" => {
                 println!("SleepMind deep NNUE trainer (engine: make NNUE_ARCH=deep)");
                 println!();
-                println!("  -d, --data <PATH>        Training data file (bulletformat)");
+                println!("  -d, --data <PATH>        bulletformat data file, repeatable");
+                println!("      --viri <PATH>        viriformat binpack (whole games), repeatable; filtered in the loader");
+                println!("      --viri-fraction <F>  share of viriformat positions per batch when mixing with --data");
+                println!("                           (default: proportional to the number of positions)");
                 println!("  -s, --superbatches <N>   Total superbatches over all 3 stages (default: 1100)");
                 println!("                           split ~1/11 warmup, ~8/11 main, ~2/11 finetune");
                 println!("      --start-stage <N>    Stage to start in: 0, 1 or 2 (default: 0)");
@@ -161,6 +175,9 @@ fn main() {
         i += 2;
     }
     assert!(start_stage <= 2, "--start-stage must be 0, 1 or 2");
+    if bullet_paths.is_empty() && viri_paths.is_empty() && eval_fens.is_none() {
+        bullet_paths.push("data/baseline.data".to_string());
+    }
 
     let stage0_sbs = (superbatches / 11).max(2);
     let stage2_sbs = (superbatches * 2 / 11).max(1);
@@ -168,7 +185,12 @@ fn main() {
     let warmup_sbs = stage0_sbs / 2;
 
     println!("=== SleepMind deep NNUE Trainer ===");
-    println!("Dataset:   {dataset_path}");
+    for path in &bullet_paths {
+        println!("Dataset:   {path} (bulletformat)");
+    }
+    for path in &viri_paths {
+        println!("Dataset:   {path} (viriformat)");
+    }
     println!("Network:   {net_id}  (768x{INPUT_BUCKETS} -> {L1} pairwise -> {L2} -> {L3} -> 1, {OUTPUT_BUCKETS} out buckets)");
     println!("Stages:    0: {stage0_sbs} SBs (warmup), 1: {stage1_sbs} SBs (main), 2: {stage2_sbs} SBs (finetune)");
     println!("Start:     stage {start_stage}, superbatch {start_superbatch}");
@@ -273,7 +295,7 @@ fn main() {
         SavedFormat::id("l3/b").round().quantise::<i32>(i32::from(Q).pow(4)),
     ];
 
-    let reader = DirectSequentialDataLoader::new(&[&dataset_path]);
+    let reader = MixedLoader::new(&bullet_paths, &viri_paths, should_keep, VIRI_BUFFER_MB, VIRI_THREADS, viri_fraction);
 
     let mut run = |stage: usize, end_superbatch: usize, lr_schedule, mapper| {
         let start = if stage == start_stage { start_superbatch } else { 1 };
