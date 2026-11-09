@@ -21,7 +21,7 @@
 // Input bucket map based on king position (32 elements for half-board with mirroring)
 // Index = rank * 8 + file (files 4-7 are mirrored from files 0-3)
 // Must match BUCKET_LAYOUT in the training script of the selected architecture.
-#if NNUE_ARCH == NNUE_ARCH_DEEP
+#if NNUE_IS_DEEP
 // 16 buckets (training/training_deep.rs, layout from bullet's advanced example)
 const int NNUE_INPUT_BUCKET_MAP[64] = {
      0,  1,  2,  3,  3,  2,  1,  0,  // Rank 1
@@ -133,8 +133,11 @@ typedef struct {
 static int nnue_sections(NNUENetwork* net, NNUESection* out) {
     int n = 0;
     out[n++] = NNUE_SECTION(ft_weights);
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    out[n++] = NNUE_SECTION(tp_weights);
+#endif
     out[n++] = NNUE_SECTION(ft_biases);
-#if NNUE_ARCH == NNUE_ARCH_DEEP
+#if NNUE_IS_DEEP
     out[n++] = NNUE_SECTION(l1_weights);
     out[n++] = NNUE_SECTION(l1_biases);
     out[n++] = NNUE_SECTION(l2_weights);
@@ -148,7 +151,7 @@ static int nnue_sections(NNUENetwork* net, NNUESection* out) {
     return n;
 }
 
-#define NNUE_MAX_SECTIONS 8
+#define NNUE_MAX_SECTIONS 9
 
 static size_t nnue_parameter_size(void) {
     NNUESection sections[NNUE_MAX_SECTIONS];
@@ -172,15 +175,39 @@ uint64_t nnue_hash(const unsigned char* data, size_t size) {
     return hash;
 }
 
-#if NNUE_ARCH == NNUE_ARCH_DEEP
+#if NNUE_IS_DEEP
 // Derived (non-file) data, refreshed after every load
 #if defined(NNUE_AVX2) || defined(NNUE_AVX512)
 static void deep_init_nnz_lut(void);
 #endif
 
+#if NNUE_ARCH == NNUE_ARCH_THREATS && (defined(NNUE_AVX2) || defined(NNUE_AVX512))
+// In place, per 32-value block of every row: byte 2k = w[k], byte 2k + 1 = w[16 + k] (see tp_apply).
+// tp_weights is not in file order afterwards.
+static void tp_interleave_weights(NNUENetwork* net) {
+    for (int f = 0; f < NNUE_TP_INPUTS; f++) {
+        int8_t* row = net->tp_weights[f];
+        for (int b = 0; b < NNUE_HIDDEN_SIZE; b += 32) {
+            int8_t tmp[32];
+            for (int k = 0; k < 16; k++) {
+                tmp[2 * k] = row[b + k];
+                tmp[2 * k + 1] = row[b + 16 + k];
+            }
+            memcpy(row + b, tmp, sizeof(tmp));
+        }
+    }
+}
+#endif
+
 static void nnue_deep_prepare(NNUENetwork* net) {
 #if defined(NNUE_AVX2) || defined(NNUE_AVX512)
     deep_init_nnz_lut();
+#endif
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    nnue_tp_init();
+#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+    tp_interleave_weights(net);
+#endif
 #endif
     for (int b = 0; b < NNUE_OUTPUT_BUCKETS; b++) {
         for (int o = 0; o < NNUE_L2_SIZE; o++) {
@@ -222,7 +249,7 @@ bool nnue_load_memory(const unsigned char* data, size_t size, NNUENetwork* net) 
         memcpy(sections[i].ptr, cursor, sections[i].size);
         cursor += sections[i].size;
     }
-#if NNUE_ARCH == NNUE_ARCH_DEEP
+#if NNUE_IS_DEEP
     nnue_deep_prepare(net);
 #endif
 
@@ -469,6 +496,10 @@ void nnue_refresh_accumulator(const Board* board, NNUEAccumulator* acc, const NN
     finny_refresh_perspective(board, acc->white, net, 0, get_king_bucket(white_king_sq, 0));
     finny_refresh_perspective(board, acc->black, net, 1, get_king_bucket(black_king_sq, 1));
 
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    // the threat part is rebuilt on the next eval (from the ancestor saved by nnue_evaluate)
+    acc->tp_computed = false;
+#endif
     acc->computed = true;
     acc->dirty = false;
     acc->requires_refresh = false;
@@ -485,6 +516,9 @@ void nnue_prepare_child_accumulator(NNUEAccumulator* child, NNUEAccumulator* par
     if (child == NULL) return;
 
     child->computed = false;
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    child->tp_computed = false;
+#endif
     child->dirty = true;
     child->requires_refresh = false;
     child->previous = parent;
@@ -504,6 +538,9 @@ void nnue_mark_accumulator_dirty(NNUEAccumulator* acc, const Board* board, int f
     if (acc == NULL) return;
 
     acc->computed = false;
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    acc->tp_computed = false;
+#endif
     acc->dirty = true;
     acc->requires_refresh = requires_refresh;
     acc->from_sq = from_sq;
@@ -578,7 +615,7 @@ static inline int32_t screlu_dot(const int16_t* acc, const int16_t* weights, int
 #endif
 }
 
-#if NNUE_ARCH == NNUE_ARCH_DEEP
+#if NNUE_IS_DEEP
 // ---------------------------------------------------------------------------------------------
 // Deep architecture forward pass, after pawnocchio's src/nnue/outputs/multilayer.zig (the
 // engine bullet's examples/advanced comes from). Integer scales (see training/training_deep.rs):
@@ -625,7 +662,11 @@ static void deep_init_nnz_lut(void) {
 // Pairwise CReLU of one perspective: out[i] = clamp(acc[i], 0, 255) * min(acc[i + HALF], 255) >> 9,
 // negative products saturate to 0. With SIMD the indices of the nonzero 4-byte groups are
 // collected on the fly: appended to idx[count..] offset by group_base, new count returned.
-static inline int deep_ft_activate(const int16_t* acc, uint8_t* out, uint16_t* idx, int count, int group_base) {
+static inline int deep_ft_activate(const int16_t* acc, const int16_t* tp, uint8_t* out, uint16_t* idx, int count,
+                                   int group_base) {
+#if NNUE_ARCH != NNUE_ARCH_THREATS
+    (void)tp;
+#endif
 #if defined(NNUE_AVX2) || defined(NNUE_AVX512)
     const __m256i zero = _mm256_setzero_si256();
     const __m256i qa = _mm256_set1_epi16(NNUE_QA);
@@ -636,6 +677,13 @@ static inline int deep_ft_activate(const int16_t* acc, uint8_t* out, uint16_t* i
         __m256i a1 = _mm256_load_si256((const __m256i*)(acc + i + 16));
         __m256i b0 = _mm256_load_si256((const __m256i*)(acc + NNUE_FT_HALF + i));
         __m256i b1 = _mm256_load_si256((const __m256i*)(acc + NNUE_FT_HALF + i + 16));
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+        // PSQT + threats; saturation cannot change the result, everything is clamped to [0, 255] below
+        a0 = _mm256_adds_epi16(a0, _mm256_load_si256((const __m256i*)(tp + i)));
+        a1 = _mm256_adds_epi16(a1, _mm256_load_si256((const __m256i*)(tp + i + 16)));
+        b0 = _mm256_adds_epi16(b0, _mm256_load_si256((const __m256i*)(tp + NNUE_FT_HALF + i)));
+        b1 = _mm256_adds_epi16(b1, _mm256_load_si256((const __m256i*)(tp + NNUE_FT_HALF + i + 16)));
+#endif
         a0 = _mm256_min_epi16(_mm256_max_epi16(a0, zero), qa);
         a1 = _mm256_min_epi16(_mm256_max_epi16(a1, zero), qa);
         b0 = _mm256_min_epi16(b0, qa);
@@ -658,8 +706,13 @@ static inline int deep_ft_activate(const int16_t* acc, uint8_t* out, uint16_t* i
     (void)idx;
     (void)group_base;
     for (int i = 0; i < NNUE_FT_HALF; i++) {
-        int32_t a = acc[i] < 0 ? 0 : (acc[i] > NNUE_QA ? NNUE_QA : acc[i]);
-        int32_t b = acc[i + NNUE_FT_HALF] > NNUE_QA ? NNUE_QA : acc[i + NNUE_FT_HALF];
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+        const int32_t va = acc[i] + tp[i], vb = acc[i + NNUE_FT_HALF] + tp[i + NNUE_FT_HALF];
+#else
+        const int32_t va = acc[i], vb = acc[i + NNUE_FT_HALF];
+#endif
+        int32_t a = va < 0 ? 0 : (va > NNUE_QA ? NNUE_QA : va);
+        int32_t b = vb > NNUE_QA ? NNUE_QA : vb;
         int32_t p = (a * b) >> NNUE_PAIR_SHIFT;  // arithmetic shift = floor, like mulhi
         out[i] = (uint8_t)(p < 0 ? 0 : p);
     }
@@ -768,12 +821,239 @@ static inline void deep_l2_forward(const int16_t* in, const NNUENetwork* net, in
 #endif
 }
 
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+// ---------------------------------------------------------------------------------------------
+// Threat + pawn-pair accumulator. On eval the raw threats (and, if the pawns changed, the raw
+// pawn pairs) of the position are listed in board coordinates and merge-diffed against the
+// nearest ancestor frame that has its lists; only the changed features get an index and only
+// their i8 rows are applied. A perspective whose square mask changed (king crossed the d/e
+// files) starts from a small Finny-like cache per mirror state instead.
+// ---------------------------------------------------------------------------------------------
+#define NNUE_TP_MAX_ACTIVE (NNUE_TP_MAX_THREATS + NNUE_TP_MAX_PAIRS)
+
+// Merge diff of two ascending lists: new \ old -> add, old \ new -> sub
+#define TP_DEFINE_DIFF(name, type)                                                              \
+    static void name(const type* old, int n_old, const type* cur, int n_cur,                    \
+                     type* add, int* n_add, type* sub, int* n_sub) {                            \
+        int i = 0, j = 0, na = 0, ns = 0;                                                       \
+        while (i < n_old && j < n_cur) {                                                        \
+            const type a = old[i], b = cur[j];                                                  \
+            if (a == b) { i++; j++; }                                                           \
+            else if (a < b) { sub[ns++] = a; i++; }                                             \
+            else { add[na++] = b; j++; }                                                        \
+        }                                                                                       \
+        while (i < n_old) sub[ns++] = old[i++];                                                 \
+        while (j < n_cur) add[na++] = cur[j++];                                                 \
+        *n_add = na;                                                                            \
+        *n_sub = ns;                                                                            \
+    }
+TP_DEFINE_DIFF(tp_diff_threats, uint32_t)
+TP_DEFINE_DIFF(tp_diff_pairs, uint16_t)
+
+// dst = (src, or 0 if NULL) + sum of the add rows - sum of the sub rows; the i8 rows are widened
+// to i16. Tiled so that a block of the accumulator stays in registers over all rows.
+static void tp_apply(int16_t* dst, const int16_t* src, const NNUENetwork* net,
+                     const uint16_t* add, int n_add, const uint16_t* sub, int n_sub) {
+#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+    // Rows are interleaved per 32-byte block (tp_interleave_weights): the low byte of each 16-bit
+    // lane belongs to the first 16 values, the high byte to the next 16. Shifts sign-extend both
+    // halves on ports 0/1 instead of vpmovsxbw, which competes for port 5.
+    enum { REGS = 16, TILE = REGS * 16 };
+    for (int t = 0; t < NNUE_HIDDEN_SIZE; t += TILE) {
+        __m256i r[REGS];
+        for (int j = 0; j < REGS; j++)
+            r[j] = src ? _mm256_load_si256((const __m256i*)(src + t + 16 * j)) : _mm256_setzero_si256();
+        for (int k = 0; k < n_add; k++) {
+            const int8_t* w = net->tp_weights[add[k]] + t;
+            for (int j = 0; j < REGS; j += 2) {
+                const __m256i x = _mm256_load_si256((const __m256i*)(w + 16 * j));
+                r[j] = _mm256_add_epi16(r[j], _mm256_srai_epi16(_mm256_slli_epi16(x, 8), 8));
+                r[j + 1] = _mm256_add_epi16(r[j + 1], _mm256_srai_epi16(x, 8));
+            }
+        }
+        for (int k = 0; k < n_sub; k++) {
+            const int8_t* w = net->tp_weights[sub[k]] + t;
+            for (int j = 0; j < REGS; j += 2) {
+                const __m256i x = _mm256_load_si256((const __m256i*)(w + 16 * j));
+                r[j] = _mm256_sub_epi16(r[j], _mm256_srai_epi16(_mm256_slli_epi16(x, 8), 8));
+                r[j + 1] = _mm256_sub_epi16(r[j + 1], _mm256_srai_epi16(x, 8));
+            }
+        }
+        for (int j = 0; j < REGS; j++) _mm256_store_si256((__m256i*)(dst + t + 16 * j), r[j]);
+    }
+#else
+    for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) dst[i] = src ? src[i] : 0;
+    for (int k = 0; k < n_add; k++)
+        for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) dst[i] += net->tp_weights[add[k]][i];
+    for (int k = 0; k < n_sub; k++)
+        for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) dst[i] -= net->tp_weights[sub[k]][i];
+#endif
+}
+
+// State a perspective's threat accumulator is derived from: an ancestor frame or a cache entry
+typedef struct {
+    const int16_t* acc;
+    const uint32_t* raw;
+    int n_raw;
+    const uint16_t* raw_pairs;
+    int n_raw_pairs;
+    Bitboard pawns[2];
+} TPBase;
+
+// Like the Finny table: per perspective and king mirror state the last threat accumulator built
+// after a mirror change, so crossing the d/e files back and forth only applies the differences
+typedef struct {
+    alignas(64) int16_t acc[NNUE_HIDDEN_SIZE];
+    uint32_t raw[NNUE_TP_MAX_THREATS];
+    uint16_t raw_pairs[NNUE_TP_MAX_PAIRS];
+    int n_raw;
+    int n_raw_pairs;
+    Bitboard pawns[2];
+    bool valid;
+} TPCacheEntry;
+
+static TPCacheEntry tp_cache[2][2];
+static const NNUENetwork* tp_cache_net = NULL;
+static uint32_t tp_cache_generation = 0;
+
+// Raw threat/pair changes between a base and the current frame
+typedef struct {
+    uint32_t add[NNUE_TP_MAX_THREATS], sub[NNUE_TP_MAX_THREATS];
+    uint16_t pair_add[NNUE_TP_MAX_PAIRS], pair_sub[NNUE_TP_MAX_PAIRS];
+    int n_add, n_sub, n_pair_add, n_pair_sub;
+} TPChanges;
+
+static void tp_changes(const TPBase* base, const NNUEAccumulator* acc, const Bitboard pawns[2], TPChanges* ch) {
+    tp_diff_threats(base->raw, base->n_raw, acc->tp_raw, acc->tp_n_raw, ch->add, &ch->n_add, ch->sub, &ch->n_sub);
+    if (base->pawns[0] != pawns[0] || base->pawns[1] != pawns[1]) {
+        tp_diff_pairs(base->raw_pairs, base->n_raw_pairs, acc->tp_raw_pairs, acc->tp_n_raw_pairs,
+                      ch->pair_add, &ch->n_pair_add, ch->pair_sub, &ch->n_pair_sub);
+    } else {
+        ch->n_pair_add = ch->n_pair_sub = 0;
+    }
+}
+
+// Full threat accumulator of one perspective from the frame's raw lists
+static void tp_build(int16_t* dst, const NNUEAccumulator* acc, int p, int mask, const NNUENetwork* net) {
+    uint16_t idx[NNUE_TP_MAX_ACTIVE];
+    int n = nnue_tp_threat_indices(acc->tp_raw, acc->tp_n_raw, p, mask, idx);
+    n += nnue_tp_pair_indices(acc->tp_raw_pairs, acc->tp_n_raw_pairs, p, mask, idx + n);
+    tp_apply(dst, NULL, net, idx, n, NULL, 0);
+}
+
+// Brings acc->tp up to date. prev: the frame this one was derived from (may be NULL).
+static void tp_update(const Board* board, NNUEAccumulator* acc, const NNUEAccumulator* prev,
+                      const NNUENetwork* net) {
+    if (tp_cache_net != net || tp_cache_generation != net_generation) {
+        for (int p = 0; p < 2; p++) tp_cache[p][0].valid = tp_cache[p][1].valid = false;
+        tp_cache_net = net;
+        tp_cache_generation = net_generation;
+    }
+
+    const NNUEAccumulator* anc = prev;
+    for (int steps = 0; anc != NULL && !anc->tp_computed; steps++) {
+        anc = steps < 256 ? anc->previous : NULL;
+    }
+
+    const int mask[2] = { nnue_tp_square_mask(board, 0), nnue_tp_square_mask(board, 1) };
+    const Bitboard pawns[2] = { board->byTypeBB[WHITE][PAWN], board->byTypeBB[BLACK][PAWN] };
+
+    acc->tp_n_raw = (int16_t)nnue_tp_raw_threats(board, acc->tp_raw);
+    if (anc != NULL && anc->tp_pawns[0] == pawns[0] && anc->tp_pawns[1] == pawns[1]) {
+        acc->tp_n_raw_pairs = anc->tp_n_raw_pairs;
+        memcpy(acc->tp_raw_pairs, anc->tp_raw_pairs, (size_t)anc->tp_n_raw_pairs * sizeof(uint16_t));
+    } else {
+        acc->tp_n_raw_pairs = (int16_t)nnue_tp_raw_pairs(board, acc->tp_raw_pairs);
+    }
+
+    TPChanges anc_changes;  // shared by both perspectives
+    bool anc_changes_done = false;
+
+    for (int p = 0; p < 2; p++) {
+        TPCacheEntry* entry = &tp_cache[p][(mask[p] & 7) != 0];
+        const bool from_ancestor = anc != NULL && anc->tp_mask[p] == mask[p];
+        if (from_ancestor || entry->valid) {
+            TPBase base;
+            TPChanges own_changes;
+            const TPChanges* ch;
+            if (from_ancestor) {
+                base = (TPBase){ anc->tp[p], anc->tp_raw, anc->tp_n_raw, anc->tp_raw_pairs, anc->tp_n_raw_pairs,
+                                 { anc->tp_pawns[0], anc->tp_pawns[1] } };
+                if (!anc_changes_done) {
+                    tp_changes(&base, acc, pawns, &anc_changes);
+                    anc_changes_done = true;
+                }
+                ch = &anc_changes;
+            } else {
+                base = (TPBase){ entry->acc, entry->raw, entry->n_raw, entry->raw_pairs, entry->n_raw_pairs,
+                                 { entry->pawns[0], entry->pawns[1] } };
+                tp_changes(&base, acc, pawns, &own_changes);
+                ch = &own_changes;
+            }
+            uint16_t add[NNUE_TP_MAX_ACTIVE], sub[NNUE_TP_MAX_ACTIVE];
+            int n_add = nnue_tp_threat_indices(ch->add, ch->n_add, p, mask[p], add);
+            int n_sub = nnue_tp_threat_indices(ch->sub, ch->n_sub, p, mask[p], sub);
+            n_add += nnue_tp_pair_indices(ch->pair_add, ch->n_pair_add, p, mask[p], add + n_add);
+            n_sub += nnue_tp_pair_indices(ch->pair_sub, ch->n_pair_sub, p, mask[p], sub + n_sub);
+            tp_apply(acc->tp[p], base.acc, net, add, n_add, sub, n_sub);
+        } else {
+            tp_build(acc->tp[p], acc, p, mask[p], net);
+        }
+
+        if (!from_ancestor) {
+            memcpy(entry->acc, acc->tp[p], sizeof(entry->acc));
+            memcpy(entry->raw, acc->tp_raw, (size_t)acc->tp_n_raw * sizeof(uint32_t));
+            memcpy(entry->raw_pairs, acc->tp_raw_pairs, (size_t)acc->tp_n_raw_pairs * sizeof(uint16_t));
+            entry->n_raw = acc->tp_n_raw;
+            entry->n_raw_pairs = acc->tp_n_raw_pairs;
+            entry->pawns[0] = pawns[0];
+            entry->pawns[1] = pawns[1];
+            entry->valid = true;
+        }
+        acc->tp_mask[p] = (int8_t)mask[p];
+        acc->tp_pawns[p] = pawns[p];
+    }
+    acc->tp_computed = true;
+
+#ifdef DEBUG_NNUE_EVAL
+    // incremental result and stored lists against a fresh build from the board
+    uint32_t raw[NNUE_TP_MAX_THREATS];
+    uint16_t raw_pairs[NNUE_TP_MAX_PAIRS];
+    const int n_raw = nnue_tp_raw_threats(board, raw);
+    const int n_raw_pairs = nnue_tp_raw_pairs(board, raw_pairs);
+    const bool lists_ok = n_raw == acc->tp_n_raw && n_raw_pairs == acc->tp_n_raw_pairs &&
+                          memcmp(raw, acc->tp_raw, (size_t)n_raw * sizeof(uint32_t)) == 0 &&
+                          memcmp(raw_pairs, acc->tp_raw_pairs, (size_t)n_raw_pairs * sizeof(uint16_t)) == 0;
+    for (int p = 0; p < 2; p++) {
+        alignas(64) int16_t full[NNUE_HIDDEN_SIZE];
+        tp_build(full, acc, p, mask[p], net);
+        if (memcmp(full, acc->tp[p], sizeof(full)) != 0 || !lists_ok) {
+            printf("info string THREAT ACC MISMATCH perspective %d (ancestor %s, lists %s)\n", p,
+                   anc ? "yes" : "no", lists_ok ? "ok" : "bad");
+            memcpy(acc->tp[p], full, sizeof(full));
+        }
+    }
+#endif
+}
+#endif
+
 int nnue_evaluate(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
     if (acc == NULL || net == NULL) return 0;
 
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    const NNUEAccumulator* prev = acc->previous;  // a PSQT refresh below clears acc->previous
+#endif
     if (!acc->computed) {
         nnue_materialize_accumulator(board, acc, net);
     }
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    if (!acc->tp_computed) tp_update(board, acc, prev, net);
+    const int16_t* us_tp = board->whiteToMove ? acc->tp[WHITE] : acc->tp[BLACK];
+    const int16_t* them_tp = board->whiteToMove ? acc->tp[BLACK] : acc->tp[WHITE];
+#else
+    const int16_t* us_tp = NULL;
+    const int16_t* them_tp = NULL;
+#endif
 
     const int bucket = nnue_get_output_bucket(board);
     const int16_t* us_acc = board->whiteToMove ? acc->white : acc->black;
@@ -781,8 +1061,8 @@ int nnue_evaluate(const Board* board, NNUEAccumulator* acc, const NNUENetwork* n
 
     alignas(64) uint8_t ft_out[NNUE_L1_IN];
     alignas(32) uint16_t idx[NNUE_L1_GROUPS + 8];  // 8 spare slots for the last 8-wide store
-    int count = deep_ft_activate(us_acc, ft_out, idx, 0, 0);
-    count = deep_ft_activate(them_acc, ft_out + NNUE_FT_HALF, idx, count, NNUE_FT_HALF / 4);
+    int count = deep_ft_activate(us_acc, us_tp, ft_out, idx, 0, 0);
+    count = deep_ft_activate(them_acc, them_tp, ft_out + NNUE_FT_HALF, idx, count, NNUE_FT_HALF / 4);
 
     alignas(32) int32_t z1[NNUE_L2_SIZE];
     deep_l1_forward(ft_out, idx, count, net, bucket, z1);
@@ -1008,6 +1288,10 @@ void nnue_apply_move(const Board* board, NNUEAccumulator* acc, const NNUENetwork
     // WICHTIG: Nur inkrementell updaten wenn Accumulator bereits initialisiert!
     // Sonst würden wir Deltas auf Müllwerte anwenden.
     if (!acc->computed) return;
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    acc->tp_computed = false;  // no ancestor frame: full threat refresh on the next eval
+    acc->previous = NULL;
+#endif
     
     nnue_update_piece_move(acc, board, net, from_sq, to_sq, piece_type, is_white ? 0 : 1, true);
     
@@ -1049,6 +1333,10 @@ void nnue_undo_move(const Board* board, NNUEAccumulator* acc, const NNUENetwork*
     
     // WICHTIG: Nur inkrementell updaten wenn Accumulator bereits initialisiert!
     if (!acc->computed) return;
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    acc->tp_computed = false;  // no ancestor frame: full threat refresh on the next eval
+    acc->previous = NULL;
+#endif
     
     nnue_update_piece_move(acc, board, net, from_sq, to_sq, piece_type, is_white ? 0 : 1, false);
     

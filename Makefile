@@ -40,18 +40,22 @@ ifeq ($(hl_1024),1)
 endif
 
 # NNUE architecture: the default is the deep net (training/training_deep.rs),
+# make NNUE_ARCH=threats builds deep + threat/pawn-pair inputs (training/training_threats.rs),
 # make NNUE_ARCH=legacy builds the old single-layer net (training/training.rs). Each
-# architecture embeds its own net file (quantised_deep.bin / quantised.bin); override with
-# NNUE_FILE=<path>.
+# architecture embeds its own net file (quantised_deep.bin / quantised_threats.bin /
+# quantised.bin); override with NNUE_FILE=<path>.
 NNUE_ARCH ?= deep
 ifeq ($(NNUE_ARCH),deep)
   NNUE_FILE ?= quantised_deep.bin
   NNUE_FLAGS = -DNNUE_ARCH=1
+else ifeq ($(NNUE_ARCH),threats)
+  NNUE_FILE ?= quantised_threats.bin
+  NNUE_FLAGS = -DNNUE_ARCH=2
 else ifeq ($(NNUE_ARCH),legacy)
   NNUE_FILE ?= quantised.bin
   NNUE_FLAGS = -DNNUE_ARCH=0
 else
-  $(error unknown NNUE_ARCH '$(NNUE_ARCH)', use legacy or deep)
+  $(error unknown NNUE_ARCH '$(NNUE_ARCH)', use legacy, deep or threats)
 endif
 NNUE_FLAGS += -DNNUE_EMBED_FILE='"$(NNUE_FILE)"'
 CFLAGS += $(NNUE_FLAGS)
@@ -82,7 +86,7 @@ $(NNUE_STAMP):
 	@echo "$(NNUE_CONFIG)" > $@
 
 # Common source files (shared between engine and training)
-COMMON_SRCS = board_io.c move_generator.c move.c bitboard_utils.c search.c tt.c evaluation.c board_modifiers.c zobrist.c nnue.c syzygy.c tbprobe.c
+COMMON_SRCS = board_io.c move_generator.c move.c bitboard_utils.c search.c tt.c evaluation.c board_modifiers.c zobrist.c nnue.c nnue_threats.c syzygy.c tbprobe.c
 
 # Engine source files
 ENGINE_SRCS = main.c uci.c $(COMMON_SRCS)
@@ -139,13 +143,16 @@ $(BUILD_DIR)/tbprobe.o: $(SRC_DIR)/tbprobe.c $(NNUE_STAMP)
 $(BUILD_DIR)/embedded_nnue.o: $(SRC_DIR)/embedded_nnue.S $(NNUE_FILE) $(NNUE_STAMP)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/nnue_load_test: tests/nnue_load_test.c $(BUILD_DIR)/nnue.o $(BUILD_DIR)/embedded_nnue.o
+# nnue.o plus what the threat features need (magic attacks)
+NNUE_TEST_OBJS = $(addprefix $(BUILD_DIR)/, nnue.o nnue_threats.o move_generator.o bitboard_utils.o board_modifiers.o zobrist.o move.o board_io.o)
+
+$(BUILD_DIR)/nnue_load_test: tests/nnue_load_test.c $(NNUE_TEST_OBJS) $(BUILD_DIR)/embedded_nnue.o
 	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $^ -lm
 
-$(BUILD_DIR)/pawn_hash_test: tests/pawn_hash_test.c $(addprefix $(BUILD_DIR)/, board_io.o board_modifiers.o zobrist.o nnue.o bitboard_utils.o) $(BUILD_DIR)/embedded_nnue.o
+$(BUILD_DIR)/pawn_hash_test: tests/pawn_hash_test.c $(NNUE_TEST_OBJS) $(BUILD_DIR)/embedded_nnue.o
 	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $^ -lm
 
-$(BUILD_DIR)/long_game_history_test: tests/long_game_history_test.c $(addprefix $(BUILD_DIR)/, board_io.o board_modifiers.o zobrist.o nnue.o bitboard_utils.o) $(BUILD_DIR)/embedded_nnue.o
+$(BUILD_DIR)/long_game_history_test: tests/long_game_history_test.c $(NNUE_TEST_OBJS) $(BUILD_DIR)/embedded_nnue.o
 	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $^ -lm
 
 $(BUILD_DIR)/pawn_correction_test: tests/pawn_correction_test.c

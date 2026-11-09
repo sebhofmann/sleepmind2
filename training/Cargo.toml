@@ -18,3 +18,7 @@ path = "training.rs"
 [[bin]]
 name = "training_deep"
 path = "training_deep.rs"
+
+[[bin]]
+name = "training_threats"
+path = "training_threats.rs"
