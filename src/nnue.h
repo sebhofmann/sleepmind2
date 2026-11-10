@@ -89,14 +89,17 @@ typedef struct NNUEAccumulator {
     int black_king_sq;
 #if NNUE_ARCH == NNUE_ARCH_THREATS
     // Threat + pawn-pair part of the FT, kept apart from white/black (PSQT + bias) so the Finny table
-    // stays PSQT-only; both are summed (saturating) before the activation. As in pawnocchio the move
-    // into this frame records its threat/pawn-pair changes (applyMove -> nnue_record_threat_move),
-    // and on eval every pending frame is materialised from its parent; a perspective whose king
-    // mirror state changed is rebuilt from the board.
+    // stays PSQT-only; both are summed (saturating) before the activation. As in pawnocchio the
+    // threat/pawn-pair changes of the move into this frame are recorded as a delta (lazily, see
+    // nnue_note_threat_move), and on eval every pending frame is materialised from its parent; a
+    // perspective whose king mirror state changed is rebuilt from the board.
     alignas(64) int16_t tp[2][NNUE_HIDDEN_SIZE];
     NNUETPDelta tp_delta;     // changes of the move into this frame (valid if tp_state == recorded)
     int8_t tp_state;          // NNUE_TP_STATE_*
-    int8_t tp_mask[2];        // square mask of each perspective in this frame's position
+    int8_t tp_mask[2];        // square mask of each perspective in this frame's position (recorded / computed)
+    // the move into this frame while tp_state == pending (see nnue_note_threat_move)
+    uint8_t tp_move_from, tp_move_to, tp_move_piece, tp_move_captured, tp_move_capture_sq;
+    bool tp_move_castling;
     bool tp_computed[2];
 #endif
 } NNUEAccumulator;
@@ -108,7 +111,7 @@ typedef struct {
     alignas(64) int16_t ft_weights[NNUE_INPUT_BUCKETS][NNUE_INPUT_SIZE][NNUE_HIDDEN_SIZE];
 #if NNUE_ARCH == NNUE_ARCH_THREATS
     // Threat + pawn-pair weights (bullet l0/pp/w, i8 x QA): [feature][HIDDEN_SIZE]; SIMD builds
-    // interleave every 32-value block at load time (tp_interleave_weights in nnue.c)
+    // interleave and bias every 32-value block at load time (tp_interleave_weights in nnue.c)
     alignas(64) int8_t tp_weights[NNUE_TP_INPUTS][NNUE_HIDDEN_SIZE];
 #endif
     // Feature transformer biases: [HIDDEN_SIZE] (threats arch: bullet l0/pp/b)
@@ -146,11 +149,26 @@ typedef struct {
 #define NNUE_TP_STATE_NONE      0   // no usable delta: rebuild from the board
 #define NNUE_TP_STATE_PREPARED  1   // fresh child frame, waiting for its move
 #define NNUE_TP_STATE_RECORDED  2   // tp_delta holds the move's changes
+#define NNUE_TP_STATE_PENDING   3   // the move is noted, its changes are not recorded yet
 
-// Records the threat/pawn-pair changes of the move just made into a prepared child frame (board
-// after the move; pieces as enum Piece, captured_piece NO_PIECE if none)
-void nnue_record_threat_move(NNUEAccumulator* acc, const Board* board, int from, int to, int moving_piece,
-                             int captured_piece, int capture_sq, bool castling);
+// Notes the move just made into a prepared child frame (pieces as enum Piece, captured_piece
+// NO_PIECE if none, capture_sq differs from `to` only for en passant). The threat/pawn-pair changes
+// are recorded lazily from the board after the move: when the frame is evaluated, or right before
+// the next move is made from it (nnue_flush_parent_threat_move). Frames that are neither evaluated
+// nor searched further (illegal moves, early cutoffs) never pay for the recording.
+void nnue_note_threat_move(NNUEAccumulator* acc, int from, int to, int moving_piece, int captured_piece,
+                           int capture_sq, bool castling);
+
+// To be called by applyMove before the board changes: records the pending move of child's parent
+// frame, whose position the board still holds.
+void nnue_record_pending_threat_move(NNUEAccumulator* frame, const Board* board, const NNUENetwork* net);
+static inline void nnue_flush_parent_threat_move(NNUEAccumulator* child, const Board* board,
+                                                 const NNUENetwork* net) {
+    if (child->tp_state == NNUE_TP_STATE_PREPARED && child->previous != NULL &&
+        child->previous->tp_state == NNUE_TP_STATE_PENDING) {
+        nnue_record_pending_threat_move(child->previous, board, net);
+    }
+}
 #endif
 
 // Global network instance (deprecated - weights now in NNUEAccumulator)

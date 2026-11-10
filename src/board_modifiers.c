@@ -92,6 +92,11 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
     int us = board->whiteToMove ? WHITE : BLACK;
     int them = 1 - us;
     
+#if NNUE_ARCH == NNUE_ARCH_THREATS
+    // the parent frame's pending threat changes need the board before this move
+    if (nnue_acc != NULL && nnue_net != NULL) nnue_flush_parent_threat_move(nnue_acc, board, nnue_net);
+#endif
+
     // O(1) piece lookup - THE key optimization
     uint8_t movingPiece = board->piece[from];
     int movingType = PIECE_TYPE_OF(movingPiece);
@@ -274,7 +279,7 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
     }
 
 #if NNUE_ARCH == NNUE_ARCH_THREATS
-    // threat/pawn-pair changes of this move, on the board after the move (as in pawnocchio)
+    // note the move, its threat/pawn-pair changes are recorded lazily (nnue_note_threat_move)
     if (nnue_lazy && nnue_net != NULL) {
         int capSq = to;
         uint8_t capPiece = capturedPiece;
@@ -282,8 +287,7 @@ void applyMove(Board* board, Move move, MoveUndoInfo* undoInfo, NNUEAccumulator*
             capSq = (us == WHITE) ? (to - 8) : (to + 8);
             capPiece = (uint8_t)MAKE_PIECE_NEW(PAWN, them);
         }
-        nnue_record_threat_move(nnue_acc, board, from, to, movingPiece, capPiece, capSq,
-                                MOVE_IS_CASTLING(move));
+        nnue_note_threat_move(nnue_acc, from, to, movingPiece, capPiece, capSq, MOVE_IS_CASTLING(move));
     }
 #endif
 
