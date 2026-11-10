@@ -1,6 +1,6 @@
-// Net file to embed, set by the Makefile per NNUE_ARCH (quantised.bin / quantised_deep.bin)
+// Net file to embed, set by the Makefile per NNUE_ARCH (quantised_deep.bin / quantised.bin)
 #ifndef NNUE_EMBED_FILE
-#define NNUE_EMBED_FILE "quantised.bin"
+#define NNUE_EMBED_FILE "quantised_deep.bin"
 #endif
 
 #if defined(__APPLE__)

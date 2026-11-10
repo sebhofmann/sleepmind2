@@ -9,6 +9,7 @@ on:
       - ".github/workflows/release.yml"
       - "Makefile"
       - "quantised.bin"
+      - "quantised_deep.bin"
       - "src/**"
   workflow_dispatch:
 

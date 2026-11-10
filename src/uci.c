@@ -226,8 +226,9 @@ void uci_loop() {
     if (nnue_load_memory(sleepmind_nnue_start, embedded_nnue_size, nnue_network)) {
         printf("info string NNUE source: embedded\n");
     } else {
-        printf("info string Embedded NNUE unavailable, trying quantised.bin\n");
-        eval_init("quantised.bin", nnue_network);
+        // same net file this build embeds (quantised_deep.bin / quantised.bin)
+        printf("info string Embedded NNUE unavailable, trying " NNUE_EMBED_FILE "\n");
+        eval_init(NNUE_EMBED_FILE, nnue_network);
     }
     printf("DEBUG: NNUE initialized, loaded=%d\n", nnue_network->loaded); fflush(stdout);
 

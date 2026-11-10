@@ -25,7 +25,7 @@ size=$(stat -c %s "$NET")
 cd "$ROOT"
 status "Clean-Build mit neuem Netz"
 cp "$NET" "$ROOT/quantised.bin"
-make clean && make both
+make clean && make both NNUE_ARCH=legacy
 ./variants.sh create "$VARIANT"
 cmp "$NET" "$ROOT/variants/$VARIANT/quantised.bin"
 
@@ -37,7 +37,7 @@ status "Variante $VARIANT angelegt, Sanity ok"
 
 # Repo wieder auf main-Netz zurück (Clean-Build)
 cp "$ROOT/variants/baseline/quantised.bin" "$ROOT/quantised.bin"
-make clean && make both
+make clean && make both NNUE_ARCH=legacy
 git -C "$ROOT" diff --quiet -- quantised.bin
 status "Repo-Build wieder auf main-Netz"
 

@@ -5,9 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef NNUE_EMBED_FILE
-#define NNUE_EMBED_FILE "quantised.bin"
-#endif
 
 extern const unsigned char sleepmind_nnue_start[];
 extern const unsigned char sleepmind_nnue_end[];

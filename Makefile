@@ -35,10 +35,11 @@ ifeq ($(hl_1024),1)
   CFLAGS += -DNNUE_HIDDEN_SIZE=1024
 endif
 
-# NNUE architecture: make NNUE_ARCH=deep for the deep net (training/training_deep.rs),
-# default is the legacy single-layer net (training/training.rs). Each architecture embeds
-# its own net file; override with NNUE_FILE=<path>.
-NNUE_ARCH ?= legacy
+# NNUE architecture: the default is the deep net (training/training_deep.rs),
+# make NNUE_ARCH=legacy builds the old single-layer net (training/training.rs). Each
+# architecture embeds its own net file (quantised_deep.bin / quantised.bin); override with
+# NNUE_FILE=<path>.
+NNUE_ARCH ?= deep
 ifeq ($(NNUE_ARCH),deep)
   NNUE_FILE ?= quantised_deep.bin
   NNUE_FLAGS = -DNNUE_ARCH=1
@@ -88,7 +89,7 @@ ENGINE_EXEC = $(BUILD_DIR)/sleepmind
 # Training data generator source files
 TRAINING_SRCS = training_main.c training_data.c $(COMMON_SRCS)
 TRAINING_OBJS = $(addprefix $(BUILD_DIR)/, $(TRAINING_SRCS:.c=.o))
-# Same embedded network as the engine (quantised.bin at build time).
+# Same embedded network as the engine (net file of the selected NNUE_ARCH at build time).
 TRAINING_OBJS += $(BUILD_DIR)/embedded_nnue.o
 TRAINING_EXEC = $(BUILD_DIR)/training
 
