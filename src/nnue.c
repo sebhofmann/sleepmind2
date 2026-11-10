@@ -17,6 +17,20 @@
 
 // Input bucket map based on king position (32 elements for half-board with mirroring)
 // Index = rank * 8 + file (files 4-7 are mirrored from files 0-3)
+// Must match BUCKET_LAYOUT in the training script of the selected architecture.
+#if NNUE_ARCH == NNUE_ARCH_DEEP
+// 16 buckets (training/training_deep.rs, layout from bullet's advanced example)
+const int NNUE_INPUT_BUCKET_MAP[64] = {
+     0,  1,  2,  3,  3,  2,  1,  0,  // Rank 1
+     4,  5,  6,  7,  7,  6,  5,  4,  // Rank 2
+     8,  8,  9,  9,  9,  9,  8,  8,  // Rank 3
+    10, 10, 11, 11, 11, 11, 10, 10,  // Rank 4
+    12, 12, 13, 13, 13, 13, 12, 12,  // Rank 5
+    12, 12, 13, 13, 13, 13, 12, 12,  // Rank 6
+    14, 14, 15, 15, 15, 15, 14, 14,  // Rank 7
+    14, 14, 15, 15, 15, 15, 14, 14,  // Rank 8
+};
+#else
 // 10 buckets: fine-grained bucketing based on king position from bullet
 // Expanded from [(idx / 8) * 4 + [0, 1, 2, 3, 3, 2, 1, 0][idx % 8]]
 const int NNUE_INPUT_BUCKET_MAP[64] = {
@@ -29,6 +43,7 @@ const int NNUE_INPUT_BUCKET_MAP[64] = {
     9, 9, 9, 9, 9, 9, 9, 9,  // Rank 7
     9, 9, 9, 9, 9, 9, 9, 9,  // Rank 8
 };
+#endif
 
 // Bumped whenever weights are (re)loaded so the Finny table can be invalidated
 static uint32_t net_generation = 1;
@@ -103,11 +118,46 @@ int nnue_get_output_bucket(const Board* board) {
     return bucket_index;
 }
 
+// The weight arrays in the order bullet writes them (see SavedFormat in the training script)
+typedef struct {
+    void* ptr;
+    size_t size;
+} NNUESection;
+
+// net may be NULL to only query the sizes (sizeof does not evaluate its operand)
+#define NNUE_SECTION(field) (NNUESection){ net ? (void*)net->field : NULL, sizeof(net->field) }
+
+static int nnue_sections(NNUENetwork* net, NNUESection* out) {
+    int n = 0;
+    out[n++] = NNUE_SECTION(ft_weights);
+    out[n++] = NNUE_SECTION(ft_biases);
+#if NNUE_ARCH == NNUE_ARCH_DEEP
+    out[n++] = NNUE_SECTION(l1_weights);
+    out[n++] = NNUE_SECTION(l1_biases);
+    out[n++] = NNUE_SECTION(l2_weights);
+    out[n++] = NNUE_SECTION(l2_biases);
+    out[n++] = NNUE_SECTION(l3_weights);
+    out[n++] = NNUE_SECTION(l3_biases);
+#else
+    out[n++] = NNUE_SECTION(output_weights);
+    out[n++] = NNUE_SECTION(output_biases);
+#endif
+    return n;
+}
+
+#define NNUE_MAX_SECTIONS 8
+
 static size_t nnue_parameter_size(void) {
-    return (size_t)NNUE_INPUT_BUCKETS * NNUE_INPUT_SIZE * NNUE_HIDDEN_SIZE * sizeof(int16_t) +
-           (size_t)NNUE_HIDDEN_SIZE * sizeof(int16_t) +
-           (size_t)NNUE_OUTPUT_BUCKETS * 2 * NNUE_HIDDEN_SIZE * sizeof(int16_t) +
-           (size_t)NNUE_OUTPUT_BUCKETS * sizeof(int16_t);
+    NNUESection sections[NNUE_MAX_SECTIONS];
+    int n = nnue_sections(NULL, sections);
+    size_t size = 0;
+    for (int i = 0; i < n; i++) size += sections[i].size;
+    return size;
+}
+
+// bullet pads the quantised file to a multiple of 64 bytes
+static size_t nnue_file_size(void) {
+    return (nnue_parameter_size() + 63) / 64 * 64;
 }
 
 uint64_t nnue_hash(const unsigned char* data, size_t size) {
@@ -119,8 +169,38 @@ uint64_t nnue_hash(const unsigned char* data, size_t size) {
     return hash;
 }
 
+#if NNUE_ARCH == NNUE_ARCH_DEEP
+// Derived (non-file) data, refreshed after every load
+#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+static void deep_init_nnz_lut(void);
+#endif
+
+static void nnue_deep_prepare(NNUENetwork* net) {
+#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+    deep_init_nnz_lut();
+#endif
+    for (int b = 0; b < NNUE_OUTPUT_BUCKETS; b++) {
+        for (int o = 0; o < NNUE_L2_SIZE; o++) {
+            for (int i = 0; i < NNUE_L1_IN; i++) {
+                net->l1_weights_sparse[b][i / 4][o][i % 4] = net->l1_weights[b][o][i];
+            }
+        }
+        for (int o = 0; o < NNUE_L3_SIZE; o++) {
+            for (int i = 0; i < 2 * NNUE_L2_SIZE; i++) {
+                const int32_t w = net->l2_weights[b][o][i];
+                if (w < INT16_MIN || w > INT16_MAX) {
+                    fprintf(stderr, "info string NNUE L2 weight %d out of i16 range\n", (int)w);
+                    exit(1);
+                }
+                net->l2_weights_sparse[b][i / 2][o][i % 2] = (int16_t)w;
+            }
+        }
+    }
+}
+#endif
+
 bool nnue_load_memory(const unsigned char* data, size_t size, NNUENetwork* net) {
-    const size_t expected_size = nnue_parameter_size() + 48;
+    const size_t expected_size = nnue_file_size();
     if (net) net->loaded = false;
     if (!data || !net) {
         fprintf(stderr, "info string NNUE memory buffer or network is NULL\n");
@@ -133,24 +213,28 @@ bool nnue_load_memory(const unsigned char* data, size_t size, NNUENetwork* net) 
     }
 
     const unsigned char* cursor = data;
-    const size_t ft_weights_size = sizeof(net->ft_weights);
-    const size_t ft_biases_size = sizeof(net->ft_biases);
-    const size_t output_weights_size = sizeof(net->output_weights);
-    const size_t output_biases_size = sizeof(net->output_biases);
-
-    memcpy(net->ft_weights, cursor, ft_weights_size);
-    cursor += ft_weights_size;
-    memcpy(net->ft_biases, cursor, ft_biases_size);
-    cursor += ft_biases_size;
-    memcpy(net->output_weights, cursor, output_weights_size);
-    cursor += output_weights_size;
-    memcpy(net->output_biases, cursor, output_biases_size);
+    NNUESection sections[NNUE_MAX_SECTIONS];
+    int n = nnue_sections(net, sections);
+    for (int i = 0; i < n; i++) {
+        memcpy(sections[i].ptr, cursor, sections[i].size);
+        cursor += sections[i].size;
+    }
+#if NNUE_ARCH == NNUE_ARCH_DEEP
+    nnue_deep_prepare(net);
+#endif
 
     net->loaded = true;
     net_generation++;
     printf("info string NNUE loaded (size %zu, fnv1a64 %016" PRIx64 ")\n",
            size, nnue_hash(data, size));
     return true;
+}
+
+NNUENetwork* nnue_alloc_network(void) {
+    size_t size = (sizeof(NNUENetwork) + 63) / 64 * 64;  // aligned_alloc needs a multiple of the alignment
+    NNUENetwork* net = aligned_alloc(64, size);
+    if (net) memset(net, 0, size);
+    return net;
 }
 
 // Load NNUE weights from file into network
@@ -186,7 +270,7 @@ bool nnue_load(const char* filename, NNUENetwork* net) {
     }
 
     size_t size = (size_t)file_size;
-    const size_t expected_size = nnue_parameter_size() + 48;
+    const size_t expected_size = nnue_file_size();
     if (size != expected_size) {
         fprintf(stderr, "info string NNUE file size mismatch! Got %zu, expected %zu\n",
                 size, expected_size);
@@ -221,16 +305,15 @@ bool nnue_save(const char* filename, const NNUENetwork* net) {
     FILE* file = fopen(filename, "wb");
     if (!file) return false;
     
-    for (int bucket = 0; bucket < NNUE_INPUT_BUCKETS; bucket++) {
-        for (int i = 0; i < NNUE_INPUT_SIZE; i++) {
-            fwrite(net->ft_weights[bucket][i], sizeof(int16_t), NNUE_HIDDEN_SIZE, file);
-        }
+    NNUESection sections[NNUE_MAX_SECTIONS];
+    int n = nnue_sections((NNUENetwork*)net, sections);
+    size_t written = 0;
+    for (int i = 0; i < n; i++) {
+        fwrite(sections[i].ptr, 1, sections[i].size, file);
+        written += sections[i].size;
     }
-    fwrite(net->ft_biases, sizeof(int16_t), NNUE_HIDDEN_SIZE, file);
-    for (int bucket = 0; bucket < NNUE_OUTPUT_BUCKETS; bucket++) {
-        fwrite(net->output_weights[bucket], sizeof(int16_t), 2 * NNUE_HIDDEN_SIZE, file);
-    }
-    fwrite(net->output_biases, sizeof(int16_t), NNUE_OUTPUT_BUCKETS, file);
+    static const char pad[] = "bullet";
+    for (size_t i = written; i < nnue_file_size(); i++) fputc(pad[(i - written) % 6], file);
     
     fclose(file);
     return true;
@@ -479,6 +562,237 @@ static inline int32_t screlu_dot(const int16_t* acc, const int16_t* weights, int
 #endif
 }
 
+#if NNUE_ARCH == NNUE_ARCH_DEEP
+// ---------------------------------------------------------------------------------------------
+// Deep architecture forward pass, after pawnocchio's src/nnue/outputs/multilayer.zig (the
+// engine bullet's examples/advanced comes from). Integer scales (see training/training_deep.rs):
+//   FT accumulator          x 255                  -> a = clamp(acc, 0, 255), b = min(acc, 255)
+//   pairwise (a*b) >> 9     x 255^2/512 (~127)     -> u8 in [0, 127], negative products -> 0
+//   L1 out                  x 2^14  (i8 weights x 128/(255/256)^2 -> 255^2/512 * that = 2^14,
+//                                    = the bias scale), shifted up to 2^20 for the activation
+//   L2 in                   x Q^2 = 2^12: [clamp(z, 0, 1), min(z^2, 1)], rounded
+//   L2 out                  x Q^3, crelu
+//   L3 out                  x Q^4  -> eval = out * NNUE_SCALE / Q^4
+// The activation fits 7 bits so that the maddubs fallback (no VNNI) cannot saturate:
+// 2 * 127 * 127 < 2^15.
+// ---------------------------------------------------------------------------------------------
+#define NNUE_FT_HALF     (NNUE_HIDDEN_SIZE / 2)
+#define NNUE_PAIR_SHIFT  9
+#define NNUE_L1_SHIFT    20
+#define NNUE_L1_ONE      (1 << NNUE_L1_SHIFT)
+#define NNUE_Q3          (NNUE_Q * NNUE_Q * NNUE_Q)
+#define NNUE_Q4          ((int64_t)NNUE_Q3 * NNUE_Q)
+// 4-byte groups of u8 activations (the unit of the sparse L1)
+#define NNUE_L1_GROUPS   (NNUE_L1_IN / 4)
+
+// Reads 4 bytes of an u8/i16 buffer as one i32 without breaking strict aliasing
+// (a plain int32_t* read lets GCC move it before the stores of the buffer)
+static inline int32_t load_i32(const void* p) {
+    int32_t v;
+    memcpy(&v, p, sizeof(v));
+    return v;
+}
+
+#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+static alignas(16) uint16_t nnz_lut[256][8];
+
+static void deep_init_nnz_lut(void) {
+    for (int m = 0; m < 256; m++) {
+        int n = 0;
+        for (int j = 0; j < 8; j++) {
+            if (m & (1 << j)) nnz_lut[m][n++] = (uint16_t)j;
+        }
+    }
+}
+#endif
+
+// Pairwise CReLU of one perspective: out[i] = clamp(acc[i], 0, 255) * min(acc[i + HALF], 255) >> 9,
+// negative products saturate to 0. With SIMD the indices of the nonzero 4-byte groups are
+// collected on the fly: appended to idx[count..] offset by group_base, new count returned.
+static inline int deep_ft_activate(const int16_t* acc, uint8_t* out, uint16_t* idx, int count, int group_base) {
+#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i qa = _mm256_set1_epi16(NNUE_QA);
+    const __m128i step = _mm_set1_epi16(8);
+    __m128i base = _mm_set1_epi16((short)group_base);
+    for (int i = 0; i < NNUE_FT_HALF; i += 32) {
+        __m256i a0 = _mm256_load_si256((const __m256i*)(acc + i));
+        __m256i a1 = _mm256_load_si256((const __m256i*)(acc + i + 16));
+        __m256i b0 = _mm256_load_si256((const __m256i*)(acc + NNUE_FT_HALF + i));
+        __m256i b1 = _mm256_load_si256((const __m256i*)(acc + NNUE_FT_HALF + i + 16));
+        a0 = _mm256_min_epi16(_mm256_max_epi16(a0, zero), qa);
+        a1 = _mm256_min_epi16(_mm256_max_epi16(a1, zero), qa);
+        b0 = _mm256_min_epi16(b0, qa);
+        b1 = _mm256_min_epi16(b1, qa);
+        // (a << 7) * b >> 16 = a*b >> 9 (a << 7 <= 32640 fits i16)
+        __m256i p0 = _mm256_mulhi_epi16(_mm256_slli_epi16(a0, 16 - NNUE_PAIR_SHIFT), b0);
+        __m256i p1 = _mm256_mulhi_epi16(_mm256_slli_epi16(a1, 16 - NNUE_PAIR_SHIFT), b1);
+        // packus saturates negatives to 0 and interleaves 128-bit lanes; permute restores order
+        __m256i u = _mm256_permute4x64_epi64(_mm256_packus_epi16(p0, p1), _MM_SHUFFLE(3, 1, 2, 0));
+        _mm256_store_si256((__m256i*)(out + i), u);
+
+        unsigned mask = 0xFFu & ~(unsigned)_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(u, zero)));
+        __m128i offsets = _mm_load_si128((const __m128i*)nnz_lut[mask]);
+        _mm_storeu_si128((__m128i*)(idx + count), _mm_add_epi16(base, offsets));
+        count += __builtin_popcount(mask);
+        base = _mm_add_epi16(base, step);
+    }
+    return count;
+#else
+    (void)idx;
+    (void)group_base;
+    for (int i = 0; i < NNUE_FT_HALF; i++) {
+        int32_t a = acc[i] < 0 ? 0 : (acc[i] > NNUE_QA ? NNUE_QA : acc[i]);
+        int32_t b = acc[i + NNUE_FT_HALF] > NNUE_QA ? NNUE_QA : acc[i + NNUE_FT_HALF];
+        int32_t p = (a * b) >> NNUE_PAIR_SHIFT;  // arithmetic shift = floor, like mulhi
+        out[i] = (uint8_t)(p < 0 ? 0 : p);
+    }
+    return count;
+#endif
+}
+
+#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+// acc + sum over 4-byte groups of u8 x i8 (VNNI dpbusd; maddubs fallback cannot saturate, see above)
+static inline __m256i dpbusd256(__m256i acc, __m256i u, __m256i w) {
+#if defined(__AVXVNNI__)
+    return _mm256_dpbusd_avx_epi32(acc, u, w);
+#elif defined(__AVX512VNNI__) && defined(__AVX512VL__)
+    return _mm256_dpbusd_epi32(acc, u, w);
+#else
+    return _mm256_add_epi32(acc, _mm256_madd_epi16(_mm256_maddubs_epi16(u, w), _mm256_set1_epi16(1)));
+#endif
+}
+
+// acc + madd_epi16(a, b), fused into one instruction with AVX-VNNI (bit-identical)
+static inline __m256i dpwssd256(__m256i acc, __m256i a, __m256i b) {
+#if defined(__AVXVNNI__)
+    return _mm256_dpwssd_avx_epi32(acc, a, b);
+#elif defined(__AVX512VNNI__) && defined(__AVX512VL__)
+    return _mm256_dpwssd_epi32(acc, a, b);
+#else
+    return _mm256_add_epi32(acc, _mm256_madd_epi16(a, b));
+#endif
+}
+#endif
+
+// Sparse L1: each nonzero 4-byte group g of activations adds its weight column
+// l1_weights_sparse[bucket][g] (64 bytes) to all 16 outputs with two dpbusd. z at scale 2^14.
+static inline void deep_l1_forward(const uint8_t* ft_out, const uint16_t* idx, int count,
+                                   const NNUENetwork* net, int bucket, int32_t* z) {
+    const int8_t* w = &net->l1_weights_sparse[bucket][0][0][0];
+#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+    // four independent accumulator pairs for ILP
+    __m256i lo[4], hi[4];
+    for (int j = 0; j < 4; j++) lo[j] = hi[j] = _mm256_setzero_si256();
+    int k = 0;
+    for (; k + 4 <= count; k += 4) {
+        for (int j = 0; j < 4; j++) {
+            const int g = idx[k + j];
+            const __m256i x = _mm256_set1_epi32(load_i32(ft_out + 4 * g));
+            const __m256i* wg = (const __m256i*)(w + g * 4 * NNUE_L2_SIZE);
+            lo[j] = dpbusd256(lo[j], x, _mm256_load_si256(wg));
+            hi[j] = dpbusd256(hi[j], x, _mm256_load_si256(wg + 1));
+        }
+    }
+    for (; k < count; k++) {
+        const int g = idx[k];
+        const __m256i x = _mm256_set1_epi32(load_i32(ft_out + 4 * g));
+        const __m256i* wg = (const __m256i*)(w + g * 4 * NNUE_L2_SIZE);
+        lo[0] = dpbusd256(lo[0], x, _mm256_load_si256(wg));
+        hi[0] = dpbusd256(hi[0], x, _mm256_load_si256(wg + 1));
+    }
+    lo[0] = _mm256_add_epi32(_mm256_add_epi32(lo[0], lo[1]), _mm256_add_epi32(lo[2], lo[3]));
+    hi[0] = _mm256_add_epi32(_mm256_add_epi32(hi[0], hi[1]), _mm256_add_epi32(hi[2], hi[3]));
+    _mm256_storeu_si256((__m256i*)z, lo[0]);
+    _mm256_storeu_si256((__m256i*)(z + 8), hi[0]);
+#else
+    (void)idx;
+    (void)count;
+    for (int o = 0; o < NNUE_L2_SIZE; o++) z[o] = 0;
+    for (int g = 0; g < NNUE_L1_GROUPS; g++) {
+        const uint8_t* x = ft_out + 4 * g;
+        if ((x[0] | x[1] | x[2] | x[3]) == 0) continue;
+        const int8_t* wg = w + g * 4 * NNUE_L2_SIZE;
+        for (int o = 0; o < NNUE_L2_SIZE; o++) {
+            z[o] += x[0] * wg[4 * o] + x[1] * wg[4 * o + 1] + x[2] * wg[4 * o + 2] + x[3] * wg[4 * o + 3];
+        }
+    }
+#endif
+}
+
+// L2: in = 32 i16 values (16 pairs), out = crelu(sum + bias) clamped to Q^3, 32 i32.
+// Pairs of i16 inputs with two-wide i16 weight columns (madd scheme), zero pairs skipped.
+static inline void deep_l2_forward(const int16_t* in, const NNUENetwork* net, int bucket, int32_t* out) {
+    const int16_t* w = &net->l2_weights_sparse[bucket][0][0][0];
+    const int32_t* bias = net->l2_biases[bucket];
+#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+    __m256i s[4];
+    for (int j = 0; j < 4; j++) s[j] = _mm256_loadu_si256((const __m256i*)(bias + 8 * j));
+    for (int p = 0; p < NNUE_L2_SIZE; p++) {
+        const int32_t pair = load_i32(in + 2 * p);
+        if (pair == 0) continue;
+        const __m256i x = _mm256_set1_epi32(pair);
+        const __m256i* wp = (const __m256i*)(w + p * 2 * NNUE_L3_SIZE);
+        for (int j = 0; j < 4; j++) s[j] = dpwssd256(s[j], x, _mm256_load_si256(wp + j));
+    }
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i q3 = _mm256_set1_epi32(NNUE_Q3);
+    for (int j = 0; j < 4; j++) {
+        _mm256_storeu_si256((__m256i*)(out + 8 * j), _mm256_min_epi32(_mm256_max_epi32(s[j], zero), q3));
+    }
+#else
+    for (int o = 0; o < NNUE_L3_SIZE; o++) out[o] = bias[o];
+    for (int p = 0; p < NNUE_L2_SIZE; p++) {
+        const int32_t lo = in[2 * p], hi = in[2 * p + 1];
+        if ((lo | hi) == 0) continue;
+        const int16_t* wp = w + p * 2 * NNUE_L3_SIZE;
+        for (int o = 0; o < NNUE_L3_SIZE; o++) out[o] += lo * wp[2 * o] + hi * wp[2 * o + 1];
+    }
+    for (int o = 0; o < NNUE_L3_SIZE; o++) out[o] = out[o] < 0 ? 0 : (out[o] > NNUE_Q3 ? NNUE_Q3 : out[o]);
+#endif
+}
+
+int nnue_evaluate(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
+    if (acc == NULL || net == NULL) return 0;
+
+    if (!acc->computed) {
+        nnue_materialize_accumulator(board, acc, net);
+    }
+
+    const int bucket = nnue_get_output_bucket(board);
+    const int16_t* us_acc = board->whiteToMove ? acc->white : acc->black;
+    const int16_t* them_acc = board->whiteToMove ? acc->black : acc->white;
+
+    alignas(64) uint8_t ft_out[NNUE_L1_IN];
+    alignas(32) uint16_t idx[NNUE_L1_GROUPS + 8];  // 8 spare slots for the last 8-wide store
+    int count = deep_ft_activate(us_acc, ft_out, idx, 0, 0);
+    count = deep_ft_activate(them_acc, ft_out + NNUE_FT_HALF, idx, count, NNUE_FT_HALF / 4);
+
+    alignas(32) int32_t z1[NNUE_L2_SIZE];
+    deep_l1_forward(ft_out, idx, count, net, bucket, z1);
+
+    alignas(32) int16_t l2_in[2 * NNUE_L2_SIZE];
+    for (int o = 0; o < NNUE_L2_SIZE; o++) {
+        // 2^14 -> 2^20 (|z| <= 768*127*127 + |bias|, x 64 < 2^31)
+        int32_t z = (z1[o] + net->l1_biases[bucket][o]) * (1 << (NNUE_L1_SHIFT - 14));
+        int64_t lin = z < 0 ? 0 : (z > NNUE_L1_ONE ? NNUE_L1_ONE : z);
+        int64_t zc = z < -NNUE_L1_ONE ? -NNUE_L1_ONE : (z > NNUE_L1_ONE ? NNUE_L1_ONE : z);
+        // 2^20 -> Q^2 = 2^12 and 2^40 -> 2^12, both rounded (<= 4096, fits i16)
+        l2_in[o] = (int16_t)((lin + (1 << 7)) >> 8);
+        l2_in[NNUE_L2_SIZE + o] = (int16_t)((zc * zc + (INT64_C(1) << 27)) >> 28);
+    }
+
+    alignas(32) int32_t l3_in[NNUE_L3_SIZE];
+    deep_l2_forward(l2_in, net, bucket, l3_in);
+
+    int64_t out = net->l3_biases[bucket];
+    for (int i = 0; i < NNUE_L3_SIZE; i++) out += (int64_t)l3_in[i] * net->l3_weights[bucket][i];
+
+    int eval = (int)(out * NNUE_SCALE / NNUE_Q4);
+    return board->whiteToMove ? eval : -eval;
+}
+
+#else
 // Evaluate position using NNUE
 int nnue_evaluate(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
     if (acc == NULL || net == NULL) return 0;
@@ -503,6 +817,8 @@ int nnue_evaluate(const Board* board, NNUEAccumulator* acc, const NNUENetwork* n
     int eval = (output * NNUE_SCALE) / (NNUE_QA * NNUE_QB);
     return board->whiteToMove ? eval : -eval;
 }
+
+#endif
 
 // Combined sub-add for move updates (dst = dst - src_sub + src_add)
 static inline void vec_sub_add(int16_t* restrict dst, const int16_t* restrict src_sub,

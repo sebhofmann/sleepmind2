@@ -201,7 +201,7 @@ void uci_loop() {
     MoveUndoInfo undo_info;
     
     // NNUE network is ~7.5 MB - must be on heap, not stack (stack is only ~1MB on Windows)
-    NNUENetwork* nnue_network = (NNUENetwork*)calloc(1, sizeof(NNUENetwork));
+    NNUENetwork* nnue_network = nnue_alloc_network();
     if (!nnue_network) {
         fprintf(stderr, "Error: Failed to allocate memory for NNUE network\n");
         return;

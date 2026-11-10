@@ -538,8 +538,9 @@ static bool load_network(NNUENetwork* net) {
                embedded_size, nnue_hash(sleepmind_nnue_start, embedded_size));
         return true;
     }
-    printf("info string Embedded NNUE unavailable, trying quantised.bin\n");
-    return load_network_file("quantised.bin", net);
+    // Same net file the engine of this build embeds (quantised.bin / quantised_deep.bin)
+    printf("info string Embedded NNUE unavailable, trying " NNUE_EMBED_FILE "\n");
+    return load_network_file(NNUE_EMBED_FILE, net);
 }
 
 // =============================================================================
@@ -676,14 +677,14 @@ int main(int argc, char* argv[]) {
     // Disable search output for training (no "info depth" and "DEBUG" spam)
     set_search_silent(true);
 
-    NNUENetwork* nnue_network = (NNUENetwork*)calloc(1, sizeof(NNUENetwork));
+    NNUENetwork* nnue_network = nnue_alloc_network();
     if (!nnue_network) {
         fprintf(stderr, "Error: Failed to allocate memory for NNUE network\n");
         return 1;
     }
     if (!load_network(nnue_network) || !nnue_network->loaded) {
         fprintf(stderr, "Error: no NNUE network available (embedded net invalid, "
-                        "quantised.bin missing or wrong size) - aborting\n");
+                        NNUE_EMBED_FILE " missing or wrong size) - aborting\n");
         free(nnue_network);
         return 1;
     }
