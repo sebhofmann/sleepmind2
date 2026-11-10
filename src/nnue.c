@@ -182,15 +182,15 @@ static void deep_init_nnz_lut(void);
 #endif
 
 #if NNUE_ARCH == NNUE_ARCH_THREATS && (defined(NNUE_AVX2) || defined(NNUE_AVX512))
-// In place, per 32-value block of every row: byte 2k = w[k], byte 2k + 1 = w[16 + k] (see tp_apply).
-// tp_weights is not in file order afterwards.
+// In place, per 32-value block of every row: byte 2k = w[k] + 128 (as unsigned), byte 2k + 1 =
+// w[16 + k] (see tp_apply). tp_weights is not in file order afterwards.
 static void tp_interleave_weights(NNUENetwork* net) {
     for (int f = 0; f < NNUE_TP_INPUTS; f++) {
         int8_t* row = net->tp_weights[f];
         for (int b = 0; b < NNUE_HIDDEN_SIZE; b += 32) {
             int8_t tmp[32];
             for (int k = 0; k < 16; k++) {
-                tmp[2 * k] = row[b + k];
+                tmp[2 * k] = (int8_t)(row[b + k] ^ 0x80);
                 tmp[2 * k + 1] = row[b + 16 + k];
             }
             memcpy(row + b, tmp, sizeof(tmp));
@@ -841,8 +841,9 @@ static inline void deep_l2_forward(const int16_t* in, const NNUENetwork* net, in
 
 #if NNUE_ARCH == NNUE_ARCH_THREATS
 // ---------------------------------------------------------------------------------------------
-// Threat + pawn-pair accumulator, after pawnocchio (src/nnue/inputs/psq_threats.zig): applyMove
-// records each move's threat/pawn-pair changes as raw tuples (nnue_threats.c). On eval the pending
+// Threat + pawn-pair accumulator, after pawnocchio (src/nnue/inputs/psq_threats.zig): each move's
+// threat/pawn-pair changes are recorded as raw tuples (nnue_threats.c) - unlike pawnocchio not in
+// applyMove itself but lazily, once the frame is evaluated or searched further. On eval the pending
 // frames are materialised one by one from their parent (indices for the perspective, then one
 // pass over the accumulator); if the king of a perspective changed its mirror state the half is
 // rebuilt from the board instead.
@@ -851,35 +852,49 @@ static inline void deep_l2_forward(const int16_t* in, const NNUENetwork* net, in
 #define NNUE_TP_MAX_ROWS   (NNUE_TP_MAX_DELTA + NNUE_TP_MAX_PAIR_DELTA)
 
 // dst = (src, or 0 if NULL) + sum of the add rows - sum of the sub rows; the i8 rows are widened
-// to i16. Tiled so that a block of the accumulator stays in registers over all rows.
+// to i16.
 static void tp_apply(int16_t* dst, const int16_t* src, const NNUENetwork* net,
                      const uint16_t* add, int n_add, const uint16_t* sub, int n_sub) {
 #if defined(NNUE_AVX2) || defined(NNUE_AVX512)
-    // Rows are interleaved per 32-byte block (tp_interleave_weights): the low byte of each 16-bit
-    // lane belongs to the first 16 values, the high byte to the next 16. Shifts sign-extend both
-    // halves on ports 0/1 instead of vpmovsxbw, which competes for port 5.
-    enum { REGS = 16, TILE = REGS * 16 };
+    // Rows are interleaved per 32-byte block (tp_interleave_weights): a 16-bit lane holds a value of
+    // the first 16 as its low byte, biased to unsigned (lo = w + 128), and one of the next 16 as its
+    // signed high byte, so lane = lo + 256 * hi (mod 2^16). Per row only the lanes themselves (s1)
+    // and the high bytes (s2) are summed, three uops per 32 values:
+    //   sum of the high values = s2
+    //   sum of the low values  = s1 - 256 * s2 - 128 * (rows added - rows subtracted)
+    // Everything is exact modulo 2^16, like the i16 accumulator itself. Tiled so that the sums stay
+    // in registers over all rows.
+    enum { VECS = 6, TILE = VECS * 32 };
+    const __m256i bias = _mm256_set1_epi16((int16_t)(128 * (n_add - n_sub)));
     for (int t = 0; t < NNUE_HIDDEN_SIZE; t += TILE) {
-        __m256i r[REGS];
-        for (int j = 0; j < REGS; j++)
-            r[j] = src ? _mm256_load_si256((const __m256i*)(src + t + 16 * j)) : _mm256_setzero_si256();
+        __m256i s1[VECS], s2[VECS];
+        for (int j = 0; j < VECS; j++) s1[j] = s2[j] = _mm256_setzero_si256();
         for (int k = 0; k < n_add; k++) {
             const int8_t* w = net->tp_weights[add[k]] + t;
-            for (int j = 0; j < REGS; j += 2) {
-                const __m256i x = _mm256_load_si256((const __m256i*)(w + 16 * j));
-                r[j] = _mm256_add_epi16(r[j], _mm256_srai_epi16(_mm256_slli_epi16(x, 8), 8));
-                r[j + 1] = _mm256_add_epi16(r[j + 1], _mm256_srai_epi16(x, 8));
+            for (int j = 0; j < VECS; j++) {
+                const __m256i x = _mm256_load_si256((const __m256i*)(w + 32 * j));
+                s1[j] = _mm256_add_epi16(s1[j], x);
+                s2[j] = _mm256_add_epi16(s2[j], _mm256_srai_epi16(x, 8));
             }
         }
         for (int k = 0; k < n_sub; k++) {
             const int8_t* w = net->tp_weights[sub[k]] + t;
-            for (int j = 0; j < REGS; j += 2) {
-                const __m256i x = _mm256_load_si256((const __m256i*)(w + 16 * j));
-                r[j] = _mm256_sub_epi16(r[j], _mm256_srai_epi16(_mm256_slli_epi16(x, 8), 8));
-                r[j + 1] = _mm256_sub_epi16(r[j + 1], _mm256_srai_epi16(x, 8));
+            for (int j = 0; j < VECS; j++) {
+                const __m256i x = _mm256_load_si256((const __m256i*)(w + 32 * j));
+                s1[j] = _mm256_sub_epi16(s1[j], x);
+                s2[j] = _mm256_sub_epi16(s2[j], _mm256_srai_epi16(x, 8));
             }
         }
-        for (int j = 0; j < REGS; j++) _mm256_store_si256((__m256i*)(dst + t + 16 * j), r[j]);
+        for (int j = 0; j < VECS; j++) {
+            __m256i lo = _mm256_sub_epi16(_mm256_sub_epi16(s1[j], _mm256_slli_epi16(s2[j], 8)), bias);
+            __m256i hi = s2[j];
+            if (src) {
+                lo = _mm256_add_epi16(lo, _mm256_load_si256((const __m256i*)(src + t + 32 * j)));
+                hi = _mm256_add_epi16(hi, _mm256_load_si256((const __m256i*)(src + t + 32 * j + 16)));
+            }
+            _mm256_store_si256((__m256i*)(dst + t + 32 * j), lo);
+            _mm256_store_si256((__m256i*)(dst + t + 32 * j + 16), hi);
+        }
     }
 #else
     for (int i = 0; i < NNUE_HIDDEN_SIZE; i++) dst[i] = src ? src[i] : 0;
@@ -890,20 +905,41 @@ static void tp_apply(int16_t* dst, const int16_t* src, const NNUENetwork* net,
 #endif
 }
 
-void nnue_record_threat_move(NNUEAccumulator* acc, const Board* board, int from, int to, int moving_piece,
-                             int captured_piece, int capture_sq, bool castling) {
+void nnue_note_threat_move(NNUEAccumulator* acc, int from, int to, int moving_piece, int captured_piece,
+                           int capture_sq, bool castling) {
     if (acc == NULL) return;
     acc->tp_computed[0] = acc->tp_computed[1] = false;
-    acc->tp_mask[0] = (int8_t)nnue_tp_square_mask(board, 0);
-    acc->tp_mask[1] = (int8_t)nnue_tp_square_mask(board, 1);
     // a frame reused without nnue_prepare_child_accumulator (search at max ply) holds no usable delta
     if (acc->tp_state != NNUE_TP_STATE_PREPARED) {
         acc->tp_state = NNUE_TP_STATE_NONE;
         return;
     }
-    const bool ok = nnue_tp_record_move(board, from, to, moving_piece, captured_piece, capture_sq, castling,
-                                        &acc->tp_delta);
-    acc->tp_state = ok ? NNUE_TP_STATE_RECORDED : NNUE_TP_STATE_NONE;
+    acc->tp_move_from = (uint8_t)from;
+    acc->tp_move_to = (uint8_t)to;
+    acc->tp_move_piece = (uint8_t)moving_piece;
+    acc->tp_move_captured = (uint8_t)captured_piece;
+    acc->tp_move_capture_sq = (uint8_t)capture_sq;
+    acc->tp_move_castling = castling;
+    acc->tp_state = NNUE_TP_STATE_PENDING;
+}
+
+static void tp_build_half(const Board* board, NNUEAccumulator* acc, int p, const NNUENetwork* net);
+
+// `board` must hold the frame's position (the board after the noted move)
+void nnue_record_pending_threat_move(NNUEAccumulator* frame, const Board* board, const NNUENetwork* net) {
+    frame->tp_mask[0] = (int8_t)nnue_tp_square_mask(board, 0);
+    frame->tp_mask[1] = (int8_t)nnue_tp_square_mask(board, 1);
+    // A king move across the d/e files changes the mirroring of its own perspective, that half cannot
+    // be updated from the parent. Build it now while the board is at hand: later only the boards of
+    // descendants are known, and each of them would have to be built from scratch instead.
+    const int piece = frame->tp_move_piece;
+    if (PIECE_TYPE_OF(piece) == KING && ((frame->tp_move_from ^ frame->tp_move_to) & 4)) {
+        tp_build_half(board, frame, PIECE_COLOR_OF(piece), net);
+    }
+    const bool ok = nnue_tp_record_move(board, frame->tp_move_from, frame->tp_move_to, frame->tp_move_piece,
+                                        frame->tp_move_captured, frame->tp_move_capture_sq,
+                                        frame->tp_move_castling, &frame->tp_delta);
+    frame->tp_state = ok ? NNUE_TP_STATE_RECORDED : NNUE_TP_STATE_NONE;
 }
 
 // pawnocchio buildThreatAccumulator: one half from scratch
@@ -939,6 +975,9 @@ static void tp_materialise_half(NNUEAccumulator* frame, const NNUEAccumulator* p
 // so a mirror change inside the pending chain can only be rebuilt for the frame being evaluated;
 // the frames from that change on stay pending for this perspective.
 static void tp_ensure(const Board* board, NNUEAccumulator* acc, const NNUENetwork* net) {
+    // the frame's own move is still pending if nothing was searched from it yet; its ancestors were
+    // recorded when the next move was made from them
+    if (acc->tp_state == NNUE_TP_STATE_PENDING) nnue_record_pending_threat_move(acc, board, net);
     for (int p = 0; p < 2; p++) {
         if (acc->tp_computed[p]) continue;
 

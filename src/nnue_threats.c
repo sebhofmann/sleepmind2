@@ -24,6 +24,16 @@ static Bitboard empty_attacks[5][64];
 static uint16_t sq_base[5][64];
 // index base inside one attacker side's block per [attacker type][victim type][victim colour], -1 = none
 static int32_t slot_base[5][6][2];
+// Lookup tables of nnue_tp_threat_indices:
+//   pair_base[perspective][attacker colour * 6 + type][victim as enum Piece]: feature index without
+//     the square part, -1 if the pair is no feature
+//   pair_same[attacker][victim]: both of the same type (only attacks towards the lower square count)
+//   from_to[attacker type][from][to]: square part, squares in perspective coordinates
+static int32_t pair_base[2][12][13];
+static uint8_t pair_same[12][13];
+static uint16_t from_to[5][64][64];
+// attacker type / victim type pairs that are a feature (in every perspective)
+static bool tp_valid[6][6];
 // victims an attacker type can have (filled per position from the piece bitboards)
 static const int VICTIM_TYPES[5][5] = {
     { KNIGHT, ROOK, -1, -1, -1 },
@@ -107,6 +117,32 @@ void nnue_tp_init(void) {
                                       : next + (TARGET_SLOT[pt][v] + c * SLOTS[pt]) * count;
         next += 2 * SLOTS[pt] * count;
     }
+    for (int pt = PAWN; pt <= KING; pt++)
+        for (int vt = PAWN; vt <= KING; vt++) tp_valid[pt][vt] = pt != KING && TARGET_SLOT[pt][vt] >= 0;
+    for (int p = 0; p < 2; p++) {
+        for (int a = 0; a < 12; a++) {
+            const int c = a >= 6, pt = a - 6 * c;
+            for (int v = 0; v <= B_KING; v++) {
+                pair_base[p][a][v] = -1;
+                pair_same[a][v] = 0;
+                if (pt == KING || v == NO_PIECE) continue;
+                const int vt = PIECE_TYPE_OF(v), vc = PIECE_COLOR_OF(v) ^ p;
+                if (slot_base[pt][vt][vc] < 0) continue;
+                pair_base[p][a][v] = NNUE_TP_PAIRS + (c ^ p) * NNUE_TP_THREATS_PER_SIDE + slot_base[pt][vt][vc];
+                pair_same[a][v] = vt == pt;
+            }
+        }
+    }
+    for (int f = 0; f < 64; f++) {
+        for (int t = 0; t < 64; t++) {
+            // pawns only stand on ranks 2-7
+            const int pawn = ((f >> 3) - 1) * 14 + 2 * (f & 7) + ((t & 7) > (f & 7)) - 1;
+            from_to[PAWN][f][t] = (uint16_t)(pawn < 0 ? 0 : pawn);
+            for (int pt = KNIGHT; pt <= QUEEN; pt++)
+                from_to[pt][f][t] = (uint16_t)(sq_base[pt][f] +
+                                               __builtin_popcountll(empty_attacks[pt][f] & ((1ULL << t) - 1)));
+        }
+    }
     if (next != NNUE_TP_THREATS_PER_SIDE) {
         fprintf(stderr, "info string NNUE threat tables inconsistent (%d != %d)\n", next, NNUE_TP_THREATS_PER_SIDE);
         exit(1);
@@ -154,26 +190,21 @@ int nnue_tp_raw_threats(const Board* board, uint32_t* out) {
 }
 
 int nnue_tp_threat_indices(const uint32_t* raw, int n, int perspective, int mask, uint16_t* out) {
+    // Branchless: every tuple writes its index, the count only advances for real features. `out`
+    // needs room for n entries.
+    const int32_t (*base)[13] = pair_base[perspective];
     int count = 0;
     for (int i = 0; i < n; i++) {
         const uint32_t r = raw[i];
         const int attacker = (int)(r >> 20);
-        const int c = attacker >= 6;
-        const int pt = attacker - 6 * c;
+        const int pt = attacker - 6 * (attacker >= 6);
         const int f = (int)((r >> 14) & 63) ^ mask;
         const int t = (int)((r >> 8) & 63) ^ mask;
-        const int piece = (int)(r & 255);
-        const int vt = PIECE_TYPE_OF(piece);
-        const int vc = PIECE_COLOR_OF(piece) ^ perspective;
-        const int32_t slot = slot_base[pt][vt][vc];
-        if (slot < 0) continue;  // victim type is no target of this attacker
-        const int base = NNUE_TP_PAIRS + (c ^ perspective) * NNUE_TP_THREATS_PER_SIDE + slot;
-        if (pt == PAWN) {
-            out[count++] = (uint16_t)(base + ((f >> 3) - 1) * 14 + 2 * (f & 7) + ((t & 7) > (f & 7)) - 1);
-        } else if (vt != pt || t < f) {
-            // between two pieces of the same type only the attack towards the lower square counts
-            out[count++] = (uint16_t)(base + sq_base[pt][f] + __builtin_popcountll(empty_attacks[pt][f] & ((1ULL << t) - 1)));
-        }
+        const int victim = (int)(r & 255);
+        const int32_t b = base[attacker][victim];
+        out[count] = (uint16_t)(b + from_to[pt][f][t]);
+        // between two pieces of the same type only the attack towards the lower square counts
+        count += (b >= 0) & (!pair_same[attacker][victim] | (t < f));
     }
     return count;
 }
@@ -244,14 +275,59 @@ typedef struct {
     int ovr_sq;
     int ovr_piece;
     NNUETPDelta* out;
+    // attackers by movement in the described state (both colours): rooks + queens, bishops + queens,
+    // knights, and the pawns per colour. Bits outside the described occupancy are stale and must be
+    // masked with it.
+    Bitboard orth, diag, knights, pawns[2];
+    Bitboard base_orth, base_diag, base_knights, base_pawns[2];
 } TPEmitter;
 
 static inline int emit_lookup(const TPEmitter* e, int sq) {
     return sq == e->ovr_sq ? e->ovr_piece : e->board->piece[sq];
 }
 
-// attacker / victim as enum Piece
+static void emitter_init(TPEmitter* e, const Board* board, NNUETPDelta* out) {
+    e->board = board;
+    e->out = out;
+    e->ovr_sq = -1;
+    e->ovr_piece = NO_PIECE;
+    const Bitboard queens = board->byTypeBB[WHITE][QUEEN] | board->byTypeBB[BLACK][QUEEN];
+    e->orth = e->base_orth = board->byTypeBB[WHITE][ROOK] | board->byTypeBB[BLACK][ROOK] | queens;
+    e->diag = e->base_diag = board->byTypeBB[WHITE][BISHOP] | board->byTypeBB[BLACK][BISHOP] | queens;
+    e->knights = e->base_knights = board->byTypeBB[WHITE][KNIGHT] | board->byTypeBB[BLACK][KNIGHT];
+    e->pawns[WHITE] = e->base_pawns[WHITE] = board->byTypeBB[WHITE][PAWN];
+    e->pawns[BLACK] = e->base_pawns[BLACK] = board->byTypeBB[BLACK][PAWN];
+}
+
+// The described state has `piece` on sq instead of what the board array holds there (sq < 0: none)
+static void emitter_override(TPEmitter* e, int sq, int piece) {
+    e->ovr_sq = sq;
+    e->ovr_piece = piece;
+    e->orth = e->base_orth;
+    e->diag = e->base_diag;
+    e->knights = e->base_knights;
+    e->pawns[WHITE] = e->base_pawns[WHITE];
+    e->pawns[BLACK] = e->base_pawns[BLACK];
+    if (sq < 0) return;
+    const Bitboard bit = 1ULL << sq;
+    e->orth &= ~bit;
+    e->diag &= ~bit;
+    e->knights &= ~bit;
+    e->pawns[WHITE] &= ~bit;
+    e->pawns[BLACK] &= ~bit;
+    switch (PIECE_TYPE_OF(piece)) {
+        case PAWN:   e->pawns[PIECE_COLOR_OF(piece)] |= bit; break;
+        case KNIGHT: e->knights |= bit; break;
+        case BISHOP: e->diag |= bit; break;
+        case ROOK:   e->orth |= bit; break;
+        case QUEEN:  e->orth |= bit; e->diag |= bit; break;
+        default: break;
+    }
+}
+
+// attacker / victim as enum Piece; pairs that are no feature in any perspective are dropped here
 static inline void emit_tuple(TPEmitter* e, bool is_add, int attacker, int from, int victim, int to) {
+    if (!tp_valid[PIECE_TYPE_OF(attacker)][PIECE_TYPE_OF(victim)]) return;
     NNUETPDelta* d = e->out;
     const uint32_t r = (uint32_t)(PIECE_TYPE_OF(attacker) + 6 * PIECE_COLOR_OF(attacker)) << 20 |
                        (uint32_t)from << 14 | (uint32_t)to << 8 | (uint32_t)victim;
@@ -264,113 +340,83 @@ static inline void emit_tuple(TPEmitter* e, bool is_add, int attacker, int from,
     }
 }
 
-// nearest occupied square from sq in direction dir, -1 if none
-static inline int nearest(int sq, int dir, Bitboard occ) {
-    const Bitboard hit = rays[dir][sq] & occ;
-    if (!hit) return -1;
-    // N, NE, E, NW go to higher squares
-    return (dir <= 2 || dir == 7) ? __builtin_ctzll(hit) : 63 - __builtin_clzll(hit);
-}
+// Attack sets from sq on occupied squares, shared by the emitters of one square: `rook` / `bishop`
+// hold the nearest piece in each of the four orthogonal / diagonal directions.
+typedef struct {
+    Bitboard rook, bishop;
+} TPLines;
 
-static inline Bitboard piece_attacks(int pt, int c, int sq, Bitboard occ) {
-    switch (pt) {
-        case PAWN:   return pawn_attacks[c][sq];
-        case KNIGHT: return knight_attacks[sq];
-        case BISHOP: return getBishopAttacks(sq, occ);
-        case ROOK:   return getRookAttacks(sq, occ);
-        case QUEEN:  return getQueenAttacks(sq, occ);
-        default:     return 0;
-    }
+static inline TPLines lines_from(int sq, Bitboard occ) {
+    const TPLines l = { getRookAttacks(sq, occ) & occ, getBishopAttacks(sq, occ) & occ };
+    return l;
 }
 
 // outgoing threats of `piece` on sq
-static void emit_outgoing(TPEmitter* e, int piece, int sq, bool is_add, Bitboard occ) {
-    Bitboard att = piece_attacks(PIECE_TYPE_OF(piece), PIECE_COLOR_OF(piece), sq, occ) & occ;
+static inline void emit_outgoing(TPEmitter* e, int piece, int sq, bool is_add, Bitboard occ, TPLines l) {
+    Bitboard att;
+    switch (PIECE_TYPE_OF(piece)) {
+        case PAWN:   att = pawn_attacks[PIECE_COLOR_OF(piece)][sq] & occ; break;
+        case KNIGHT: att = knight_attacks[sq] & occ; break;
+        case BISHOP: att = l.bishop; break;
+        case ROOK:   att = l.rook; break;
+        case QUEEN:  att = l.rook | l.bishop; break;
+        default:     att = 0; break;
+    }
     while (att) {
         const int t = __builtin_ctzll(att);
         att &= att - 1;
-        const int victim = emit_lookup(e, t);
-        if (PIECE_TYPE_OF(victim) != KING) emit_tuple(e, is_add, piece, sq, victim, t);
+        emit_tuple(e, is_add, piece, sq, emit_lookup(e, t), t);
     }
 }
 
-// threats of other pieces on `piece` standing on sq
-static void emit_incoming(TPEmitter* e, int piece, int sq, bool is_add, Bitboard occ) {
-    Bitboard cand = getRookAttacks(sq, occ) & occ;
+// Threats of other pieces on sq: removed for `old_piece`, added for `new_piece` (NO_PIECE = none).
+// A white pawn attacks sq from the squares a black pawn on sq would attack, and vice versa.
+static inline void emit_incoming(TPEmitter* e, int old_piece, int new_piece, int sq, Bitboard occ, TPLines l) {
+    Bitboard cand = (l.rook & e->orth) | (l.bishop & e->diag) | (knight_attacks[sq] & e->knights & occ) |
+                    (pawn_attacks[BLACK][sq] & e->pawns[WHITE] & occ) |
+                    (pawn_attacks[WHITE][sq] & e->pawns[BLACK] & occ);
     while (cand) {
         const int t = __builtin_ctzll(cand);
         cand &= cand - 1;
         const int a = emit_lookup(e, t);
-        const int at = PIECE_TYPE_OF(a);
-        if (at == ROOK || at == QUEEN) emit_tuple(e, is_add, a, t, piece, sq);
+        if (old_piece != NO_PIECE) emit_tuple(e, false, a, t, old_piece, sq);
+        if (new_piece != NO_PIECE) emit_tuple(e, true, a, t, new_piece, sq);
     }
-    cand = getBishopAttacks(sq, occ) & occ;
-    while (cand) {
-        const int t = __builtin_ctzll(cand);
-        cand &= cand - 1;
-        const int a = emit_lookup(e, t);
-        const int at = PIECE_TYPE_OF(a);
-        if (at == BISHOP || at == QUEEN) emit_tuple(e, is_add, a, t, piece, sq);
-    }
-    cand = knight_attacks[sq] & occ;
-    while (cand) {
-        const int t = __builtin_ctzll(cand);
-        cand &= cand - 1;
-        const int a = emit_lookup(e, t);
-        if (PIECE_TYPE_OF(a) == KNIGHT) emit_tuple(e, is_add, a, t, piece, sq);
-    }
-    // a white pawn attacks sq from the squares a black pawn on sq would attack, and vice versa
-    cand = pawn_attacks[BLACK][sq] & occ;
-    while (cand) {
-        const int t = __builtin_ctzll(cand);
-        cand &= cand - 1;
-        if (emit_lookup(e, t) == W_PAWN) emit_tuple(e, is_add, W_PAWN, t, piece, sq);
-    }
-    cand = pawn_attacks[WHITE][sq] & occ;
-    while (cand) {
-        const int t = __builtin_ctzll(cand);
-        cand &= cand - 1;
-        if (emit_lookup(e, t) == B_PAWN) emit_tuple(e, is_add, B_PAWN, t, piece, sq);
-    }
-}
-
-static inline bool slides_along(int pt, int dir) {
-    return pt == QUEEN || (pt == ROOK && (dir & 1) == 0) || (pt == BISHOP && (dir & 1) == 1);
 }
 
 // slider threats through sq that a piece on sq blocks (is_add) or releases (!is_add)
-static void emit_discovered(TPEmitter* e, int sq, bool is_add, Bitboard occ) {
+static inline void emit_discovered(TPEmitter* e, int sq, bool is_add, TPLines l) {
+    const Bitboard orth = l.rook & e->orth, diag = l.bishop & e->diag;
+    if (!(orth | diag)) return;
     for (int d = 0; d < 4; d++) {
-        const int s1 = nearest(sq, d, occ);
-        if (s1 < 0) continue;
-        const int s2 = nearest(sq, d + 4, occ);
-        if (s2 < 0) continue;
+        const Bitboard line = (d & 1) ? l.bishop : l.rook;
+        const Bitboard a = line & rays[d][sq], b = line & rays[d + 4][sq];
+        // needs a piece on both sides, at least one of them sliding along this line
+        if (!a || !b || !((a | b) & ((d & 1) ? diag : orth))) continue;
+        const int s1 = __builtin_ctzll(a), s2 = __builtin_ctzll(b);
         const int p1 = emit_lookup(e, s1), p2 = emit_lookup(e, s2);
-        const int t1 = PIECE_TYPE_OF(p1), t2 = PIECE_TYPE_OF(p2);
-        if (slides_along(t1, d) && t2 != KING) emit_tuple(e, !is_add, p1, s1, p2, s2);
-        if (slides_along(t2, d) && t1 != KING) emit_tuple(e, !is_add, p2, s2, p1, s1);
+        if (a & ((d & 1) ? diag : orth)) emit_tuple(e, !is_add, p1, s1, p2, s2);
+        if (b & ((d & 1) ? diag : orth)) emit_tuple(e, !is_add, p2, s2, p1, s1);
     }
 }
 
 // pawnocchio emitChangeSide: `piece` appears on / disappears from sq
 static void emit_change(TPEmitter* e, int piece, int sq, bool is_add, Bitboard occ) {
+    const TPLines l = lines_from(sq, occ);
     if (PIECE_TYPE_OF(piece) != KING) {
-        emit_outgoing(e, piece, sq, is_add, occ);
-        emit_incoming(e, piece, sq, is_add, occ);
+        emit_outgoing(e, piece, sq, is_add, occ, l);
+        emit_incoming(e, is_add ? NO_PIECE : piece, is_add ? piece : NO_PIECE, sq, occ, l);
     }
-    emit_discovered(e, sq, is_add, occ);
+    emit_discovered(e, sq, is_add, l);
 }
 
 // pawnocchio onMutate: the piece on sq changes, occupancy stays
 static void emit_mutate(TPEmitter* e, int old_piece, int new_piece, int sq, Bitboard occ) {
-    if (PIECE_TYPE_OF(old_piece) != KING) {
-        emit_outgoing(e, old_piece, sq, false, occ);
-    }
-    if (PIECE_TYPE_OF(new_piece) != KING) {
-        emit_outgoing(e, new_piece, sq, true, occ);
-    }
-    if (PIECE_TYPE_OF(old_piece) != KING) emit_incoming(e, old_piece, sq, false, occ);
-    if (PIECE_TYPE_OF(new_piece) != KING) emit_incoming(e, new_piece, sq, true, occ);
+    const TPLines l = lines_from(sq, occ);
+    const bool had = PIECE_TYPE_OF(old_piece) != KING, has = PIECE_TYPE_OF(new_piece) != KING;
+    if (had) emit_outgoing(e, old_piece, sq, false, occ, l);
+    if (has) emit_outgoing(e, new_piece, sq, true, occ, l);
+    if (had || has) emit_incoming(e, had ? old_piece : NO_PIECE, has ? new_piece : NO_PIECE, sq, occ, l);
 }
 
 static inline uint16_t raw_pair(int a, int ca, int b, int cb) {
@@ -407,7 +453,8 @@ bool nnue_tp_record_move(const Board* board, int from, int to, int moving_piece,
     for (int c = 0; c < 2; c++)
         for (int t = 0; t < 6; t++) occ |= board->byTypeBB[c][t];
 
-    TPEmitter e = { board, -1, NO_PIECE, d };
+    TPEmitter e;
+    emitter_init(&e, board, d);
     const int us = PIECE_COLOR_OF(moving_piece);
     const Bitboard to_bb = 1ULL << to;
 
@@ -418,28 +465,25 @@ bool nnue_tp_record_move(const Board* board, int from, int to, int moving_piece,
         const int rook_to = (to & 7) == 6 ? to - 1 : to + 1;
         const int rook = us == WHITE ? W_ROOK : B_ROOK;
         const Bitboard s2 = occ & ~(1ULL << king_to) & ~(1ULL << rook_to);
-        e.ovr_sq = rook_from;
-        e.ovr_piece = rook;
+        emitter_override(&e, rook_from, rook);
         emit_change(&e, moving_piece, from, false, s2 | (1ULL << rook_from));
-        e.ovr_sq = -1;
+        emitter_override(&e, -1, NO_PIECE);
         emit_change(&e, rook, rook_from, false, s2);
         emit_change(&e, moving_piece, king_to, true, occ & ~(1ULL << rook_to));
         emit_change(&e, rook, rook_to, true, occ);
     } else if (captured_piece != NO_PIECE && capture_sq != to) {
         // en passant: the pawn moves (captured pawn still there), then the captured pawn goes
         const Bitboard with_cap = occ | (1ULL << capture_sq);
-        e.ovr_sq = capture_sq;
-        e.ovr_piece = captured_piece;
+        emitter_override(&e, capture_sq, captured_piece);
         emit_change(&e, moving_piece, from, false, with_cap & ~to_bb);
         emit_change(&e, moving_piece, to, true, with_cap);
-        e.ovr_sq = -1;
+        emitter_override(&e, -1, NO_PIECE);
         emit_change(&e, captured_piece, capture_sq, false, occ);
     } else if (captured_piece != NO_PIECE) {
         // capture: the mover leaves (victim still on to), then the piece on to mutates
-        e.ovr_sq = to;
-        e.ovr_piece = captured_piece;
+        emitter_override(&e, to, captured_piece);
         emit_change(&e, moving_piece, from, false, occ);
-        e.ovr_sq = -1;
+        emitter_override(&e, -1, NO_PIECE);
         emit_mutate(&e, captured_piece, board->piece[to], to, occ);
     } else {
         // quiet move / promotion: leave from (to still empty), arrive on to
