@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <errno.h>
 #include <inttypes.h>
+#ifdef _WIN32
+#include <malloc.h>  // _aligned_malloc / _aligned_free
+#endif
 
 // SIMD support - compile-time detection (use -march=native)
 #if defined(__AVX512F__) && defined(__AVX512BW__)
@@ -232,9 +235,22 @@ bool nnue_load_memory(const unsigned char* data, size_t size, NNUENetwork* net) 
 
 NNUENetwork* nnue_alloc_network(void) {
     size_t size = (sizeof(NNUENetwork) + 63) / 64 * 64;  // aligned_alloc needs a multiple of the alignment
+#ifdef _WIN32
+    // The Windows CRT has no aligned_alloc; its aligned blocks need _aligned_free.
+    NNUENetwork* net = _aligned_malloc(size, 64);
+#else
     NNUENetwork* net = aligned_alloc(64, size);
+#endif
     if (net) memset(net, 0, size);
     return net;
+}
+
+void nnue_free_network(NNUENetwork* net) {
+#ifdef _WIN32
+    _aligned_free(net);
+#else
+    free(net);
+#endif
 }
 
 // Load NNUE weights from file into network

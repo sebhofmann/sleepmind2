@@ -729,7 +729,7 @@ int main(int argc, char* argv[]) {
     if (!load_network(nnue_network) || !nnue_network->loaded) {
         fprintf(stderr, "Error: no NNUE network available (embedded net invalid, "
                         NNUE_EMBED_FILE " missing or wrong size) - aborting\n");
-        free(nnue_network);
+        nnue_free_network(nnue_network);
         return 1;
     }
 
@@ -808,7 +808,7 @@ int main(int argc, char* argv[]) {
 
     close_training_data();
     syzygy_free();
-    free(nnue_network);
+    nnue_free_network(nnue_network);
 
     return 0;
 }

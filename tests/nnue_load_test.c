@@ -42,8 +42,8 @@ int main(void) {
         return 1;
     }
 
-    free(file);
-    free(embedded);
+    nnue_free_network(file);
+    nnue_free_network(embedded);
     puts("NNUE file/memory loader test passed");
     return 0;
 }
