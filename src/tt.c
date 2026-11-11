@@ -120,6 +120,14 @@ void clear_tt() {
     generation8 = 0;
 }
 
+void tt_swap_state(TTState* other) {
+    TTState active = { table, cluster_count, generation8 };
+    table = (TTCluster*)other->table;
+    cluster_count = other->cluster_count;
+    generation8 = other->generation;
+    *other = active;
+}
+
 void tt_new_search() {
     generation8 += TT_GENERATION_DELTA;  // uint8 wraps around by itself
 }
