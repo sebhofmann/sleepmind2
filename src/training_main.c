@@ -258,6 +258,41 @@ static int record_score(int stm_score, bool white_to_move) {
 // Self-Play Game
 // =============================================================================
 
+// Search state of the running game, split by colour like Viridithas' datagen:
+// each player has its own transposition table and its own history tables, so
+// the two sides cannot see into each other's search, and every search follows
+// two plies after the previous one of the same player - the situation the
+// search is tuned for. Everything is kept across the moves of one game (like
+// the engine between "go" commands) and cleared per game.
+#define PLAYER_TT_MB 16
+static SearchInfo player_info[2];   // [0] = White, [1] = Black
+static TTState inactive_tt;         // table of the player not selected
+static int active_player = 0;
+
+// Makes `player`'s transposition table and continuation history the active ones.
+static void select_player(int player) {
+    if (player != active_player) {
+        tt_swap_state(&inactive_tt);
+        active_player = player;
+    }
+    search_select_cont_history(player);
+}
+
+static void init_player_tables(void) {
+    init_tt(PLAYER_TT_MB);          // player 0
+    tt_swap_state(&inactive_tt);    // park it, no active table left
+    init_tt(PLAYER_TT_MB);          // player 1
+    active_player = 1;
+}
+
+static void clear_player_tables(void) {
+    for (int player = 0; player < 2; player++) {
+        select_player(player);
+        clear_tt();
+        clear_search_history(&player_info[player]);
+    }
+}
+
 static PlayOutcome play_game(int game_num, NNUENetwork* nnue_network) {
     Board board = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     NNUEAccumulator nnue_accumulator = {0};
@@ -273,7 +308,7 @@ static PlayOutcome play_game(int game_num, NNUENetwork* nnue_network) {
     bool tb_adjudicated = false;     // game ended by an exact tablebase result
 
     reset_position_history();
-    clear_tt();
+    clear_player_tables();
     game_record_discard();
 
     if (config.verbose >= 1) {
@@ -361,50 +396,51 @@ static PlayOutcome play_game(int game_num, NNUENetwork* nnue_network) {
                 }
             }
 
-            SearchInfo search_info;
-            search_info.startTimeMs = search_current_time_ms();
-            search_params_init(&search_info.params);
+            int player = board.whiteToMove ? 0 : 1;
+            select_player(player);
+            SearchInfo* si = &player_info[player];
+            si->startTimeMs = search_current_time_ms();
+            search_params_init(&si->params);
             // Tablebases are not probed inside the search during training
             // data generation (adjudication above handles TB positions).
-            search_info.tbProbeLimit = 0;
-            search_info.tbHits = 0;
-            search_info.tbRootMoveCount = 0;
-            search_info.tbRootScore = 0;
-            search_info.tbRootMatePlies = -1;
-            search_info.tbRootPvLen = 0;
+            si->tbProbeLimit = 0;
+            si->tbHits = 0;
+            si->tbRootMoveCount = 0;
+            si->tbRootScore = 0;
+            si->tbRootMatePlies = -1;
+            si->tbRootPvLen = 0;
 
             if (config.search_nodes > 0) {
                 // Node-based search: soft node limit between iterations, plus
                 // the hard node cap in check_time() (search.c) as safety net.
-                search_info.softTimeLimit = 0;
-                search_info.hardTimeLimit = 0;
-                search_info.depthLimit = 0;
-                search_info.nodeLimit = config.search_nodes;
+                si->softTimeLimit = 0;
+                si->hardTimeLimit = 0;
+                si->depthLimit = 0;
+                si->nodeLimit = config.search_nodes;
             } else if (config.search_time_ms > 0) {
-                search_info.softTimeLimit = config.search_time_ms;
-                search_info.hardTimeLimit = config.search_time_ms;
-                search_info.depthLimit = 0;
-                search_info.nodeLimit = 0;
+                si->softTimeLimit = config.search_time_ms;
+                si->hardTimeLimit = config.search_time_ms;
+                si->depthLimit = 0;
+                si->nodeLimit = 0;
             } else {
-                search_info.softTimeLimit = 0;
-                search_info.hardTimeLimit = 0;
-                search_info.depthLimit = config.search_depth;
-                search_info.nodeLimit = 0;
+                si->softTimeLimit = 0;
+                si->hardTimeLimit = 0;
+                si->depthLimit = config.search_depth;
+                si->nodeLimit = 0;
             }
 
-            search_info.stopSearch = false;
-            search_info.lastIterationTime = 0;
-            search_info.nnue_acc = &nnue_accumulator;
-            search_info.nnue_net = nnue_network;
-            search_info.nodesSearched = 0;
-            search_info.bestMoveThisIteration = 0;
-            search_info.bestScoreThisIteration = 0;
-            search_info.seldepth = 0;
-            clear_search_history(&search_info);
+            si->stopSearch = false;
+            si->lastIterationTime = 0;
+            si->nnue_acc = &nnue_accumulator;
+            si->nnue_net = nnue_network;
+            si->nodesSearched = 0;
+            si->bestMoveThisIteration = 0;
+            si->bestScoreThisIteration = 0;
+            si->seldepth = 0;
 
-            best_move = iterative_deepening_search(&board, &search_info);
+            best_move = iterative_deepening_search(&board, si);
             // Score of the last completed iteration, side-to-move view.
-            int best_score = search_info.bestScoreThisIteration;
+            int best_score = si->bestScoreThisIteration;
 
             if (config.verbose >= 2) {
                 char move_str[6];
@@ -671,7 +707,11 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
 
     init_zobrist_keys();
-    init_tt(256);  // 256 MB transposition table
+    // One small table per player. A game visits ~2M nodes, and with many
+    // parallel instances small tables are also faster than a large one
+    // (measured +6-7% positions/s for 32 MB vs 256 MB at 32 instances: less
+    // cache/TLB pressure, cheaper clear).
+    init_player_tables();
     initMoveGenerator();
 
     // Initialize random seed AFTER initMoveGenerator (which also calls srand)
@@ -689,7 +729,7 @@ int main(int argc, char* argv[]) {
     if (!load_network(nnue_network) || !nnue_network->loaded) {
         fprintf(stderr, "Error: no NNUE network available (embedded net invalid, "
                         NNUE_EMBED_FILE " missing or wrong size) - aborting\n");
-        free(nnue_network);
+        nnue_free_network(nnue_network);
         return 1;
     }
 
@@ -768,7 +808,7 @@ int main(int argc, char* argv[]) {
 
     close_training_data();
     syzygy_free();
-    free(nnue_network);
+    nnue_free_network(nnue_network);
 
     return 0;
 }

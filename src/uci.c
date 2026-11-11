@@ -912,5 +912,5 @@ void uci_loop() {
     
     // Release tablebases and heap-allocated NNUE network
     syzygy_free();
-    free(nnue_network);
+    nnue_free_network(nnue_network);
 }

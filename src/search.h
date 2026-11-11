@@ -196,6 +196,10 @@ Move iterative_deepening_search(Board* board, SearchInfo* info);
 int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximizingPlayer, SearchInfo* info, int ply);
 int quiescence_search(Board* board, int alpha, int beta, bool maximizingPlayer, SearchInfo* info, int ply);
 void clear_search_history(SearchInfo* info);
+// Continuation history lives outside SearchInfo; there are two independent
+// sets. The engine only uses set 0, the data generator gives each player its
+// own. clear_search_history() clears the selected set.
+void search_select_cont_history(int set);
 void clear_volatile_history(SearchInfo* info);
 int see_debug(const Board* board, Move move); // Debug: expose SEE
 bool see_ge_debug(const Board* board, Move move, int threshold); // Debug: threshold SEE

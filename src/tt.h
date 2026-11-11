@@ -36,6 +36,16 @@ void tt_store(uint64_t key, int depth, int score, uint8_t bound, Move best_move,
 TTData tt_probe(uint64_t key);
 void tt_prefetch(uint64_t key);  // Prefetch TT cluster for better cache performance
 void free_tt();
+
+// A complete table (memory, size, generation) that is not the active one.
+// tt_swap_state() exchanges it with the active table, so a caller can keep
+// several independent tables (the data generator: one per player).
+typedef struct {
+    void*    table;
+    uint64_t cluster_count;
+    uint8_t  generation;
+} TTState;
+void tt_swap_state(TTState* other);
 int tt_hashfull();  // Returns permille of TT usage
 
 #endif // TT_H

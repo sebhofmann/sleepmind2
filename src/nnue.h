@@ -122,8 +122,10 @@ extern NNUENetwork nnue_net;
 // Initialize NNUE with random weights (for testing without a trained net)
 void nnue_init_random(void);
 
-// Allocate a zeroed, 64-byte aligned network (the struct requires it for SIMD). Release with free().
+// Allocate a zeroed, 64-byte aligned network (the struct requires it for SIMD).
+// Release with nnue_free_network() - plain free() is wrong on Windows.
 NNUENetwork* nnue_alloc_network(void);
+void nnue_free_network(NNUENetwork* net);
 
 // Load NNUE weights from file into network
 bool nnue_load(const char* filename, NNUENetwork* net);

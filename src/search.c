@@ -554,8 +554,16 @@ bool see_ge_debug(const Board* board, Move move, int threshold) {
 // persists (un-decayed) across searches within a game, like Stockfish.
 // =============================================================================
 #define CMH_MAX 16384
-static int16_t cmh_table[12][64][12][64]; // 1 ply back (countermove history)
-static int16_t fmh_table[12][64][12][64]; // 2 plies back (follow-up history)
+// Two independent sets (see search_select_cont_history), set 0 by default.
+static int16_t cmh_storage[2][12][64][12][64]; // 1 ply back (countermove history)
+static int16_t fmh_storage[2][12][64][12][64]; // 2 plies back (follow-up history)
+static int16_t (*cmh_table)[64][12][64] = cmh_storage[0];
+static int16_t (*fmh_table)[64][12][64] = fmh_storage[0];
+
+void search_select_cont_history(int set) {
+    cmh_table = cmh_storage[set & 1];
+    fmh_table = fmh_storage[set & 1];
+}
 
 // Piece index for continuation tables, -1 if square is empty
 static inline int cmh_piece_index(const Board* board, int sq) {
@@ -929,8 +937,8 @@ void clear_search_history(SearchInfo* info) {
     memset(info->prev_pieces, 0, sizeof(info->prev_pieces));
     memset(info->pawn_correction_history, 0, sizeof(info->pawn_correction_history));
     memset(info->nonpawn_correction_history, 0, sizeof(info->nonpawn_correction_history));
-    memset(cmh_table, 0, sizeof(cmh_table));
-    memset(fmh_table, 0, sizeof(fmh_table));
+    memset(cmh_table, 0, sizeof(cmh_storage[0]));
+    memset(fmh_table, 0, sizeof(fmh_storage[0]));
 }
 
 #define CORRECTION_GRAIN 256
