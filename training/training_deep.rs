@@ -91,6 +91,8 @@ const STAGE1_WDL_END: f32 = 0.5;
 const STAGE2_LR_START: f32 = 1e-5;
 const STAGE2_LR_END: f32 = 1e-7;
 const STAGE2_WDL: f32 = 1.0;
+// --flat-wdl: final LR of the cosine decay (bullet's usual 0.001 * 0.3^5)
+const FLAT_LR_END: f32 = 2.43e-6;
 
 type InputTy = (((SparseInput, SparseInput), SparseInput), DenseInput<f32>);
 
@@ -133,6 +135,7 @@ fn main() {
     let mut threads: u8 = 6;
     let mut save_rate: usize = 10;
     let mut eval_fens: Option<String> = None;
+    let mut flat_wdl: Option<f32> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -151,6 +154,7 @@ fn main() {
             "--threads" | "-t" => threads = next(i).parse().expect("invalid -t"),
             "--save-rate" => save_rate = next(i).parse().expect("invalid --save-rate"),
             "--eval" => eval_fens = Some(next(i)),
+            "--flat-wdl" => flat_wdl = Some(next(i).parse().expect("--flat-wdl must be a number in [0, 1]")),
             "--help" | "-h" => {
                 println!("SleepMind deep NNUE trainer (engine: make NNUE_ARCH=deep)");
                 println!();
@@ -167,6 +171,8 @@ fn main() {
                 println!("  -n, --name <NAME>        Network ID (default: sleepmind_deep)");
                 println!("  -t, --threads <N>        Data mapping threads (default: 6)");
                 println!("      --save-rate <N>      Checkpoint every N superbatches (default: 10)");
+                println!("      --flat-wdl <W>       Single stage instead of the 3 stages: all superbatches with constant");
+                println!("                           WDL share W and cosine LR decay, no warmup, no finetune");
                 println!("      --eval <FENFILE>     With -r: print float reference evals (cp, white view) and exit");
                 return;
             }
@@ -327,6 +333,21 @@ fn main() {
     };
 
     std::fs::create_dir_all("checkpoints").unwrap();
+
+    // Single flat stage (short data comparison runs): constant WDL, cosine decay from the
+    // main-stage start LR, checkpoints named <name>-stage0-<superbatch>.
+    if let Some(value) = flat_wdl {
+        assert!(start_stage == 0, "--flat-wdl has only stage 0");
+        println!("Flat run:  {superbatches} SBs, WDL {value}, LR {STAGE1_LR_START} -> {FLAT_LR_END} (cosine)");
+        run(
+            0,
+            superbatches,
+            lr::CosineDecayLR { initial_lr: STAGE1_LR_START, final_lr: FLAT_LR_END, final_superbatch: superbatches }
+                .boxed(),
+            make_mapper(&inputs, wdl::ConstantWDL { value }),
+        );
+        return;
+    }
 
     if start_stage == 0 {
         run(

@@ -36,6 +36,9 @@ fn main() {
     let mut threads: usize = 2;
     let mut save_rate: usize = 10;
     let mut start_stage: usize = 0;
+    let mut hl_size: usize = 768;
+    let mut flat_wdl: Option<f32> = None;
+    let mut batch_size: usize = 16_384 * 8;
 
     // Parse arguments
     let mut i = 1;
@@ -95,6 +98,19 @@ fn main() {
                     save_rate = args[i].parse().unwrap_or(10);
                 }
             }
+            "--hidden" => {
+                i += 1;
+                hl_size = args.get(i).and_then(|a| a.parse().ok()).expect("--hidden needs a number");
+            }
+            "--batch-size" => {
+                i += 1;
+                batch_size = args.get(i).and_then(|a| a.parse().ok()).expect("--batch-size needs a number");
+            }
+            "--flat-wdl" => {
+                i += 1;
+                flat_wdl =
+                    Some(args.get(i).and_then(|a| a.parse().ok()).expect("--flat-wdl must be a number in [0, 1]"));
+            }
             "--start-stage" => {
                 i += 1;
                 if i < args.len() {
@@ -119,6 +135,12 @@ fn main() {
                 println!("  -l, --load <PATH>        Load weights from file (.wgts)");
                 println!("  -n, --name <NAME>        Network ID for output (default: sleepmind)");
                 println!("  -t, --threads <N>        Number of threads (default: 2)");
+                println!("      --hidden <N>         Hidden layer size per perspective (default: 768); the engine needs");
+                println!("                           the matching build, e.g. make NNUE_ARCH=legacy hl_64=1");
+                println!("      --batch-size <N>     Positions per batch (default: 131072); a superbatch always has");
+                println!("                           ~100 M positions, so smaller batches mean more optimiser steps");
+                println!("      --flat-wdl <W>       Single stage instead of the 3 stages: all superbatches with constant");
+                println!("                           WDL share W and cosine LR decay, no warmup, no finetune");
                 println!("      --save-rate <N>      Save checkpoint every N superbatches (default: 10)");
                 println!("  -h, --help               Show this help");
                 println!();
@@ -161,7 +183,9 @@ fn main() {
     println!();
 
     // hyperparams
-    let hl_size = 768;
+    println!("Hidden size:   {hl_size}");
+    // --flat-wdl: final LR of the cosine decay (bullet's usual 0.001 * 0.3^5)
+    const FLAT_LR_END: f32 = 2.43e-6;
     // stage 0: warmup to peak LR and back down
     const STAGE0_LR_START: f32 = 1e-4;
     const STAGE0_LR_PEAK: f32 = 5e-3;
@@ -258,11 +282,32 @@ fn main() {
 
     // --start only applies to the stage we resume in, later stages start at 1
     let steps = |stage: usize, end_superbatch: usize| TrainingSteps {
-        batch_size: 16_384 * 8,
-        batches_per_superbatch: 6104 / 8,
+        batch_size,
+        batches_per_superbatch: 6104 * 16_384 / batch_size,
         start_superbatch: if stage == start_stage { start_superbatch } else { 1 },
         end_superbatch,
     };
+
+    // Single flat stage (short data comparison runs): constant WDL, cosine decay from the
+    // main-stage start LR, checkpoints named <name>-stage0-<superbatch>.
+    if let Some(value) = flat_wdl {
+        assert!(start_stage == 0, "--flat-wdl has only stage 0");
+        println!("Flat run:      {superbatches} SBs, WDL {value}, LR {STAGE1_LR_START} -> {FLAT_LR_END} (cosine)");
+        let schedule = TrainingSchedule {
+            net_id: format!("{net_id}-stage0"),
+            eval_scale: EVAL_SCALE,
+            steps: steps(0, superbatches),
+            wdl_scheduler: wdl::ConstantWDL { value },
+            lr_scheduler: lr::CosineDecayLR {
+                initial_lr: STAGE1_LR_START,
+                final_lr: FLAT_LR_END,
+                final_superbatch: superbatches,
+            },
+            save_rate,
+        };
+        trainer.run(&schedule, &settings, &dataloader);
+        return;
+    }
 
     // Stage 0: LR warmup + cooldown, mostly eval targets
     if start_stage <= 0 {
