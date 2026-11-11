@@ -178,6 +178,10 @@ static bool is_insufficient_material(const Board* board) {
 
 // Threefold repetition: every position of the game is kept (zobrist keys).
 static uint64_t position_history[MAX_GAME_RECORD_PLIES + 1];
+
+// board.history must hold a full-length game plus the search stack.
+_Static_assert(MAX_GAME_RECORD_PLIES + MAX_PLY + 64 <= BOARD_HISTORY_SIZE,
+               "BOARD_HISTORY_SIZE too small for MAX_GAME_RECORD_PLIES");
 static int position_count = 0;
 
 static void reset_position_history(void) {

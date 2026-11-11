@@ -67,6 +67,13 @@ enum Squares {
 // =============================================================================
 // Board structure - Stockfish-style with indexed bitboards
 // =============================================================================
+// Zobrist keys of every position since the game start (repetition detection).
+// applyMove appends without a bounds check, so this must cover the longest
+// game plus the search stack on top: datagen plays up to MAX_GAME_RECORD_PLIES
+// (4096) plies, search adds MAX_PLY. historyIndex sits right behind the array,
+// so an overflow corrupts it and is_draw() then scans wild memory.
+#define BOARD_HISTORY_SIZE 8192
+
 typedef struct {
     // PRIMARY: Square-indexed piece array for O(1) lookup
     uint8_t piece[64];
@@ -83,7 +90,7 @@ typedef struct {
     uint64_t zobristKey;
     uint64_t pawnKey; // Pawn-only Zobrist key for correction history
     uint64_t nonPawnKey[2]; // Per-color non-pawn Zobrist keys (kings included)
-    uint64_t history[1000]; 
+    uint64_t history[BOARD_HISTORY_SIZE];
     int historyIndex; 
 } Board;
 

@@ -111,7 +111,10 @@ test-pawn-hash: $(BUILD_DIR) $(BUILD_DIR)/pawn_hash_test
 test-pawn-correction: $(BUILD_DIR) $(BUILD_DIR)/pawn_correction_test
 	$(BUILD_DIR)/pawn_correction_test
 
-test: test-nnue test-pawn-hash test-pawn-correction
+test-long-game-history: $(BUILD_DIR) $(BUILD_DIR)/long_game_history_test
+	$(BUILD_DIR)/long_game_history_test
+
+test: test-nnue test-pawn-hash test-pawn-correction test-long-game-history
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -136,6 +139,9 @@ $(BUILD_DIR)/nnue_load_test: tests/nnue_load_test.c $(BUILD_DIR)/nnue.o $(BUILD_
 	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $^ -lm
 
 $(BUILD_DIR)/pawn_hash_test: tests/pawn_hash_test.c $(addprefix $(BUILD_DIR)/, board_io.o board_modifiers.o zobrist.o nnue.o bitboard_utils.o) $(BUILD_DIR)/embedded_nnue.o
+	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $^ -lm
+
+$(BUILD_DIR)/long_game_history_test: tests/long_game_history_test.c $(addprefix $(BUILD_DIR)/, board_io.o board_modifiers.o zobrist.o nnue.o bitboard_utils.o) $(BUILD_DIR)/embedded_nnue.o
 	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $^ -lm
 
 $(BUILD_DIR)/pawn_correction_test: tests/pawn_correction_test.c
