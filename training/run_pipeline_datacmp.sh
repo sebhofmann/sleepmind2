@@ -21,7 +21,7 @@ if [ "$ARCH" = legacy ]; then
     # (768*10*HL + HL) i16 + 8 * (2*HL + 1) i16, auf 64 Bytes aufgefüllt
     EXPECTED_SIZE=$(( ((7680 * HL + HL + 8 * (2 * HL + 1)) * 2 + 63) / 64 * 64 ))
 else
-    TRAINER=training_deep; ARCH_ARGS=(); MAKE_ARGS=(); EXPECTED_SIZE=19009600
+    TRAINER=training_deep; ARCH_ARGS=(); MAKE_ARGS=(NNUE_ARCH=deep); EXPECTED_SIZE=19009600
 fi
 
 declare -A DATA=( [gen13]="$ROOT/training_data/gen13.vf" [gen12]="$ROOT/training_data/gen12_newest.vf" )

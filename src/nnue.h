@@ -7,7 +7,7 @@
 #include <stdalign.h>
 #include <stddef.h>
 
-// NNUE architecture, selected at compile time (make NNUE_ARCH=legacy|deep, default deep):
+// NNUE architecture, selected at compile time (make NNUE_ARCH=legacy|deep|threats, default threats):
 //   NNUE_ARCH_LEGACY: (768x10 -> HIDDEN)x2 -> SCReLU -> 1, 8 output buckets  (training/training.rs)
 //   NNUE_ARCH_DEEP:   (768x16 -> 768)x2 -> pairwise CReLU -> 16 -> [x, x^2] -> 32 -> 1,
 //                     8 output buckets on every layer                          (training/training_deep.rs)
@@ -18,7 +18,7 @@
 #define NNUE_ARCH_DEEP       1
 #define NNUE_ARCH_THREATS    2
 #ifndef NNUE_ARCH
-#define NNUE_ARCH            NNUE_ARCH_DEEP
+#define NNUE_ARCH            NNUE_ARCH_THREATS
 #endif
 // Architectures sharing the deep output stack (pairwise CReLU -> L1 -> L2 -> L3)
 #define NNUE_IS_DEEP         (NNUE_ARCH == NNUE_ARCH_DEEP || NNUE_ARCH == NNUE_ARCH_THREATS)
