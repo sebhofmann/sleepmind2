@@ -39,12 +39,12 @@ ifeq ($(hl_1024),1)
   CFLAGS += -DNNUE_HIDDEN_SIZE=1024
 endif
 
-# NNUE architecture: the default is the deep net (training/training_deep.rs),
-# make NNUE_ARCH=threats builds deep + threat/pawn-pair inputs (training/training_threats.rs),
-# make NNUE_ARCH=legacy builds the old single-layer net (training/training.rs). Each
-# architecture embeds its own net file (quantised_deep.bin / quantised_threats.bin /
-# quantised.bin); override with NNUE_FILE=<path>.
-NNUE_ARCH ?= deep
+# NNUE architecture: the default is deep + threat/pawn-pair inputs
+# (training/training_threats.rs), make NNUE_ARCH=deep builds the deep net without them
+# (training/training_deep.rs), make NNUE_ARCH=legacy builds the old single-layer net
+# (training/training.rs). Each architecture embeds its own net file (quantised_threats.bin /
+# quantised_deep.bin / quantised.bin); override with NNUE_FILE=<path>.
+NNUE_ARCH ?= threats
 ifeq ($(NNUE_ARCH),deep)
   NNUE_FILE ?= quantised_deep.bin
   NNUE_FLAGS = -DNNUE_ARCH=1
