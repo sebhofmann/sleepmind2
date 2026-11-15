@@ -57,8 +57,10 @@
 
 /*
  * Define TB_NO_THREADS if your program is not multi-threaded.
+ * Not defined: the search threads probe WDL tables concurrently, so the lazy
+ * table loading inside Fathom must be locked.
  */
-#define TB_NO_THREADS
+/* #define TB_NO_THREADS */
 
 /*
  * Define TB_NO_HELPER_API if you do not need the helper API.

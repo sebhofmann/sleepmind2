@@ -15,6 +15,7 @@
 #include "nnue.h" // For NNUE accumulator management
 #include "evaluation.h" // For eval_init
 #include "syzygy.h" // Syzygy tablebase adapter
+#include "threads.h" // Search thread pool
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -212,10 +213,10 @@ void uci_loop() {
     SearchParams search_params;
     search_params_init(&search_params);
 
-    // Search state persists across "go" commands so history/counter moves
-    // accumulate over the whole game; fully cleared on ucinewgame
-    static SearchInfo search_info;
-    clear_search_history(&search_info);
+    // The search state lives in the search threads (threads.c). It persists
+    // across "go" commands so history/counter moves accumulate over the whole
+    // game; fully cleared on ucinewgame.
+    threads_set_count(1);
 
     printf("DEBUG: Starting uci_loop initialization\n"); fflush(stdout);
     
@@ -242,13 +243,26 @@ void uci_loop() {
     printf("%s by %s\n", ENGINE_NAME, ENGINE_AUTHOR);
     printf("DEBUG: Starting main loop\n"); fflush(stdout);
 
+    bool quit_received = false;
     while (fgets(line, sizeof(line), stdin)) {
         line[strcspn(line, "\n")] = 0; // Remove newline
+
+        // The search runs in its own threads while this loop keeps reading.
+        // "stop", "ponderhit" and "isready" are handled during a search; every
+        // other command ends a running search first, since it would change
+        // state the search threads are using (position, options, tables).
+        if (strcmp(line, "stop") != 0 && strcmp(line, "ponderhit") != 0 &&
+            strcmp(line, "isready") != 0 && threads_searching()) {
+            threads_stop();
+            threads_wait();
+        }
 
         if (strcmp(line, "uci") == 0) {
             printf("id name %s\n", ENGINE_NAME);
             printf("id author %s\n", ENGINE_AUTHOR);
             // Feature enable/disable options
+            printf("option name Threads type spin default 1 min 1 max %d\n", THREADS_MAX);
+            printf("option name Ponder type check default false\n");
             printf("option name Use_LMR type check default true\n");
             printf("option name Use_NullMove type check default true\n");
             printf("option name Use_Futility type check default true\n");
@@ -366,8 +380,16 @@ void uci_loop() {
                 bool bool_value = (strcmp(value_start, "true") == 0 || strcmp(value_start, "1") == 0);
                 
                 // Match option names and set values in search_params
+                if (strcmp(option_name, "Threads") == 0) {
+                    threads_set_count(value);
+                    printf("info string Set Threads to %d\n", threads_count());
+                } else if (strcmp(option_name, "Ponder") == 0) {
+                    // Nothing to configure: pondering is driven by "go ponder"
+                    // and "ponderhit". The option only tells the GUI that the
+                    // engine supports it.
+                    printf("info string Set Ponder to %s\n", bool_value ? "true" : "false");
                 // Feature enable/disable flags
-                if (strcmp(option_name, "Use_LMR") == 0) {
+                } else if (strcmp(option_name, "Use_LMR") == 0) {
                     search_params.use_lmr = bool_value;
                     printf("info string Set Use_LMR to %s\n", bool_value ? "true" : "false");
                 } else if (strcmp(option_name, "Use_NullMove") == 0) {
@@ -554,7 +576,7 @@ void uci_loop() {
             // Reset board to startpos
             current_board = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
             nnue_reset_accumulator(&current_board, &nnue_accumulator, nnue_network);
-            clear_search_history(&search_info);
+            threads_clear_histories();
         } else if (strncmp(line, "position", 8) == 0) {
             char* token;
             char* rest = line + 9; // Skip "position "
@@ -681,6 +703,7 @@ void uci_loop() {
             uint64_t node_limit = 0;  // Knotenlimit (go nodes X)
             long movetime = 0;  // Feste Zeit pro Zug (go movetime X)
             bool infinite = false;
+            bool ponder = false;  // go ponder: Zeitlimits gelten erst ab ponderhit
 
             char* token;
             char* rest = line + 3;
@@ -694,6 +717,7 @@ void uci_loop() {
                 else if(strcmp(token, "nodes") == 0 && (token = strtok_r(NULL, " ", &rest))) node_limit = strtoull(token, NULL, 10);
                 else if(strcmp(token, "movetime") == 0 && (token = strtok_r(NULL, " ", &rest))) movetime = atol(token);
                 else if(strcmp(token, "infinite") == 0) infinite = true;
+                else if(strcmp(token, "ponder") == 0) ponder = true;
             }
 
             long current_player_time = current_board.whiteToMove ? wtime : btime;
@@ -759,21 +783,17 @@ void uci_loop() {
 
             printBoard(&current_board); // Print the current board state for debugging
 
-            search_info.startTimeMs = search_current_time_ms();
-            search_info.softTimeLimit = soft_limit;
-            search_info.hardTimeLimit = hard_limit;
-            search_info.stopSearch = false;
-            search_info.lastIterationTime = 0;
-            search_info.nnue_acc = &nnue_accumulator;  // Use the local NNUE accumulator
-            search_info.nnue_net = nnue_network;       // Use the heap-allocated NNUE network
-            search_info.nodesSearched = 0;
-            search_info.bestMoveThisIteration = 0;
-            search_info.bestScoreThisIteration = 0;
-            search_info.seldepth = 0;
-            search_info.depthLimit = depth_limit;  // Set depth limit from UCI
-            search_info.nodeLimit = node_limit;     // Set node limit from UCI
-            search_info.params = search_params;    // Copy search parameters
-            clear_volatile_history(&search_info);  // Killers/prev_moves only; history persists
+            // Filled here, handed to the search threads below. Static: the
+            // struct is too large for the stack of this function.
+            static SearchRequest request;
+            request.startTimeMs = search_current_time_ms();
+            request.softTimeLimit = soft_limit;
+            request.hardTimeLimit = hard_limit;
+            request.depthLimit = depth_limit;  // Set depth limit from UCI
+            request.nodeLimit = node_limit;    // Set node limit from UCI
+            request.infinite = infinite;
+            request.ponder = ponder;
+            request.params = search_params;    // Copy search parameters
 
             // =================================================================
             // Syzygy tablebases: configure in-search WDL probing and probe the
@@ -785,15 +805,15 @@ void uci_loop() {
             // position, tripping an assertion inside Fathom.
             bool root_legal =
                 !isKingAttacked(&current_board, !current_board.whiteToMove);
-            search_info.tbProbeLimit =
+            request.tbProbeLimit =
                 (tb_max > 0 && syzygy_probe_limit > 0 && root_legal)
                     ? (syzygy_probe_limit < tb_max ? syzygy_probe_limit : tb_max)
                     : 0;
-            search_info.tbRootMoveCount = 0;
-            search_info.tbRootScore = 0;
-            search_info.tbRootMatePlies = -1;
-            search_info.tbRootPvLen = 0;
-            if (search_info.tbProbeLimit > 0 &&
+            request.tbRootMoveCount = 0;
+            request.tbRootScore = 0;
+            request.tbRootMatePlies = -1;
+            request.tbRootPvLen = 0;
+            if (request.tbProbeLimit > 0 &&
                 current_board.castlingRights == NO_CASTLING) {
                 Bitboard tb_occ =
                     current_board.byTypeBB[WHITE][PAWN]   | current_board.byTypeBB[BLACK][PAWN]   |
@@ -803,33 +823,33 @@ void uci_loop() {
                     current_board.byTypeBB[WHITE][QUEEN]  | current_board.byTypeBB[BLACK][QUEEN]  |
                     current_board.byTypeBB[WHITE][KING]   | current_board.byTypeBB[BLACK][KING];
                 int tb_pieces = POPCOUNT(tb_occ);
-                if (tb_pieces <= search_info.tbProbeLimit &&
+                if (tb_pieces <= request.tbProbeLimit &&
                     syzygy_available(tb_pieces)) {
                     SyzygyRootResult tb_root;
                     if (syzygy_probe_root(&current_board, &tb_root)) {
                         for (int i = 0; i < tb_root.count; i++) {
-                            search_info.tbRootMoves[i] = tb_root.moves[i];
+                            request.tbRootMoves[i] = tb_root.moves[i];
                         }
-                        search_info.tbRootMoveCount = tb_root.count;
+                        request.tbRootMoveCount = tb_root.count;
 
                         // Mate-distance score (side-to-move perspective) from
                         // the DTZ-optimal line length.
                         int mate = tb_root.matePlies;
-                        search_info.tbRootMatePlies = mate;
+                        request.tbRootMatePlies = mate;
                         if (tb_root.wdl > 0) {
-                            search_info.tbRootScore =
+                            request.tbRootScore =
                                 (mate >= 0) ? (MATE_SCORE - mate) : TB_WIN_SCORE;
                         } else if (tb_root.wdl < 0) {
-                            search_info.tbRootScore =
+                            request.tbRootScore =
                                 (mate >= 0) ? -(MATE_SCORE - mate) : -TB_WIN_SCORE;
                         } else {
-                            search_info.tbRootScore = 0;
+                            request.tbRootScore = 0;
                         }
 
                         // Copy the DTZ-optimal PV for display.
-                        search_info.tbRootPvLen = tb_root.pvLen;
+                        request.tbRootPvLen = tb_root.pvLen;
                         for (int i = 0; i < tb_root.pvLen; i++) {
-                            search_info.tbRootPv[i] = tb_root.pv[i];
+                            request.tbRootPv[i] = tb_root.pv[i];
                         }
 
                         const char* verdict = tb_root.wdl > 0 ? "win"
@@ -847,43 +867,13 @@ void uci_loop() {
             }
 
 
-            // This is where the search will be called.
-            // For now, let's just pick the first legal move.
-            // Later, this will be replaced by iterative deepening alpha-beta search.
-            // Move best_move = find_best_move(&current_board, &search_info);
-            generateMoves(&current_board, &move_list);
-            printf("info string DEBUG: UCI: Generated %d moves before calling search.\n", move_list.count);
-            fflush(stdout); // CHANGED from stderr
-            Move best_move = 0;
-            
-            if (move_list.count > 0) {
-                // Normal search
-                printf("info string DEBUG: UCI: Calling iterative_deepening_search...\n");
-                const char* fen_before_search = outputFEN(&current_board);
-                printf("info string FEN: %s\n", fen_before_search);
-                fflush(stdout);
-                best_move = iterative_deepening_search(&current_board, &search_info);
-                // On a tablebase root hit, play the DTZ-optimal move so that the
-                // played move, the reported score and the displayed PV all agree.
-                if (search_info.tbRootMoveCount > 0 && search_info.tbRootPvLen > 0) {
-                    best_move = search_info.tbRootPv[0];
-                }
-                printf("info string DEBUG: UCI: iterative_deepening_search returned. Best move: %u\n", best_move);
-                fflush(stdout);
-                printf("Best score: %d\n", search_info.bestScoreThisIteration);
-            } else {
-                printf("info string DEBUG: UCI: No moves generated, not calling search.\n");
-                fflush(stdout);
-            }
+            const char* fen_before_search = outputFEN(&current_board);
+            printf("info string FEN: %s\n", fen_before_search);
+            fflush(stdout);
 
-
-            if (best_move != 0) {
-                char move_str[6];
-                moveToString(best_move, move_str);
-                printf("bestmove %s\n", move_str);
-            } else {
-                printf("bestmove 0000\n"); // Should not happen in a legal position
-            }
+            // Starts the search and returns immediately; the main search
+            // thread prints the info lines and finally the bestmove.
+            threads_start_search(&current_board, &nnue_accumulator, nnue_network, &request);
 
         } else if (strcmp(line, "eval") == 0) {
             // Evaluate current position using current evaluation (NNUE or HCE)
@@ -900,16 +890,30 @@ void uci_loop() {
             printf("info string FEN: %s\n", mirrored_fen);
             fflush(stdout);
         } else if (strcmp(line, "stop") == 0) {
-            // stop_search(); // This function will set a flag for the search to stop
-            // For now, this doesn't do much until search is implemented
-             printf("info string stop command received (no active search to stop yet)\n");
+            // The main search thread prints the bestmove once all threads
+            // have stopped. Without a running search this does nothing.
+            threads_stop();
+        } else if (strcmp(line, "ponderhit") == 0) {
+            // The pondered move was played: the search goes on with its time
+            // limits in force (measured from the "go ponder").
+            threads_ponderhit();
         } else if (strcmp(line, "quit") == 0) {
+            quit_received = true;
             break;
         }
         fflush(stdout);
         // fflush(stderr); // Consider adding here as well for other commands if needed
     }
     
+    // End of input without "quit" (e.g. commands piped in): let a search
+    // with a limit of its own finish and report its move. A search that only
+    // ends on "stop" is stopped.
+    if (!quit_received && threads_search_unbounded()) {
+        threads_stop();
+    }
+    threads_wait();
+    threads_destroy();
+
     // Release tablebases and heap-allocated NNUE network
     syzygy_free();
     nnue_free_network(nnue_network);

@@ -49,7 +49,9 @@ search_position() {
     local fen="$1"
     local depth="$2"
     # Get the score from the last depth iteration
-    local search_output=$(echo -e "uci\nisready\nucinewgame\nposition fen $fen\ngo depth $depth\nquit" | "$ENGINE" 2>/dev/null | grep "^info.*depth $depth " | grep "score cp" | tail -1 | sed 's/.*score cp \(-\?[0-9]\+\).*/\1/')
+    # No "quit" after "go": the search runs asynchronously and "quit" would stop it.
+    # At end of input the engine finishes the search before it exits.
+    local search_output=$(echo -e "uci\nisready\nucinewgame\nposition fen $fen\ngo depth $depth" | "$ENGINE" 2>/dev/null | grep "^info.*depth $depth " | grep "score cp" | tail -1 | sed 's/.*score cp \(-\?[0-9]\+\).*/\1/')
     echo "$search_output"
 }
 

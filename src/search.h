@@ -6,6 +6,7 @@
 #include "nnue.h"
 #include "syzygy.h"
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <limits.h>
 
 #define MAX_PLY 64 // Maximum search depth
@@ -124,7 +125,27 @@ long search_current_time_ms(void);
 extern bool search_silent_mode;
 void set_search_silent(bool silent);
 
+// Continuation history (see search.c), indexed [prev_piece][prev_to][piece][to].
+// Too large for SearchInfo (which the data generator keeps in static arrays of
+// its own), so every SearchInfo points to a table set owned by its user.
 typedef struct {
+    int16_t cmh[12][64][12][64]; // 1 ply back (countermove history)
+    int16_t fmh[12][64][12][64]; // 2 plies back (follow-up history)
+} ContHistory;
+
+struct SearchInfo;
+
+// State shared by all threads of one parallel search (Lazy SMP, threads.c).
+// A SearchInfo with shared == NULL is a standalone single-threaded search
+// (data generator).
+typedef struct {
+    atomic_bool stop;    // all threads abort as soon as they notice it
+    atomic_bool ponder;  // pondering: the time limits are not enforced
+    int threadCount;
+    struct SearchInfo** threads;  // SearchInfo of every thread, [0] = main
+} SearchShared;
+
+typedef struct SearchInfo {
     long startTimeMs;
     long softTimeLimit;  // Zeit, nach der keine neue Tiefe begonnen wird
     long hardTimeLimit;  // Absolutes Zeitlimit (Abbruch der Suche)
@@ -132,6 +153,10 @@ typedef struct {
     uint64_t nodesSearched;
     Move bestMoveThisIteration;
     int bestScoreThisIteration;
+    // Expected reply to the returned best move: second PV move of the last
+    // completed iteration, 0 if unknown. (The PV table itself is overwritten
+    // by an iteration that gets interrupted.)
+    Move ponderMove;
     
     // PV table
     Move pv_table[MAX_PLY][MAX_PLY]; // For storing the Principal Variation
@@ -180,6 +205,18 @@ typedef struct {
 
     // Tunable search parameters
     SearchParams params;
+
+    // Continuation history tables of this search state. Must be set before
+    // clear_search_history() or a search is called.
+    ContHistory* cont;
+
+    // Parallel search (NULL / false / unused for a standalone search)
+    SearchShared* shared;
+    bool isHelper;  // helper thread: no output; limits are left to the main thread
+    // Node and TB-hit counters as last published for the other threads. The
+    // exact counters above are private to the searching thread.
+    atomic_uint_fast64_t publishedNodes;
+    atomic_uint_fast64_t publishedTbHits;
 } SearchInfo;
 
 // TB win/loss score base. Below real mate scores (so a found mate is always
@@ -192,14 +229,15 @@ typedef struct {
 // when stored to / loaded from the transposition table.
 #define TB_SCORE_MIN (TB_WIN_SCORE - MAX_PLY)
 
+// Standalone search on the calling thread: starts a new TT generation and
+// runs search_iterate().
 Move iterative_deepening_search(Board* board, SearchInfo* info);
+// Iterative deepening of one search thread. The caller is responsible for
+// tt_new_search(), once per search and not per thread.
+Move search_iterate(Board* board, SearchInfo* info);
 int alpha_beta_search(Board* board, int depth, int alpha, int beta, bool maximizingPlayer, SearchInfo* info, int ply);
 int quiescence_search(Board* board, int alpha, int beta, bool maximizingPlayer, SearchInfo* info, int ply);
 void clear_search_history(SearchInfo* info);
-// Continuation history lives outside SearchInfo; there are two independent
-// sets. The engine only uses set 0, the data generator gives each player its
-// own. clear_search_history() clears the selected set.
-void search_select_cont_history(int set);
 void clear_volatile_history(SearchInfo* info);
 int see_debug(const Board* board, Move move); // Debug: expose SEE
 bool see_ge_debug(const Board* board, Move move, int threshold); // Debug: threshold SEE

@@ -65,6 +65,15 @@ else ifeq ($(BUILD_MODE),debug_eval)
   CFLAGS = $(DEBUG_EVAL_FLAGS)
 endif
 
+# Threads: the engine searches with a pool of pthreads. Kept out of CFLAGS so
+# that a CFLAGS override on the command line (release workflow) cannot drop it.
+THREAD_FLAGS = -pthread
+# Windows (MinGW): link statically, otherwise the executable would depend on
+# libwinpthread-1.dll.
+ifeq ($(OS),Windows_NT)
+  THREAD_LDFLAGS = -static
+endif
+
 # Directories
 SRC_DIR = src
 BUILD_DIR = build
@@ -85,7 +94,7 @@ $(NNUE_STAMP):
 COMMON_SRCS = board_io.c move_generator.c move.c bitboard_utils.c search.c tt.c evaluation.c board_modifiers.c zobrist.c nnue.c syzygy.c tbprobe.c
 
 # Engine source files
-ENGINE_SRCS = main.c uci.c $(COMMON_SRCS)
+ENGINE_SRCS = main.c uci.c threads.c $(COMMON_SRCS)
 ENGINE_OBJS = $(addprefix $(BUILD_DIR)/, $(ENGINE_SRCS:.c=.o))
 ENGINE_OBJS += $(BUILD_DIR)/embedded_nnue.o
 ENGINE_EXEC = $(BUILD_DIR)/sleepmind
@@ -124,35 +133,35 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 $(ENGINE_EXEC): $(ENGINE_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ -lm
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(THREAD_LDFLAGS) -o $@ $^ -lm
 
 $(TRAINING_EXEC): $(TRAINING_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ -lm
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(THREAD_LDFLAGS) -o $@ $^ -lm
 
 # Vendored Fathom probing code: needs POSIX (mmap) under -std=c11, and its
 # warnings are not actionable for us, so they are suppressed.
 $(BUILD_DIR)/tbprobe.o: $(SRC_DIR)/tbprobe.c $(NNUE_STAMP)
-	$(CC) $(CFLAGS) -D_GNU_SOURCE -w -MMD -MP -I$(SRC_DIR) -c $< -o $@
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -D_GNU_SOURCE -w -MMD -MP -I$(SRC_DIR) -c $< -o $@
 
 # Keep the release engine self-contained. The explicit dependency ensures that
 # replacing the trained net always relinks the executable.
 $(BUILD_DIR)/embedded_nnue.o: $(SRC_DIR)/embedded_nnue.S $(NNUE_FILE) $(NNUE_STAMP)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -c $< -o $@
 
 $(BUILD_DIR)/nnue_load_test: tests/nnue_load_test.c $(BUILD_DIR)/nnue.o $(BUILD_DIR)/embedded_nnue.o
-	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $^ -lm
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -I$(SRC_DIR) -o $@ $^ -lm
 
 $(BUILD_DIR)/pawn_hash_test: tests/pawn_hash_test.c $(addprefix $(BUILD_DIR)/, board_io.o board_modifiers.o zobrist.o nnue.o bitboard_utils.o) $(BUILD_DIR)/embedded_nnue.o
-	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $^ -lm
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -I$(SRC_DIR) -o $@ $^ -lm
 
 $(BUILD_DIR)/long_game_history_test: tests/long_game_history_test.c $(addprefix $(BUILD_DIR)/, board_io.o board_modifiers.o zobrist.o nnue.o bitboard_utils.o) $(BUILD_DIR)/embedded_nnue.o
-	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $^ -lm
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -I$(SRC_DIR) -o $@ $^ -lm
 
 $(BUILD_DIR)/pawn_correction_test: tests/pawn_correction_test.c
-	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $<
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -I$(SRC_DIR) -o $@ $<
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(NNUE_STAMP)
-	$(CC) $(CFLAGS) -MMD -MP -I$(SRC_DIR) -c $< -o $@
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -MMD -MP -I$(SRC_DIR) -c $< -o $@
 
 # Auto-generated header dependencies (so .h changes trigger rebuilds)
 -include $(wildcard $(BUILD_DIR)/*.d)

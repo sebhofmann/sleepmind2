@@ -25,13 +25,14 @@
 //#define SEARCH_STATS
 
 #ifdef SEARCH_STATS
-static uint64_t tt_probes = 0;
-static uint64_t tt_hits = 0;
-static uint64_t tt_cutoffs = 0;
-static uint64_t beta_cutoffs = 0;
-static uint64_t beta_cutoffs_first = 0;
+// Per thread; only the main thread of a parallel search reports them.
+static _Thread_local uint64_t tt_probes = 0;
+static _Thread_local uint64_t tt_hits = 0;
+static _Thread_local uint64_t tt_cutoffs = 0;
+static _Thread_local uint64_t beta_cutoffs = 0;
+static _Thread_local uint64_t beta_cutoffs_first = 0;
 
-static struct {
+static _Thread_local struct {
     uint64_t null_move;
     uint64_t reverse_futility;
     uint64_t razoring;
@@ -107,6 +108,11 @@ static void init_lmr_table(void) {
 
 void set_search_silent(bool silent) {
     search_silent_mode = silent;
+}
+
+// No info/debug output: silent mode, or a helper thread of a parallel search
+static inline bool search_quiet(const SearchInfo* info) {
+    return search_silent_mode || info->isHelper;
 }
 
 long search_current_time_ms(void) {
@@ -549,21 +555,12 @@ bool see_ge_debug(const Board* board, Move move, int threshold) {
 // =============================================================================
 // Continuation history (Stockfish-style, replaces killers + countermoves)
 // Indexed by [prev_piece][prev_to][piece][to]; piece index = board->piece - 1
-// (0-5 white, 6-11 black). File-scope static because the tables are too large
-// for the stack-allocated SearchInfo used in training. Cleared on new game,
-// persists (un-decayed) across searches within a game, like Stockfish.
+// (0-5 white, 6-11 black). The tables live in the ContHistory that
+// info->cont points to (one per search thread / data generator player).
+// Cleared on new game, persists (un-decayed) across searches within a game,
+// like Stockfish.
 // =============================================================================
 #define CMH_MAX 16384
-// Two independent sets (see search_select_cont_history), set 0 by default.
-static int16_t cmh_storage[2][12][64][12][64]; // 1 ply back (countermove history)
-static int16_t fmh_storage[2][12][64][12][64]; // 2 plies back (follow-up history)
-static int16_t (*cmh_table)[64][12][64] = cmh_storage[0];
-static int16_t (*fmh_table)[64][12][64] = fmh_storage[0];
-
-void search_select_cont_history(int set) {
-    cmh_table = cmh_storage[set & 1];
-    fmh_table = fmh_storage[set & 1];
-}
 
 // Piece index for continuation tables, -1 if square is empty
 static inline int cmh_piece_index(const Board* board, int sq) {
@@ -602,8 +599,8 @@ static void update_cont(int16_t (*tbl)[64][12][64], const Board* board,
 // Apply bonus/malus to both continuation tables (fmh down-weighted like SF)
 static void update_cont_histories(const Board* board, SearchInfo* info, int ply,
                                   Move m, int bonus) {
-    update_cont(cmh_table, board, info, ply, 1, m, bonus);
-    update_cont(fmh_table, board, info, ply, 2, m, bonus * info->params.fmh_weight / 96);
+    update_cont(info->cont->cmh, board, info, ply, 1, m, bonus);
+    update_cont(info->cont->fmh, board, info, ply, 2, m, bonus * info->params.fmh_weight / 96);
 }
 
 // =============================================================================
@@ -768,8 +765,8 @@ static void mp_fill_quiets(MovePicker* mp) {
         // continuation history subsumes killers and countermoves)
         mp->list[n].move = m;
         mp->list[n].score = info->history[side][MOVE_FROM(m)][MOVE_TO(m)]
-                          + cont_score(cmh_table, board, info, mp->ply, 1, m)
-                          + cont_score(fmh_table, board, info, mp->ply, 2, m);
+                          + cont_score(info->cont->cmh, board, info, mp->ply, 1, m)
+                          + cont_score(info->cont->fmh, board, info, mp->ply, 2, m);
         mp->list[n].see_value = 0;
         n++;
     }
@@ -937,8 +934,7 @@ void clear_search_history(SearchInfo* info) {
     memset(info->prev_pieces, 0, sizeof(info->prev_pieces));
     memset(info->pawn_correction_history, 0, sizeof(info->pawn_correction_history));
     memset(info->nonpawn_correction_history, 0, sizeof(info->nonpawn_correction_history));
-    memset(cmh_table, 0, sizeof(cmh_storage[0]));
-    memset(fmh_table, 0, sizeof(fmh_storage[0]));
+    memset(info->cont, 0, sizeof(*info->cont));
 }
 
 #define CORRECTION_GRAIN 256
@@ -1014,9 +1010,58 @@ static NNUEAccumulator* search_prepare_nnue_child(SearchInfo* info, int ply) {
     return child;
 }
 
-// Check time limit (hard limit - sofortiger Abbruch)
+// Makes this thread's node and TB-hit counters visible to the other threads
+// of a parallel search.
+static inline void search_publish_counters(SearchInfo* info) {
+    atomic_store_explicit(&info->publishedNodes, info->nodesSearched, memory_order_relaxed);
+    atomic_store_explicit(&info->publishedTbHits, info->tbHits, memory_order_relaxed);
+}
+
+// Nodes of the whole search: the exact own counter plus what the other
+// threads last published (at most 2047 nodes behind each).
+static uint64_t search_total_nodes(SearchInfo* info) {
+    uint64_t total = info->nodesSearched;
+    if (info->shared != NULL) {
+        for (int i = 0; i < info->shared->threadCount; i++) {
+            SearchInfo* other = info->shared->threads[i];
+            if (other != info) {
+                total += atomic_load_explicit(&other->publishedNodes, memory_order_relaxed);
+            }
+        }
+    }
+    return total;
+}
+
+static uint64_t search_total_tb_hits(SearchInfo* info) {
+    uint64_t total = info->tbHits;
+    if (info->shared != NULL) {
+        for (int i = 0; i < info->shared->threadCount; i++) {
+            SearchInfo* other = info->shared->threads[i];
+            if (other != info) {
+                total += atomic_load_explicit(&other->publishedTbHits, memory_order_relaxed);
+            }
+        }
+    }
+    return total;
+}
+
+// True while a parallel search is pondering (time limits not enforced)
+static inline bool search_pondering(SearchInfo* info) {
+    return info->shared != NULL &&
+           atomic_load_explicit(&info->shared->ponder, memory_order_relaxed);
+}
+
+// Called every 2048 nodes: stop request of a parallel search, hard time
+// limit (sofortiger Abbruch) and the hard node cap.
 static bool check_time(SearchInfo* info) {
-    if (info->hardTimeLimit > 0) {
+    if (info->shared != NULL) {
+        search_publish_counters(info);
+        if (atomic_load_explicit(&info->shared->stop, memory_order_relaxed)) {
+            info->stopSearch = true;
+            return true;
+        }
+    }
+    if (info->hardTimeLimit > 0 && !search_pondering(info)) {
         long elapsed = search_current_time_ms() - info->startTimeMs;
         if (elapsed >= info->hardTimeLimit) {
             info->stopSearch = true;
@@ -1026,7 +1071,7 @@ static bool check_time(SearchInfo* info) {
     // Hard node cap: the node limit itself is soft (checked between
     // iterations), but without any time limit (training data generation)
     // a single pathological iteration could otherwise run unbounded.
-    if (info->nodeLimit > 0 && info->nodesSearched >= 32 * info->nodeLimit) {
+    if (info->nodeLimit > 0 && search_total_nodes(info) >= 32 * info->nodeLimit) {
         info->stopSearch = true;
         return true;
     }
@@ -2081,7 +2126,13 @@ static int negamax(Board* board, int depth, int alpha, int beta, SearchInfo* inf
 // =============================================================================
 
 Move iterative_deepening_search(Board* board, SearchInfo* info) {
-    if (!search_silent_mode) {
+    // Initialize TT for new search
+    tt_new_search();
+    return search_iterate(board, info);
+}
+
+Move search_iterate(Board* board, SearchInfo* info) {
+    if (!search_quiet(info)) {
         printf("DEBUG: Starting search. White to move: %s\n", board->whiteToMove ? "true" : "false");
         printf("info string Time limits: soft=%ld ms, hard=%ld ms\n", info->softTimeLimit, info->hardTimeLimit);
         fflush(stdout);
@@ -2100,14 +2151,13 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
     info->lastIterationTime = 0;
     info->seldepth = 0;
     info->tbHits = 0;
+    info->ponderMove = 0;
+    search_publish_counters(info);
 
     // Reset search statistics
     TT_STATS_RESET();
     PRUNING_STATS_RESET();
-    
-    // Initialize TT for new search
-    tt_new_search();
-    
+
     // Track longest meaningful iteration time
     long max_meaningful_iteration_time = 0;
     
@@ -2126,6 +2176,14 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
     
     int max_depth = (info->depthLimit > 0) ? info->depthLimit : MAX_PLY;
     for (int depth = 1; depth <= max_depth; depth++) {
+        // Parallel search: do not begin another iteration once a stop was
+        // requested. Depth 1 is always attempted so that there is a move.
+        if (depth > 1 && info->shared != NULL &&
+            atomic_load_explicit(&info->shared->stop, memory_order_relaxed)) {
+            info->stopSearch = true;
+            break;
+        }
+
         long iteration_start = get_elapsed_time(info);
         int nodes_before = info->nodesSearched;
         
@@ -2171,7 +2229,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         }
         
         if (info->stopSearch) {
-            if (!search_silent_mode) {
+            if (!search_quiet(info)) {
                 printf("info string Search stopped at depth %d (hard limit reached)\n", depth);
                 fflush(stdout);
             }
@@ -2191,12 +2249,15 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
             best_move = info->bestMoveThisIteration;
             best_score = score;
             prev_score = score;
+            info->ponderMove =
+                (info->pv_length[0] > 1 && info->pv_table[0][0] == best_move)
+                    ? info->pv_table[0][1] : 0;
         }
         
         // UCI output
         long time_ms = get_elapsed_time(info);
-        uint64_t nps = time_ms > 0 ? (info->nodesSearched * 1000ULL / time_ms) : 0;
-        int hashfull = tt_hashfull();
+        uint64_t total_nodes = search_total_nodes(info);
+        uint64_t nps = time_ms > 0 ? (total_nodes * 1000ULL / time_ms) : 0;
         
         // Format the score for UCI (side-to-move perspective; the internal
         // negamax score already is). "mate N" is only reported for a known
@@ -2228,26 +2289,35 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
             snprintf(score_str, sizeof(score_str), "cp %d", score);
         }
 
-        if (!search_silent_mode) {
-            printf("info depth %d seldepth %d score %s nodes %llu nps %llu time %ld hashfull %d tbhits %llu pv",
-                   depth, info->seldepth, score_str, (unsigned long long)info->nodesSearched, (unsigned long long)nps, time_ms, hashfull, (unsigned long long)info->tbHits);
-            
+        if (!search_quiet(info)) {
+            // The line is assembled first and written with a single call, so
+            // output of the UCI thread (e.g. "readyok") cannot end up inside it.
+            char line[2048];
+            size_t len = 0;
+            int written = snprintf(line, sizeof(line),
+                   "info depth %d seldepth %d score %s nodes %llu nps %llu time %ld hashfull %d tbhits %llu pv",
+                   depth, info->seldepth, score_str, (unsigned long long)total_nodes, (unsigned long long)nps, time_ms,
+                   tt_hashfull(), (unsigned long long)search_total_tb_hits(info));
+            if (written > 0) len = (size_t)written;
+
+            const Move* pv_moves;
+            int pv_count;
             if (info->tbRootMoveCount > 0 && info->tbRootPvLen > 0) {
                 // Tablebase root hit: report the DTZ-optimal line.
-                for (int i = 0; i < info->tbRootPvLen; i++) {
-                    char move_str[10];
-                    moveToString(info->tbRootPv[i], move_str);
-                    printf(" %s", move_str);
-                }
+                pv_moves = info->tbRootPv;
+                pv_count = info->tbRootPvLen;
             } else {
-                for (int i = 0; i < info->pv_length[0]; i++) {
-                    if (info->pv_table[0][i] == 0) break;
-                    char move_str[10];
-                    moveToString(info->pv_table[0][i], move_str);
-                    printf(" %s", move_str);
-                }
+                pv_moves = info->pv_table[0];
+                pv_count = info->pv_length[0];
             }
-            printf("\n");
+            for (int i = 0; i < pv_count && len + 12 < sizeof(line); i++) {
+                if (pv_moves[i] == 0) break;
+                char move_str[10];
+                moveToString(pv_moves[i], move_str);
+                written = snprintf(line + len, sizeof(line) - len, " %s", move_str);
+                if (written > 0) len += (size_t)written;
+            }
+            printf("%s\n", line);
             fflush(stdout);
         }
         
@@ -2256,7 +2326,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         // since they carry no mate distance and deeper iterations are needed
         // to actually convert the win.
         if (abs(score) > TB_WIN_SCORE) {
-            if (!search_silent_mode) {
+            if (!search_quiet(info)) {
                 printf("info string Mate found, stopping search\n");
                 fflush(stdout);
             }
@@ -2264,17 +2334,17 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
         }
         
         // Soft node limit - check between iterations (allows current iteration to complete)
-        if (info->nodeLimit > 0 && info->nodesSearched >= info->nodeLimit) {
-            if (!search_silent_mode) {
+        if (info->nodeLimit > 0 && total_nodes >= info->nodeLimit) {
+            if (!search_quiet(info)) {
                 printf("info string Soft node limit reached after depth %d (%llu nodes)\n", 
-                       depth, (unsigned long long)info->nodesSearched);
+                       depth, (unsigned long long)total_nodes);
                 fflush(stdout);
             }
             break;
         }
         
-        // Time management
-        if (info->softTimeLimit > 0) {
+        // Time management (suspended while pondering)
+        if (info->softTimeLimit > 0 && !search_pondering(info)) {
             long remaining = info->softTimeLimit - time_ms;
             
             long time_for_estimate = max_meaningful_iteration_time > 0 ? 
@@ -2291,7 +2361,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
             bool still_early = (time_ms < (info->softTimeLimit * 60) / 100);
             
             if (!enough_time_for_next && !still_early) {
-                if (!search_silent_mode) {
+                if (!search_quiet(info)) {
                     printf("info string Stopping before depth %d (estimated: %ld ms, remaining: %ld ms)\n",
                            depth + 1, estimated_next, remaining);
                     fflush(stdout);
@@ -2305,7 +2375,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
     // use the bestMoveThisIteration if available, otherwise return 0 (shouldn't happen in legal position)
     if (best_move == 0 && info->bestMoveThisIteration != 0) {
         best_move = info->bestMoveThisIteration;
-        if (!search_silent_mode) {
+        if (!search_quiet(info)) {
             printf("info string Using fallback move from incomplete iteration\n");
             fflush(stdout);
         }
@@ -2337,7 +2407,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
     }
 #endif
     (void)best_score;
-    if (!search_silent_mode) {
+    if (!search_quiet(info)) {
         printf("DEBUG: Best move: %u, Total time: %ld ms\n", best_move, get_elapsed_time(info));
 #ifdef SEARCH_STATS
         // Print TT statistics
@@ -2412,6 +2482,7 @@ Move iterative_deepening_search(Board* board, SearchInfo* info) {
 #endif
         fflush(stdout);
     }
+    search_publish_counters(info);
     if (external_acc != NULL && info->nnue_acc != NULL) {
         memcpy(external_acc, &info->nnue_stack[0], sizeof(NNUEAccumulator));
         external_acc->previous = NULL;
