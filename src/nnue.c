@@ -402,9 +402,10 @@ typedef struct {
     bool valid;
 } FinnyEntry;
 
-static FinnyEntry finny_cache[2][NNUE_INPUT_BUCKETS * 2];
-static const NNUENetwork* finny_net = NULL;
-static uint32_t finny_generation = 0;
+// One table per thread: every search thread refreshes into its own cache.
+static _Thread_local FinnyEntry finny_cache[2][NNUE_INPUT_BUCKETS * 2];
+static _Thread_local const NNUENetwork* finny_net = NULL;
+static _Thread_local uint32_t finny_generation = 0;
 
 static void finny_refresh_perspective(const Board* board, int16_t* dst, const NNUENetwork* net,
                                       int perspective, KingBucket bucket) {

@@ -266,16 +266,17 @@ static int record_score(int stm_score, bool white_to_move) {
 // the engine between "go" commands) and cleared per game.
 #define PLAYER_TT_MB 16
 static SearchInfo player_info[2];   // [0] = White, [1] = Black
+static ContHistory player_cont[2];  // continuation history of each player
 static TTState inactive_tt;         // table of the player not selected
 static int active_player = 0;
 
-// Makes `player`'s transposition table and continuation history the active ones.
+// Makes `player`'s transposition table the active one. (The continuation
+// history needs no switching, each player_info points to its own.)
 static void select_player(int player) {
     if (player != active_player) {
         tt_swap_state(&inactive_tt);
         active_player = player;
     }
-    search_select_cont_history(player);
 }
 
 static void init_player_tables(void) {
@@ -283,6 +284,9 @@ static void init_player_tables(void) {
     tt_swap_state(&inactive_tt);    // park it, no active table left
     init_tt(PLAYER_TT_MB);          // player 1
     active_player = 1;
+    for (int player = 0; player < 2; player++) {
+        player_info[player].cont = &player_cont[player];
+    }
 }
 
 static void clear_player_tables(void) {

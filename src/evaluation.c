@@ -381,10 +381,11 @@ void eval_init(const char* nnue_path, NNUENetwork* net) {
     }
 }
 
-// Track last move for debugging
-static Move g_last_move = 0;
-static int g_last_from = -1;
-static int g_last_to = -1;
+// Track last move for debugging (per thread: every search thread writes it
+// on each move it makes)
+static _Thread_local Move g_last_move = 0;
+static _Thread_local int g_last_from = -1;
+static _Thread_local int g_last_to = -1;
 
 void eval_set_last_move(Move m, int from, int to) {
     g_last_move = m;

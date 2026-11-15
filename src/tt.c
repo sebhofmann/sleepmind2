@@ -20,7 +20,22 @@
 // entries from the current search survive while stale ones get recycled.
 // Indexing uses the high 64 bits of key * cluster_count, which allows
 // arbitrary (non power-of-two) table sizes; the low 16 key bits verify hits.
+//
+// Parallel search: all search threads share the table without any locking.
+// Concurrent stores can therefore tear an entry (fields of two different
+// writes mixed). A torn entry behaves like a 16-bit key collision, which the
+// search has to tolerate anyway: scores and bounds are hints and the TT move
+// is checked for pseudo-legality before it is played. The table pointer, its
+// size and the generation only change while no search is running.
 // =============================================================================
+
+// The entry accesses below race by design; keep ThreadSanitizer builds quiet
+// about them (and only them).
+#if defined(__GNUC__) || defined(__clang__)
+#define TT_RACY __attribute__((no_sanitize("thread")))
+#else
+#define TT_RACY
+#endif
 
 // Depth is stored in a uint8 with an offset so that qsearch depths (<= 0)
 // still map to a non-zero value; depth8 == 0 marks an unused entry.
@@ -76,15 +91,15 @@ static void tt_aligned_free(void* mem) {
 // Age of an entry relative to the current search, in multiples of
 // TT_GENERATION_DELTA. The cycle constant keeps the subtraction correct
 // across uint8 wraparound.
-static inline int relative_age(uint8_t gen_bound) {
+TT_RACY static inline int relative_age(uint8_t gen_bound) {
     return (TT_GENERATION_CYCLE + generation8 - gen_bound) & TT_GENERATION_MASK;
 }
 
-static inline TTCluster* cluster_for(uint64_t key) {
+TT_RACY static inline TTCluster* cluster_for(uint64_t key) {
     return &table[(uint64_t)(((unsigned __int128)key * cluster_count) >> 64)];
 }
 
-static inline Move entry_move(const TTEntry* e) {
+TT_RACY static inline Move entry_move(const TTEntry* e) {
     return ((Move)e->move_hi << 16) | e->move_lo;
 }
 
@@ -132,7 +147,7 @@ void tt_new_search() {
     generation8 += TT_GENERATION_DELTA;  // uint8 wraps around by itself
 }
 
-TTData tt_probe(uint64_t key) {
+TT_RACY TTData tt_probe(uint64_t key) {
     TTData data = {0};
     if (table == NULL) return data;
 
@@ -158,7 +173,7 @@ TTData tt_probe(uint64_t key) {
     return data;
 }
 
-void tt_store(uint64_t key, int depth, int score, uint8_t bound, Move best_move, bool is_pv, int eval) {
+TT_RACY void tt_store(uint64_t key, int depth, int score, uint8_t bound, Move best_move, bool is_pv, int eval) {
     if (table == NULL) return;
 
     TTCluster* cluster = cluster_for(key);
@@ -213,7 +228,7 @@ void tt_prefetch(uint64_t key) {
     __builtin_prefetch(cluster_for(key), 0, 1);
 }
 
-int tt_hashfull() {
+TT_RACY int tt_hashfull() {
     if (table == NULL || cluster_count == 0) return 0;
 
     // Sample the first 1000 clusters, counting entries of the current generation
