@@ -16,6 +16,14 @@
 #elif defined(__AVX2__)
     #define NNUE_AVX2
     #include <immintrin.h>
+#elif defined(__ARM_NEON)
+    #define NNUE_NEON
+    #include <arm_neon.h>
+#endif
+
+// The deep net's sparse L1 pass (nonzero group indices collected during the FT activation)
+#if defined(NNUE_AVX2) || defined(NNUE_AVX512) || defined(NNUE_NEON)
+    #define NNUE_SPARSE_L1
 #endif
 
 // Input bucket map based on king position (32 elements for half-board with mirroring)
@@ -174,12 +182,12 @@ uint64_t nnue_hash(const unsigned char* data, size_t size) {
 
 #if NNUE_ARCH == NNUE_ARCH_DEEP
 // Derived (non-file) data, refreshed after every load
-#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+#if defined(NNUE_SPARSE_L1)
 static void deep_init_nnz_lut(void);
 #endif
 
 static void nnue_deep_prepare(NNUENetwork* net) {
-#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+#if defined(NNUE_SPARSE_L1)
     deep_init_nnz_lut();
 #endif
     for (int b = 0; b < NNUE_OUTPUT_BUCKETS; b++) {
@@ -610,7 +618,7 @@ static inline int32_t load_i32(const void* p) {
     return v;
 }
 
-#if defined(NNUE_AVX2) || defined(NNUE_AVX512)
+#if defined(NNUE_SPARSE_L1)
 static alignas(16) uint16_t nnz_lut[256][8];
 
 static void deep_init_nnz_lut(void) {
@@ -655,6 +663,36 @@ static inline int deep_ft_activate(const int16_t* acc, uint8_t* out, uint16_t* i
         base = _mm_add_epi16(base, step);
     }
     return count;
+#elif defined(NNUE_NEON)
+    const int16x8_t zero = vdupq_n_s16(0);
+    const int16x8_t qa = vdupq_n_s16(NNUE_QA);
+    const uint32x4_t group_bits = { 1, 2, 4, 8 };
+    const uint16x4_t step = vdup_n_u16(4);
+    uint16x4_t base = vdup_n_u16((uint16_t)group_base);
+    for (int i = 0; i < NNUE_FT_HALF; i += 16) {
+        int16x8_t a0 = vld1q_s16(acc + i);
+        int16x8_t a1 = vld1q_s16(acc + i + 8);
+        int16x8_t b0 = vld1q_s16(acc + NNUE_FT_HALF + i);
+        int16x8_t b1 = vld1q_s16(acc + NNUE_FT_HALF + i + 8);
+        a0 = vminq_s16(vmaxq_s16(a0, zero), qa);
+        a1 = vminq_s16(vmaxq_s16(a1, zero), qa);
+        b0 = vminq_s16(b0, qa);
+        b1 = vminq_s16(b1, qa);
+        // 2 * (a << 6) * b >> 16 = a*b >> 9 (a << 6 <= 16320, so the doubling cannot saturate)
+        int16x8_t p0 = vqdmulhq_s16(vshlq_n_s16(a0, 15 - NNUE_PAIR_SHIFT), b0);
+        int16x8_t p1 = vqdmulhq_s16(vshlq_n_s16(a1, 15 - NNUE_PAIR_SHIFT), b1);
+        // qmovun saturates negatives to 0
+        uint8x16_t u = vcombine_u8(vqmovun_s16(p0), vqmovun_s16(p1));
+        vst1q_u8(out + i, u);
+
+        uint32x4_t groups = vreinterpretq_u32_u8(u);
+        unsigned mask = vaddvq_u32(vandq_u32(vtstq_u32(groups, groups), group_bits));
+        // masks < 16 only use the first 4 lut slots
+        vst1_u16(idx + count, vadd_u16(base, vld1_u16(nnz_lut[mask])));
+        count += __builtin_popcount(mask);
+        base = vadd_u16(base, step);
+    }
+    return count;
 #else
     (void)idx;
     (void)group_base;
@@ -690,6 +728,18 @@ static inline __m256i dpwssd256(__m256i acc, __m256i a, __m256i b) {
     return _mm256_add_epi32(acc, _mm256_madd_epi16(a, b));
 #endif
 }
+#elif defined(NNUE_NEON)
+// acc + sum over 4-byte groups of i8 x i8. The activations are u8 in [0, 127], so they are valid
+// i8 and the signed dot product is enough (no i8mm/usdot needed, which the M1 lacks).
+static inline int32x4_t dot_s8(int32x4_t acc, int8x16_t x, int8x16_t w) {
+#if defined(__ARM_FEATURE_DOTPROD)
+    return vdotq_s32(acc, x, w);
+#else
+    const int32x4_t lo = vpaddlq_s16(vmull_s8(vget_low_s8(x), vget_low_s8(w)));
+    const int32x4_t hi = vpaddlq_s16(vmull_high_s8(x, w));
+    return vaddq_s32(acc, vpaddq_s32(lo, hi));
+#endif
+}
 #endif
 
 // Sparse L1: each nonzero 4-byte group g of activations adds its weight column
@@ -722,6 +772,29 @@ static inline void deep_l1_forward(const uint8_t* ft_out, const uint16_t* idx, i
     hi[0] = _mm256_add_epi32(_mm256_add_epi32(hi[0], hi[1]), _mm256_add_epi32(hi[2], hi[3]));
     _mm256_storeu_si256((__m256i*)z, lo[0]);
     _mm256_storeu_si256((__m256i*)(z + 8), hi[0]);
+#elif defined(NNUE_NEON)
+    // two independent accumulator sets for ILP
+    int32x4_t s0[4], s1[4];
+    for (int j = 0; j < 4; j++) s0[j] = s1[j] = vdupq_n_s32(0);
+    int k = 0;
+    for (; k + 2 <= count; k += 2) {
+        const int g0 = idx[k], g1 = idx[k + 1];
+        const int8x16_t x0 = vreinterpretq_s8_s32(vdupq_n_s32(load_i32(ft_out + 4 * g0)));
+        const int8x16_t x1 = vreinterpretq_s8_s32(vdupq_n_s32(load_i32(ft_out + 4 * g1)));
+        const int8_t* w0 = w + g0 * 4 * NNUE_L2_SIZE;
+        const int8_t* w1 = w + g1 * 4 * NNUE_L2_SIZE;
+        for (int j = 0; j < 4; j++) {
+            s0[j] = dot_s8(s0[j], x0, vld1q_s8(w0 + 16 * j));
+            s1[j] = dot_s8(s1[j], x1, vld1q_s8(w1 + 16 * j));
+        }
+    }
+    if (k < count) {
+        const int g = idx[k];
+        const int8x16_t x = vreinterpretq_s8_s32(vdupq_n_s32(load_i32(ft_out + 4 * g)));
+        const int8_t* wg = w + g * 4 * NNUE_L2_SIZE;
+        for (int j = 0; j < 4; j++) s0[j] = dot_s8(s0[j], x, vld1q_s8(wg + 16 * j));
+    }
+    for (int j = 0; j < 4; j++) vst1q_s32(z + 4 * j, vaddq_s32(s0[j], s1[j]));
 #else
     (void)idx;
     (void)count;
@@ -756,6 +829,27 @@ static inline void deep_l2_forward(const int16_t* in, const NNUENetwork* net, in
     const __m256i q3 = _mm256_set1_epi32(NNUE_Q3);
     for (int j = 0; j < 4; j++) {
         _mm256_storeu_si256((__m256i*)(out + 8 * j), _mm256_min_epi32(_mm256_max_epi32(s[j], zero), q3));
+    }
+#elif defined(NNUE_NEON)
+    int32x4_t s[NNUE_L3_SIZE / 4];
+    for (int j = 0; j < NNUE_L3_SIZE / 4; j++) s[j] = vld1q_s32(bias + 4 * j);
+    for (int p = 0; p < NNUE_L2_SIZE; p++) {
+        const int32_t pair = load_i32(in + 2 * p);
+        if (pair == 0) continue;
+        const int16x8_t x = vreinterpretq_s16_s32(vdupq_n_s32(pair));
+        const int16_t* wp = w + p * 2 * NNUE_L3_SIZE;
+        for (int j = 0; j < NNUE_L3_SIZE / 4; j++) {
+            // madd: widening multiply, then add the two products of each output
+            const int16x8_t wj = vld1q_s16(wp + 8 * j);
+            const int32x4_t lo = vmull_s16(vget_low_s16(x), vget_low_s16(wj));
+            const int32x4_t hi = vmull_high_s16(x, wj);
+            s[j] = vaddq_s32(s[j], vpaddq_s32(lo, hi));
+        }
+    }
+    const int32x4_t zero = vdupq_n_s32(0);
+    const int32x4_t q3 = vdupq_n_s32(NNUE_Q3);
+    for (int j = 0; j < NNUE_L3_SIZE / 4; j++) {
+        vst1q_s32(out + 4 * j, vminq_s32(vmaxq_s32(s[j], zero), q3));
     }
 #else
     for (int o = 0; o < NNUE_L3_SIZE; o++) out[o] = bias[o];
