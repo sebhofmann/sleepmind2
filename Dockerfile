@@ -1,4 +1,4 @@
-FROM lichessbotdevs/lichess-bot:2026.1.11.1
+FROM lichessbotdevs/lichess-bot:2026.11.16.2
 COPY . /opt/sleepmind
 WORKDIR /opt/sleepmind
 RUN ls -la
